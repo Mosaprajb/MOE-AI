@@ -1,4 +1,4 @@
-# MOERAND v3.4
+# MOERAND v3.5
 
 Mobile-first Next.js PWA for the MOERAND trading signal command center.
 
@@ -11,6 +11,7 @@ Mobile-first Next.js PWA for the MOERAND trading signal command center.
 - Browser notification permission flow and test alerts
 - Optional Finnhub live-price connection with the API key stored only in the user's browser
 - Finnhub one-minute candle hydration plus real-time trade aggregation for every monitored symbol
+- Alpaca IEX historical-bar fallback when a Finnhub key does not include stock candles
 - Batched candle requests and incremental history loading for newly added symbols
 - MOE Pine Script v6.3.1 scoring with 1-minute triggers and preferred 15-minute context
 - Stateful BUY NOW, repeated BUY AGAIN, HOLD, smart rising stop, and SELL NOW handling

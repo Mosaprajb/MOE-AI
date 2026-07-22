@@ -493,6 +493,7 @@ button.stat:hover { border-color: var(--cyan); }
 .watchMain { min-width: 0; flex: 1; padding: 14px 0; border: 0; display: grid; grid-template-columns: 1fr 100px 45px; align-items: center; gap: 8px; background: transparent; color: inherit; text-align: left; }
 .remove { width: 34px; height: 34px; border: 0; border-radius: 50%; background: #142d40; color: var(--muted); font-size: 22px; }
 .watchCard > .primary { margin-top: 18px; }
+.alertTestButton { margin-top: 16px; }
 
 .signalHistoryCard { padding: 22px; }
 .dangerText { color: var(--red); }
@@ -607,6 +608,8 @@ button.stat:hover { border-color: var(--cyan); }
   font-size: 12px;
   font-weight: 800;
 }
+
+.alpacaSecretLabel { margin-top: 8px; }
 
 .apiKeyInput {
   margin-bottom: 10px;

@@ -46,6 +46,8 @@ export default function Home() {
   const [toast, setToast] = useState('');
   const [planOpen, setPlanOpen] = useState(false);
   const [marketToken, setMarketToken] = useState('');
+  const [alpacaKey, setAlpacaKey] = useState('');
+  const [alpacaSecret, setAlpacaSecret] = useState('');
   const [symbolInput, setSymbolInput] = useState('');
   const notifiedEventsRef = useRef(new Set());
   const {
@@ -54,9 +56,13 @@ export default function Home() {
     statusMessage: marketStatusMessage,
     engineStatus,
     engineMessage,
+    candleProvider,
     signalHistory,
     newSignalBatch,
     clearSignalHistory,
+    hasAlpacaCredentials,
+    saveAlpacaCredentials,
+    removeAlpacaCredentials,
     lastUpdated,
     hasToken,
     connect: connectMarket,
@@ -252,6 +258,24 @@ export default function Home() {
     setToast('Finnhub key removed from this device');
   }
 
+  async function saveAlpaca() {
+    if (!alpacaKey.trim() || !alpacaSecret.trim()) {
+      setToast(hasAlpacaCredentials ? 'Alpaca credentials are already saved' : 'Enter both Alpaca key and secret');
+      return;
+    }
+    await saveAlpacaCredentials(alpacaKey, alpacaSecret);
+    setAlpacaKey('');
+    setAlpacaSecret('');
+    setToast('Alpaca saved · loading minute candles');
+  }
+
+  async function removeAlpaca() {
+    await removeAlpacaCredentials();
+    setAlpacaKey('');
+    setAlpacaSecret('');
+    setToast('Alpaca credentials removed');
+  }
+
   function formatUpdateTime(timestamp) {
     if (!timestamp) return '';
     return new Intl.DateTimeFormat('en-US', {
@@ -396,6 +420,7 @@ export default function Home() {
               <div><b>MOE engine</b><small>{engineMessage}</small></div>
               <span className={`pill ${isEngineLive ? 'green' : 'amber'}`}>{isEngineLive ? 'LIVE' : engineStatus.toUpperCase()}</span>
             </div>
+            {alerts && <button className="primary alertTestButton" onClick={() => showNotification(best, true).catch(() => setToast('Could not send the test alert'))}>Send notification test</button>}
           </div>
 
           <div className="card signalHistoryCard">
@@ -500,6 +525,49 @@ export default function Home() {
             </div>
             <div className="riskNotice compactNotice"><b>Live price and candle engine</b><p>{engineMessage}. The app must remain open for immediate on-device scanning and notifications.</p></div>
           </div>
+
+          <div className="card settingsCard marketConnectCard">
+            <div className="sectionHead">
+              <div><p className="eyebrow">CANDLE HISTORY FOR ALERTS</p><h2>Alpaca IEX</h2></div>
+              <span className={`connectionState ${hasAlpacaCredentials ? 'live' : engineStatus === 'error' ? 'error' : ''}`}>{hasAlpacaCredentials ? 'SAVED' : 'NEEDED'}</span>
+            </div>
+            <p className="subtitle">Your Finnhub plan has no minute-candle history. Free Alpaca keys provide the history MOE needs to calculate signals; Finnhub continues supplying live prices.</p>
+            <label className="apiKeyLabel" htmlFor="alpaca-key">Alpaca API key</label>
+            <input
+              id="alpaca-key"
+              className="search apiKeyInput"
+              type="password"
+              value={alpacaKey}
+              onChange={(event) => setAlpacaKey(event.target.value)}
+              placeholder={hasAlpacaCredentials ? 'Key saved on this device' : 'Paste Alpaca API key'}
+              autoComplete="off"
+              autoCapitalize="none"
+              spellCheck="false"
+            />
+            <label className="apiKeyLabel alpacaSecretLabel" htmlFor="alpaca-secret">Alpaca secret key</label>
+            <input
+              id="alpaca-secret"
+              className="search apiKeyInput"
+              type="password"
+              value={alpacaSecret}
+              onChange={(event) => setAlpacaSecret(event.target.value)}
+              placeholder={hasAlpacaCredentials ? 'Secret saved on this device' : 'Paste Alpaca secret key'}
+              autoComplete="off"
+              autoCapitalize="none"
+              spellCheck="false"
+            />
+            <div className="connectionActions">
+              <button className="primary compact" onClick={saveAlpaca}>{hasAlpacaCredentials ? 'Update & activate' : 'Save & activate alerts'}</button>
+              {hasAlpacaCredentials && <button className="secondary compact dangerButton" onClick={removeAlpaca}>Remove Alpaca</button>}
+            </div>
+            <div className="connectionHelp">
+              <span className={`feedDot ${isEngineLive ? 'on' : ''}`} />
+              <span>{isEngineLive ? `Candle source: ${candleProvider}` : engineMessage}</span>
+              <a href="https://app.alpaca.markets/signup" target="_blank" rel="noreferrer">Create free account ↗</a>
+            </div>
+            <div className="riskNotice compactNotice"><b>Stored only on this device</b><p>Never send either key in chat. MOERAND uses them only to request historical IEX bars directly from Alpaca.</p></div>
+          </div>
+
           <div className="card settingsCard">
             <p className="eyebrow">IPHONE INSTALLATION</p>
             <h2>Add MOERAND to Home Screen</h2>
@@ -512,11 +580,12 @@ export default function Home() {
           </div>
           <div className="card settingsCard">
             <p className="eyebrow">SYSTEM</p>
-            <h2>MOERAND v3.4</h2>
+            <h2>MOERAND v3.5</h2>
             <div className="settingRow"><div><b>Market prices</b><small>{isLive ? 'Finnhub live stream connected' : 'Static demonstration dataset'}</small></div><span className={`pill ${isLive ? 'green' : 'amber'}`}>{isLive ? 'LIVE' : 'DEMO'}</span></div>
+            <div className="settingRow"><div><b>Candle history</b><small>{isEngineLive ? `${candleProvider} minute bars` : 'Alpaca keys required for this Finnhub plan'}</small></div><span className={`pill ${isEngineLive ? 'green' : 'amber'}`}>{isEngineLive ? 'READY' : 'NEEDED'}</span></div>
             <div className="settingRow"><div><b>MOE signals</b><small>Exact v{MOE_VERSION} scoring, entries, repeated adds, and smart exits</small></div><span className={`pill ${isEngineLive ? 'green' : 'amber'}`}>{isEngineLive ? 'LIVE' : engineStatus.toUpperCase()}</span></div>
             <div className="settingRow"><div><b>App mode</b><small>Installable progressive web app</small></div><span className="pill green">PWA</span></div>
-            <div className="riskNotice"><b>Trading notice</b><p>Signals are calculated from Finnhub candles using the supplied MOE v{MOE_VERSION} rules. Provider data, session settings, and browser availability can differ from TradingView. Confirm every order independently.</p></div>
+            <div className="riskNotice"><b>Trading notice</b><p>Signals are calculated from the configured minute-candle source using the supplied MOE v{MOE_VERSION} rules. Provider data, session settings, and browser availability can differ from TradingView. Confirm every order independently.</p></div>
           </div>
         </section>
       )}
