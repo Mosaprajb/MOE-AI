@@ -1,24 +1,28 @@
-# MOE AI — Signal Hub v1.0
+# MOE AI v2 — English Signal Command Center
 
-واجهة PWA عربية تجريبية لمشروع MOE AI. تعمل على الكمبيوتر والآيفون ويمكن تثبيتها من Safari بعد نشرها على HTTPS.
+Mobile-first installable PWA for GitHub Pages.
 
-> تنبيه: البيانات والإشارات في هذه النسخة تجريبية وليست بيانات سوق حقيقية، وليست توصية مالية.
+## What is included
+- English-only responsive dashboard
+- 49-symbol watchlist grouped by sector
+- Ranked BUY NOW, BUY AGAIN, WATCH, and SELL NOW cards
+- Search, sector, signal, and timeframe controls
+- Entry, stop, target, score, and risk/reward display
+- One master-alert setting
+- PWA manifest, service worker, and iPhone home-screen support
 
-## النشر عبر GitHub Pages
+## Important
+This version uses simulated values and signals. It is not connected to live market data and is not financial advice.
 
-1. ارفع جميع الملفات الموجودة داخل هذا المجلد إلى مستودع `MOE-AI`.
-2. افتح: `Settings` ثم `Pages`.
-3. في `Build and deployment` اختر `Deploy from a branch`.
-4. اختر الفرع `main` والمجلد `/ (root)` ثم اضغط `Save`.
-5. انتظر دقيقة أو دقيقتين، وسيظهر رابط الموقع في صفحة Pages.
+## Update GitHub Pages
+1. Download and unzip the package.
+2. Open the `MOE-AI` GitHub repository.
+3. Choose **Add file → Upload files**.
+4. Upload the files and the `assets` folder from inside this package.
+5. Make sure the files replace the old versions.
+6. Commit with: `Upgrade to MOE AI v2 English`.
+7. GitHub Pages will deploy automatically from `main / (root)`.
+8. Wait 1–3 minutes, then refresh the live site.
 
-## التثبيت على iPhone
-
-1. افتح رابط الموقع في Safari.
-2. اضغط زر المشاركة.
-3. اختر `Add to Home Screen` / `إضافة إلى الشاشة الرئيسية`.
-4. اضغط `Add`.
-
-## المرحلة التالية
-
-ربط الواجهة بمصدر بيانات سوق مرخص، ثم نقل قواعد MOE من Pine Script إلى محرك خلفي مستقل. يجب عدم استخدام بيانات العرض الحالية لاتخاذ قرارات تداول.
+## iPhone refresh
+Open the installed app. If the old design remains, close it fully and reopen it. If necessary, delete the home-screen icon, open the GitHub Pages URL in Safari, then use Share → Add to Home Screen again.

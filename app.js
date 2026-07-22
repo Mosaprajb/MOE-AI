@@ -1,36 +1,21 @@
-const signals=[
-{symbol:'ASTS',name:'AST SpaceMobile',signal:'BUY NOW',type:'BUY',price:63.42,stop:62.78,target:65.15,score:94,reason:'Continuation'},
-{symbol:'SOFI',name:'SoFi Technologies',signal:'BUY AGAIN',type:'BUY',price:17.68,stop:17.41,target:18.24,score:89,reason:'Pullback'},
-{symbol:'NVDA',name:'NVIDIA',signal:'WATCH',type:'WATCH',price:208.30,stop:206.90,target:211.60,score:83,reason:'Compression'},
-{symbol:'INTC',name:'Intel',signal:'SELL NOW',type:'SELL',price:41.18,stop:41.72,target:40.15,score:91,reason:'Trailing Stop'},
-{symbol:'RKLB',name:'Rocket Lab',signal:'BUY NOW',type:'BUY',price:36.55,stop:35.94,target:38.10,score:87,reason:'Breakout'},
-{symbol:'PLTR',name:'Palantir',signal:'WATCH',type:'WATCH',price:143.10,stop:141.25,target:146.80,score:80,reason:'Reclaim'}
+const universe = [
+['NVDA','NVIDIA','AI / Semis'],['AMD','Advanced Micro Devices','AI / Semis'],['ARM','Arm Holdings','AI / Semis'],['TSM','Taiwan Semiconductor','AI / Semis'],['MU','Micron','AI / Semis'],['AVGO','Broadcom','AI / Semis'],['SMCI','Super Micro Computer','AI / Semis'],['QCOM','Qualcomm','AI / Semis'],
+['ASTS','AST SpaceMobile','EV / Space'],['RKLB','Rocket Lab','EV / Space'],['LUNR','Intuitive Machines','EV / Space'],['JOBY','Joby Aviation','EV / Space'],['ACHR','Archer Aviation','EV / Space'],['RIVN','Rivian','EV / Space'],['TSLA','Tesla','EV / Space'],
+['SOFI','SoFi Technologies','FinTech'],['HOOD','Robinhood','FinTech'],['AFRM','Affirm','FinTech'],['COIN','Coinbase','FinTech'],
+['PLTR','Palantir','Growth'],['HIMS','Hims & Hers','Growth'],['PATH','UiPath','Growth'],['CRWV','CoreWeave','Growth'],['IONQ','IonQ','Growth'],['TEM','Tempus AI','Growth'],['APP','AppLovin','Growth'],['DUOL','Duolingo','Growth'],['U','Unity Software','Growth'],['SNOW','Snowflake','Growth'],['CAVA','Cava','Growth'],['CELH','Celsius','Growth'],
+['AAPL','Apple','Large Cap'],['AMZN','Amazon','Large Cap'],['GOOGL','Alphabet','Large Cap'],['META','Meta Platforms','Large Cap'],['NFLX','Netflix','Large Cap'],['MSFT','Microsoft','Large Cap'],['UBER','Uber','Large Cap'],
+['WMT','Walmart','Consumer'],['SHOP','Shopify','Consumer'],['BABA','Alibaba','Consumer'],['LYFT','Lyft','Consumer'],['KLIC','Kulicke & Soffa','Growth'],['INTC','Intel','AI / Semis'],['QS','QuantumScape','EV / Space'],['TTAN','ServiceTitan','Growth'],['CARR','Carrier','Consumer'],
+['XOM','Exxon Mobil','Energy'],['CVX','Chevron','Energy']
 ];
-let currentFilter='ALL';
-const $=s=>document.querySelector(s);
-function fmt(n){return '$'+Number(n).toFixed(2)}
-function render(){
- const strong=$('#strongOnly').checked;
- const list=signals.filter(s=>(currentFilter==='ALL'||s.type===currentFilter)&&(!strong||s.score>=85));
- $('#signalList').innerHTML=list.map(s=>`<article class="signal" data-symbol="${s.symbol}">
- <div class="symbol"><strong>${s.symbol}</strong><small>${s.name}</small></div>
- <div><span class="badge ${s.type.toLowerCase()}">${s.signal}</span></div>
- <div class="metric"><small>السعر</small><b>${fmt(s.price)}</b></div>
- <div class="metric"><small>الستوب</small><b>${fmt(s.stop)}</b></div>
- <div class="metric"><small>الهدف</small><b>${fmt(s.target)}</b></div>
- <div class="score-cell"><small>${s.score}/100</small><div class="score"><i style="width:${s.score}%"></i></div></div>
- </article>`).join('')||'<div class="empty">لا توجد إشارات تطابق الفلتر الحالي.</div>';
- document.querySelectorAll('.signal').forEach(el=>el.onclick=()=>showTrade(el.dataset.symbol));
- $('#buyCount').textContent=signals.filter(s=>s.type==='BUY').length;
- $('#sellCount').textContent=signals.filter(s=>s.type==='SELL').length;
- $('#avgScore').textContent=Math.round(signals.reduce((a,b)=>a+b.score,0)/signals.length);
- $('#watchCount').textContent=signals.length;
-}
-function showTrade(symbol){const s=signals.find(x=>x.symbol===symbol);$('#tradeEmpty').classList.add('hidden');const box=$('#tradeDetails');box.classList.remove('hidden');box.innerHTML=`<div><small>السهم</small><b>${s.symbol}</b></div><div><small>الإشارة</small><b>${s.signal}</b></div><div><small>الدخول</small><b>${fmt(s.price)}</b></div><div><small>الستوب</small><b>${fmt(s.stop)}</b></div><div><small>الهدف</small><b>${fmt(s.target)}</b></div><div><small>القوة</small><b>${s.score}/100</b></div><div><small>نوع الفرصة</small><b>${s.reason}</b></div><div><small>R/R تقريبي</small><b>${(Math.abs(s.target-s.price)/Math.max(.01,Math.abs(s.price-s.stop))).toFixed(2)}</b></div>`}
-$('#filters').onclick=e=>{if(!e.target.dataset.filter)return;document.querySelectorAll('.tab').forEach(x=>x.classList.remove('active'));e.target.classList.add('active');currentFilter=e.target.dataset.filter;render()};
-$('#strongOnly').onchange=render;
-$('#refreshBtn').onclick=()=>{signals.forEach(s=>{s.price=+(s.price*(1+(Math.random()-.5)*.002)).toFixed(2)});$('#lastUpdated').textContent='آخر تحديث: '+new Date().toLocaleTimeString('ar-US');render()};
-$('#notifyBtn').onclick=async()=>{if(!('Notification'in window)){alert('المتصفح لا يدعم التنبيهات.');return}const p=await Notification.requestPermission();if(p==='granted'){new Notification('MOE AI',{body:'تم تفعيل تنبيهات النسخة التجريبية بنجاح.'});$('#notifyBtn').textContent='التنبيهات مفعّلة'}else alert('لم يتم السماح بالتنبيهات.')};
-setInterval(()=>$('#clock').textContent=new Date().toLocaleTimeString('ar-US'),1000);
-if('serviceWorker'in navigator)window.addEventListener('load',()=>navigator.serviceWorker.register('./sw.js'));
-render();
+const signalCycle=['BUY NOW','BUY AGAIN','WATCH','WATCH','WATCH','SELL NOW'];
+let filter='ALL';
+let rows=[];
+function seeded(symbol){return [...symbol].reduce((a,c)=>a+c.charCodeAt(0),0)}
+function buildRows(){rows=universe.map(([symbol,company,sector],i)=>{const s=seeded(symbol);const score=70+((s+i*7)%29);const signal=signalCycle[(s+i)%signalCycle.length];const base=8+(s%370)+((s%100)/100);const price=base.toFixed(2);const stop=(base*(signal==='SELL NOW'?1.012:.987)).toFixed(2);const target=(base*(signal==='SELL NOW'?.97:1.035)).toFixed(2);const entry=(base*(1+(((s%7)-3)/1000))).toFixed(2);const rr=(1.4+((s%18)/10)).toFixed(1);const reasons={ 'BUY NOW':'Momentum breakout + relative volume','BUY AGAIN':'Trend continuation after controlled pullback','WATCH':'Setup developing near confirmation level','SELL NOW':'Momentum loss or trailing-stop condition'};return{symbol,company,sector,signal,score,price,entry,stop,target,rr,reason:reasons[signal]}}).sort((a,b)=>b.score-a.score)}
+function badgeClass(s){return s==='BUY NOW'?'buy':s==='BUY AGAIN'?'again':s==='SELL NOW'?'sell':'watch'}
+function visible(){const q=document.querySelector('#search').value.trim().toLowerCase();const sec=document.querySelector('#sector').value;return rows.filter(r=>(filter==='ALL'||r.signal===filter)&&(sec==='ALL'||r.sector===sec)&&(!q||r.symbol.toLowerCase().includes(q)||r.company.toLowerCase().includes(q)))}
+function render(){const data=visible();document.querySelector('#cards').innerHTML=data.map(r=>`<article class="card"><div class="card-top"><div><div class="symbol">${r.symbol}</div><div class="company">${r.company} · ${r.sector}</div></div><span class="badge ${badgeClass(r.signal)}">${r.signal}</span></div><div class="metric-grid"><div class="metric"><span>Price</span><b>$${r.price}</b></div><div class="metric"><span>Entry</span><b>$${r.entry}</b></div><div class="metric"><span>Stop</span><b>$${r.stop}</b></div><div class="metric"><span>Target</span><b>$${r.target}</b></div></div><div class="score-row"><b>MOE Score</b><b>${r.score}/100</b></div><div class="bar"><i style="width:${r.score}%"></i></div><p class="reason">${r.reason} · R/R ${r.rr}</p></article>`).join('')||'<p>No matching symbols.</p>';
+const buys=rows.filter(x=>x.signal==='BUY NOW'||x.signal==='BUY AGAIN').length,sells=rows.filter(x=>x.signal==='SELL NOW').length,avg=Math.round(rows.reduce((a,b)=>a+b.score,0)/rows.length);document.querySelector('#stats').innerHTML=[['Buy opportunities',buys,'BUY NOW / BUY AGAIN'],['Sell signals',sells,'SELL NOW'],['Universe',rows.length,'editable watchlist'],['Average score',avg,'out of 100']].map(x=>`<div class="stat"><span>${x[0]}</span><strong>${x[1]}</strong><small>${x[2]}</small></div>`).join('');
+document.querySelector('#topPicks').innerHTML=rows.slice(0,7).map((r,i)=>`<div class="rank-item"><span class="rank">${i+1}</span><div><b>${r.symbol}</b><small>${r.signal}</small></div><b>${r.score}</b></div>`).join('');document.querySelector('#updated').textContent='Updated '+new Date().toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'});document.querySelector('#universeCount').textContent=rows.length}
+function toast(t){const el=document.querySelector('#toast');el.textContent=t;el.classList.add('show');setTimeout(()=>el.classList.remove('show'),2200)}
+document.querySelector('#tabs').addEventListener('click',e=>{if(!e.target.dataset.filter)return;filter=e.target.dataset.filter;document.querySelectorAll('#tabs button').forEach(b=>b.classList.toggle('active',b===e.target));render()});['search','sector','timeframe'].forEach(id=>document.querySelector('#'+id).addEventListener(id==='search'?'input':'change',render));document.querySelector('#refresh').onclick=()=>{buildRows();render();toast('Demo scanner refreshed')};document.querySelector('#enableAlerts').onclick=async()=>{if(!('Notification'in window)){toast('Notifications are not supported here');return}const p=await Notification.requestPermission();toast(p==='granted'?'Alerts enabled on this device':'Notification permission was not granted')};setInterval(()=>document.querySelector('#clock').textContent=new Date().toLocaleTimeString(),1000);buildRows();render();if('serviceWorker'in navigator)navigator.serviceWorker.register('./sw.js');
