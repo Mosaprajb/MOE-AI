@@ -1,4 +1,4 @@
-# MOE AI Pro v3.1
+# MOE AI Pro v3.2
 
 Mobile-first Next.js PWA foundation for the MOE AI trading signal command center.
 
@@ -7,6 +7,8 @@ Mobile-first Next.js PWA foundation for the MOE AI trading signal command center
 - Responsive dashboard and ranked multi-symbol scanner
 - Persistent watchlist and alert preferences
 - Browser notification permission flow and test alerts
+- Optional Finnhub live-price connection with the API key stored only in the user's browser
+- Automatic WebSocket reconnection and REST quote hydration for the monitored symbols
 - Installable web-app manifest, app icons, and offline shell
 - iPhone safe-area support and Add to Home Screen guide
 - Demo/simulated signals clearly separated from live trading data
@@ -24,8 +26,8 @@ Deploy the repository with Vercel. Next.js is detected automatically. Browser no
 
 ## Next milestone
 
-Connect a protected server-side market-data provider and replace `lib/stocks.js` with validated real-time data. Never expose a market-data API key in client-side code.
+Port and validate the exact MOE Pine Script strategy rules before promoting BUY/SELL labels from demo to live signals. The current Finnhub integration updates prices only; it intentionally does not treat the demo labels as real trading signals.
 
 ## Important
 
-The prices, scores, and signals currently displayed are simulated product-demo data. They are not investment advice and must not be used for live trading.
+When Finnhub is connected, prices are live but scores and BUY/SELL signals remain simulated product-demo data. They are not investment advice and must not be used for live trading.

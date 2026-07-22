@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import { stocks } from '../lib/stocks';
+import { useFinnhubMarket } from '../lib/useFinnhubMarket';
 
 const basePath = process.env.NEXT_PUBLIC_BASE_PATH || '';
 const filters = ['ALL', 'BUY NOW', 'BUY AGAIN', 'WATCH', 'SELL NOW'];
@@ -32,11 +33,21 @@ export default function Home() {
   const [tab, setTab] = useState('home');
   const [filter, setFilter] = useState('ALL');
   const [query, setQuery] = useState('');
-  const [selected, setSelected] = useState(stocks[0]);
+  const [selectedSymbol, setSelectedSymbol] = useState(stocks[0].symbol);
   const [alerts, setAlerts] = useState(false);
   const [watchlist, setWatchlist] = useState([]);
   const [toast, setToast] = useState('');
   const [planOpen, setPlanOpen] = useState(false);
+  const [marketToken, setMarketToken] = useState('');
+  const {
+    marketStocks,
+    status: marketStatus,
+    statusMessage: marketStatusMessage,
+    lastUpdated,
+    hasToken,
+    connect: connectMarket,
+    disconnect: disconnectMarket
+  } = useFinnhubMarket(stocks);
 
   useEffect(() => {
     try {
@@ -58,8 +69,8 @@ export default function Home() {
   }, [toast]);
 
   const ranked = useMemo(
-    () => [...stocks].sort((a, b) => b.score - a.score),
-    []
+    () => [...marketStocks].sort((a, b) => b.score - a.score),
+    [marketStocks]
   );
 
   const list = useMemo(
@@ -70,9 +81,11 @@ export default function Home() {
   );
 
   const best = ranked.find((stock) => stock.signal.startsWith('BUY')) || ranked[0];
-  const buyCount = stocks.filter((stock) => stock.signal.startsWith('BUY')).length;
-  const sellCount = stocks.filter((stock) => stock.signal === 'SELL NOW').length;
+  const selected = marketStocks.find((stock) => stock.symbol === selectedSymbol) || marketStocks[0];
+  const buyCount = marketStocks.filter((stock) => stock.signal.startsWith('BUY')).length;
+  const sellCount = marketStocks.filter((stock) => stock.signal === 'SELL NOW').length;
   const watchedStocks = ranked.filter((stock) => watchlist.includes(stock.symbol));
+  const isLive = marketStatus === 'live';
 
   function persistWatchlist(next) {
     setWatchlist(next);
@@ -88,9 +101,9 @@ export default function Home() {
   }
 
   async function showNotification(stock = best) {
-    const title = `${stock.symbol} · ${stock.signal}`;
+    const title = `${stock.symbol} · ${stock.signal} (demo signal)`;
     const options = {
-      body: `${stock.reason}. Demo signal only.`,
+      body: `${isLive ? `Live price $${stock.price.toFixed(2)}` : 'Simulated price'}. ${stock.reason}. Signal logic is still in validation.`,
       icon: `${basePath}/icon-192.svg`,
       badge: `${basePath}/icon-192.svg`,
       tag: `moe-${stock.symbol}`
@@ -134,7 +147,7 @@ export default function Home() {
   }
 
   function selectStock(stock) {
-    setSelected(stock);
+    setSelectedSymbol(stock.symbol);
     setPlanOpen(false);
   }
 
@@ -142,6 +155,32 @@ export default function Home() {
     selectStock(stock);
     setTab('scanner');
     window.scrollTo({ top: 0, behavior: 'smooth' });
+  }
+
+  async function saveMarketKey() {
+    if (!marketToken.trim()) {
+      setToast(hasToken ? 'A Finnhub key is already saved on this device' : 'Paste your Finnhub API key first');
+      return;
+    }
+
+    await connectMarket(marketToken);
+    setMarketToken('');
+    setToast('Finnhub key saved on this device. Connecting…');
+  }
+
+  function removeMarketKey() {
+    disconnectMarket(true);
+    setMarketToken('');
+    setToast('Finnhub key removed from this device');
+  }
+
+  function formatUpdateTime(timestamp) {
+    if (!timestamp) return '';
+    return new Intl.DateTimeFormat('en-US', {
+      hour: 'numeric',
+      minute: '2-digit',
+      second: '2-digit'
+    }).format(timestamp);
   }
 
   return (
@@ -156,9 +195,11 @@ export default function Home() {
         </button>
       </header>
 
-      <div className="noticeBar">
-        <span>DEMO MODE</span>
-        Simulated market data · Live provider not connected
+      <div className={`noticeBar ${isLive ? 'live' : ''}`}>
+        <span>{isLive ? 'LIVE PRICES' : marketStatus === 'connecting' || marketStatus === 'reconnecting' ? 'CONNECTING' : 'DEMO MODE'}</span>
+        {isLive
+          ? `Finnhub connected${lastUpdated ? ` · Updated ${formatUpdateTime(lastUpdated)}` : ''} · MOE signals in validation`
+          : marketStatusMessage}
       </div>
 
       {tab === 'home' && (
@@ -183,7 +224,7 @@ export default function Home() {
             <button className="card stat" onClick={() => { setFilter('BUY NOW'); setTab('scanner'); }}><small>Buy opportunities</small><b>{buyCount}</b></button>
             <button className="card stat" onClick={() => { setFilter('SELL NOW'); setTab('scanner'); }}><small>Sell signals</small><b>{sellCount}</b></button>
             <button className="card stat" onClick={() => setTab('alerts')}><small>Watchlist</small><b>{watchlist.length}</b></button>
-            <div className="card stat"><small>Engine status</small><b className="demoText">DEMO</b></div>
+            <div className="card stat"><small>Price feed</small><b className={isLive ? 'liveText' : 'demoText'}>{isLive ? 'LIVE' : 'DEMO'}</b></div>
           </section>
 
           <section className="quickList card">
@@ -208,7 +249,7 @@ export default function Home() {
           <div className="scanner card">
             <div className="sectionHead">
               <div><p className="eyebrow">RANKED UNIVERSE</p><h2>Scanner</h2></div>
-              <span className="demo">SIMULATED</span>
+              <span className={`demo ${isLive ? 'liveBadge' : ''}`}>{isLive ? 'LIVE PRICES' : 'SIMULATED'}</span>
             </div>
             <div className="filterRow">
               {filters.map((item) => (
@@ -244,7 +285,7 @@ export default function Home() {
               <div><small>Entry</small><b>{selected.entry ? `$${selected.entry.toFixed(2)}` : '—'}</b></div>
               <div><small>Stop</small><b>{selected.stop ? `$${selected.stop.toFixed(2)}` : '—'}</b></div>
               <div><small>Target</small><b>{selected.target ? `$${selected.target.toFixed(2)}` : '—'}</b></div>
-              <div><small>Status</small><b>Tracking</b></div>
+              <div><small>Price source</small><b>{selected.priceSource === 'LIVE' ? 'Finnhub Live' : 'Demo'}</b></div>
             </div>
             <div className="analysis"><small>WHY THIS SIGNAL?</small><p>{selected.reason}</p></div>
             <button className="primary" onClick={() => setPlanOpen(!planOpen)}>{planOpen ? 'Close trade plan' : 'Open trade plan'}</button>
@@ -300,6 +341,35 @@ export default function Home() {
 
       {tab === 'settings' && (
         <section className="singleColumn">
+          <div className="card settingsCard marketConnectCard">
+            <div className="sectionHead">
+              <div><p className="eyebrow">LIVE MARKET CONNECTION</p><h2>Finnhub</h2></div>
+              <span className={`connectionState ${marketStatus}`}>{isLive ? 'LIVE' : marketStatus.toUpperCase()}</span>
+            </div>
+            <p className="subtitle">Your API key is stored only on this device. It is never added to GitHub.</p>
+            <label className="apiKeyLabel" htmlFor="finnhub-key">Finnhub API key</label>
+            <input
+              id="finnhub-key"
+              className="search apiKeyInput"
+              type="password"
+              value={marketToken}
+              onChange={(event) => setMarketToken(event.target.value)}
+              placeholder={hasToken ? 'Key saved on this device' : 'Paste your key here'}
+              autoComplete="off"
+              autoCapitalize="none"
+              spellCheck="false"
+            />
+            <div className="connectionActions">
+              <button className="primary compact" onClick={saveMarketKey}>{hasToken ? 'Update & connect' : 'Save & connect'}</button>
+              {hasToken && <button className="secondary compact dangerButton" onClick={removeMarketKey}>Remove key</button>}
+            </div>
+            <div className="connectionHelp">
+              <span className={`feedDot ${isLive ? 'on' : ''}`} />
+              <span>{marketStatusMessage}</span>
+              <a href="https://finnhub.io/register" target="_blank" rel="noreferrer">Create free key ↗</a>
+            </div>
+            <div className="riskNotice compactNotice"><b>Live prices, demo signals</b><p>The Finnhub connection updates prices immediately. BUY/SELL labels stay in demo mode until the exact MOE indicator rules are ported and validated.</p></div>
+          </div>
           <div className="card settingsCard">
             <p className="eyebrow">IPHONE INSTALLATION</p>
             <h2>Add MOE AI to Home Screen</h2>
@@ -312,10 +382,11 @@ export default function Home() {
           </div>
           <div className="card settingsCard">
             <p className="eyebrow">SYSTEM</p>
-            <h2>MOE AI Pro v3.1</h2>
-            <div className="settingRow"><div><b>Market data</b><small>Static demonstration dataset</small></div><span className="pill amber">DEMO</span></div>
+            <h2>MOE AI Pro v3.2</h2>
+            <div className="settingRow"><div><b>Market prices</b><small>{isLive ? 'Finnhub live stream connected' : 'Static demonstration dataset'}</small></div><span className={`pill ${isLive ? 'green' : 'amber'}`}>{isLive ? 'LIVE' : 'DEMO'}</span></div>
+            <div className="settingRow"><div><b>MOE signals</b><small>Strategy rules awaiting exact port and validation</small></div><span className="pill amber">DEMO</span></div>
             <div className="settingRow"><div><b>App mode</b><small>Installable progressive web app</small></div><span className="pill green">PWA</span></div>
-            <div className="riskNotice"><b>Trading notice</b><p>Displayed prices and signals are simulated. Do not use them for real trades until a protected live-data service is connected and validated.</p></div>
+            <div className="riskNotice"><b>Trading notice</b><p>Prices can update live through Finnhub, but MOE scores and BUY/SELL signals remain simulated until the exact strategy is ported and validated.</p></div>
           </div>
         </section>
       )}

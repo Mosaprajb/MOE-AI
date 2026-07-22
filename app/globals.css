@@ -139,6 +139,13 @@ main {
   letter-spacing: .08em;
 }
 
+.noticeBar.live {
+  border-color: rgba(46, 230, 170, .32);
+  background: rgba(46, 230, 170, .08);
+}
+
+.noticeBar.live span { color: var(--green); }
+
 .card {
   border: 1px solid var(--line);
   border-radius: 24px;
@@ -244,6 +251,7 @@ main {
 button.stat:hover { border-color: var(--cyan); }
 .stat b { display: block; margin-top: 6px; font-size: 30px; }
 .demoText { color: var(--yellow); font-size: 22px !important; }
+.liveText { color: var(--green); font-size: 22px !important; }
 
 .quickList,
 .settingsCard,
@@ -306,6 +314,12 @@ button.stat:hover { border-color: var(--cyan); }
 .demo {
   border: 1px solid rgba(255, 209, 102, .3);
   color: var(--yellow);
+}
+
+.demo.liveBadge {
+  border-color: rgba(46, 230, 170, .34);
+  background: rgba(46, 230, 170, .1);
+  color: var(--green);
 }
 
 .filterRow {
@@ -489,6 +503,77 @@ button.stat:hover { border-color: var(--cyan); }
 .riskNotice b { color: var(--yellow); }
 .riskNotice p { color: var(--muted); }
 
+.marketConnectCard { overflow: hidden; }
+
+.connectionState {
+  padding: 7px 10px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: #112b3f;
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 900;
+  letter-spacing: .08em;
+}
+
+.connectionState.live {
+  border-color: rgba(46, 230, 170, .35);
+  background: rgba(46, 230, 170, .12);
+  color: var(--green);
+}
+
+.connectionState.connecting,
+.connectionState.reconnecting { color: var(--cyan); }
+.connectionState.error { color: var(--red); }
+
+.apiKeyLabel {
+  display: block;
+  margin: 20px 0 7px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.apiKeyInput {
+  margin-bottom: 10px;
+  letter-spacing: .08em;
+}
+
+.connectionActions { display: flex; gap: 9px; }
+.connectionActions .primary { flex: 1; }
+.dangerButton { color: var(--red); }
+
+.connectionHelp {
+  margin-top: 14px;
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: center;
+  gap: 8px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.connectionHelp a {
+  color: var(--cyan);
+  font-weight: 800;
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.feedDot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #526a7c;
+}
+
+.feedDot.on {
+  background: var(--green);
+  box-shadow: 0 0 0 4px rgba(46, 230, 170, .1);
+}
+
+.compactNotice { margin-top: 18px; }
+
 .bottomNav {
   position: fixed;
   z-index: 10;
@@ -571,6 +656,10 @@ button.stat:hover { border-color: var(--cyan); }
   .quickRow .badge { padding: 5px 6px; font-size: 8px; }
   .heroActions { align-items: stretch; flex-direction: column; }
   .heroActions .compact { width: 100%; }
+  .connectionActions { align-items: stretch; flex-direction: column; }
+  .connectionActions .compact { width: 100%; }
+  .connectionHelp { grid-template-columns: auto 1fr; }
+  .connectionHelp a { grid-column: 2; }
 }
 
 @media (prefers-reduced-motion: reduce) {
