@@ -1,4 +1,4 @@
-const CACHE_NAME = 'moerand-shell-v6';
+const CACHE_NAME = 'moerand-shell-v7';
 const scopePath = new URL(self.registration.scope).pathname;
 const appPath = scopePath.endsWith('/') ? scopePath : `${scopePath}/`;
 const SHELL = [

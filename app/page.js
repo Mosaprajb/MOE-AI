@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { MOE_VERSION } from '../lib/moeEngine';
 import { createCustomStock, stocks } from '../lib/stocks';
-import { useFinnhubMarket } from '../lib/useFinnhubMarket';
+import { ALERT_TIMEFRAMES, timeframeLabel, useFinnhubMarket } from '../lib/useFinnhubMarket';
 
 const basePath = process.env.NEXT_PUBLIC_BASE_PATH || '';
 const symbolsStorageKey = 'moerand-symbols-v1';
@@ -57,6 +57,8 @@ export default function Home() {
     engineStatus,
     engineMessage,
     candleProvider,
+    selectedTimeframe,
+    setAlertTimeframe,
     signalHistory,
     newSignalBatch,
     clearSignalHistory,
@@ -173,11 +175,12 @@ export default function Home() {
   async function showNotification(stock = best, test = false) {
     const score = formatScore(stock.score);
     const signal = stock.signal || stock.type;
-    const title = test ? `MOERAND TEST · ${stock.symbol}` : `${stock.symbol} · ${signal}`;
+    const signalTimeframe = stock.timeframe || timeframeLabel(selectedTimeframe);
+    const title = test ? `MOERAND TEST · ${stock.symbol}` : `${stock.symbol} · ${signal} · ${signalTimeframe}`;
     const options = {
       body: test
         ? `Notifications are ready. Live price $${stock.price.toFixed(2)}.`
-        : `MOE v${MOE_VERSION} · Score ${score}/100 · $${stock.price.toFixed(2)} · ${stock.reason}`,
+        : `MOE v${MOE_VERSION} · ${signalTimeframe} close · Score ${score}/100 · $${stock.price.toFixed(2)} · ${stock.reason}`,
       icon: `${basePath}/icon-192.svg`,
       badge: `${basePath}/icon-192.svg`,
       tag: test ? 'moe-test' : `moe-${stock.symbol}-${stock.barTime || Date.now()}`
@@ -274,6 +277,13 @@ export default function Home() {
     setAlpacaKey('');
     setAlpacaSecret('');
     setToast('Alpaca credentials removed');
+  }
+
+  async function changeAlertTimeframe(minutes) {
+    if (minutes === selectedTimeframe) return;
+    setToast(`Switching alerts to ${timeframeLabel(minutes)} candle closes…`);
+    await setAlertTimeframe(minutes);
+    setToast(`Alerts now use closed ${timeframeLabel(minutes)} candles`);
   }
 
   function formatUpdateTime(timestamp) {
@@ -407,10 +417,25 @@ export default function Home() {
           <div className="card settingsCard">
             <p className="eyebrow">MULTI-SYMBOL MONITORING</p>
             <h2>Alerts</h2>
-            <p className="subtitle">MOE monitors every symbol in the scanner and records BUY NOW, BUY AGAIN, and SELL NOW pulses. Repeated signals remain separate in the history.</p>
+            <p className="subtitle">MOE monitors every symbol and records BUY NOW, BUY AGAIN, and SELL NOW only when a selected timeframe candle closes.</p>
             <div className="settingRow">
               <div><b>Device notifications</b><small>{alerts ? 'Permission enabled on this device' : 'Tap to request permission'}</small></div>
               <button className={`switch ${alerts ? 'on' : ''}`} onClick={toggleAlerts}><span /></button>
+            </div>
+            <div className="timeframeSetting">
+              <div><b>Alert timeframe</b><small>Signals and notifications fire only after the selected candle closes.</small></div>
+              <div className="timeframePicker" role="group" aria-label="Alert timeframe">
+                {ALERT_TIMEFRAMES.map((minutes) => (
+                  <button
+                    key={minutes}
+                    className={selectedTimeframe === minutes ? 'active' : ''}
+                    onClick={() => changeAlertTimeframe(minutes)}
+                    aria-pressed={selectedTimeframe === minutes}
+                  >
+                    {timeframeLabel(minutes)}
+                  </button>
+                ))}
+              </div>
             </div>
             <div className="settingRow">
               <div><b>Entry thresholds</b><small>BUY NOW 58+ · BUY AGAIN 62+</small></div>
@@ -434,7 +459,7 @@ export default function Home() {
                 if (stock) openScanner(stock);
               }}>
                 <span className="signalEventTime">{formatUpdateTime(event.timestamp)}</span>
-                <span className="symbol"><b>{event.symbol}</b><small>${event.price.toFixed(2)} · Score {event.score}</small></span>
+                <span className="symbol"><b>{event.symbol}</b><small>${event.price.toFixed(2)} · {event.timeframe || timeframeLabel(selectedTimeframe)} · Score {event.score}</small></span>
                 <Badge signal={event.type} />
                 <span className="signalReason">{event.reason}</span>
               </button>
@@ -580,9 +605,10 @@ export default function Home() {
           </div>
           <div className="card settingsCard">
             <p className="eyebrow">SYSTEM</p>
-            <h2>MOERAND v3.5</h2>
+            <h2>MOERAND v3.6</h2>
             <div className="settingRow"><div><b>Market prices</b><small>{isLive ? 'Finnhub live stream connected' : 'Static demonstration dataset'}</small></div><span className={`pill ${isLive ? 'green' : 'amber'}`}>{isLive ? 'LIVE' : 'DEMO'}</span></div>
-            <div className="settingRow"><div><b>Candle history</b><small>{isEngineLive ? `${candleProvider} minute bars` : 'Alpaca keys required for this Finnhub plan'}</small></div><span className={`pill ${isEngineLive ? 'green' : 'amber'}`}>{isEngineLive ? 'READY' : 'NEEDED'}</span></div>
+            <div className="settingRow"><div><b>Candle history</b><small>{isEngineLive ? `${candleProvider} · ${timeframeLabel(selectedTimeframe)} bars` : 'Alpaca keys required for this Finnhub plan'}</small></div><span className={`pill ${isEngineLive ? 'green' : 'amber'}`}>{isEngineLive ? 'READY' : 'NEEDED'}</span></div>
+            <div className="settingRow"><div><b>Alert timeframe</b><small>Signals are evaluated at candle close</small></div><span className="pill green">{timeframeLabel(selectedTimeframe)}</span></div>
             <div className="settingRow"><div><b>MOE signals</b><small>Exact v{MOE_VERSION} scoring, entries, repeated adds, and smart exits</small></div><span className={`pill ${isEngineLive ? 'green' : 'amber'}`}>{isEngineLive ? 'LIVE' : engineStatus.toUpperCase()}</span></div>
             <div className="settingRow"><div><b>App mode</b><small>Installable progressive web app</small></div><span className="pill green">PWA</span></div>
             <div className="riskNotice"><b>Trading notice</b><p>Signals are calculated from the configured minute-candle source using the supplied MOE v{MOE_VERSION} rules. Provider data, session settings, and browser availability can differ from TradingView. Confirm every order independently.</p></div>

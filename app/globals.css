@@ -463,6 +463,37 @@ button.stat:hover { border-color: var(--cyan); }
 .settingRow:last-child { border-bottom: 0; }
 .settingRow b { display: block; }
 
+.timeframeSetting {
+  padding: 16px 0 18px;
+  border-bottom: 1px solid var(--line);
+}
+
+.timeframeSetting b { display: block; }
+.timeframeSetting small { display: block; margin-top: 4px; color: var(--muted); line-height: 1.45; }
+
+.timeframePicker {
+  margin-top: 13px;
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 7px;
+}
+
+.timeframePicker button {
+  min-height: 42px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: #10283d;
+  color: var(--muted);
+  font-weight: 900;
+}
+
+.timeframePicker button.active {
+  border-color: var(--green);
+  background: rgba(46, 230, 170, .16);
+  color: var(--green);
+  box-shadow: 0 0 0 2px rgba(46, 230, 170, .08);
+}
+
 .switch {
   width: 54px;
   height: 31px;

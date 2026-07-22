@@ -1,4 +1,4 @@
-# MOERAND v3.5
+# MOERAND v3.6
 
 Mobile-first Next.js PWA for the MOERAND trading signal command center.
 
@@ -9,11 +9,13 @@ Mobile-first Next.js PWA for the MOERAND trading signal command center.
 - On-device stock manager for adding, removing, and persisting ticker symbols
 - Persistent watchlist and alert preferences
 - Browser notification permission flow and test alerts
+- Persistent 5m, 15m, 30m, and 1h alert-timeframe selector
+- Signal evaluation and notification delivery only after the selected candle closes
 - Optional Finnhub live-price connection with the API key stored only in the user's browser
-- Finnhub one-minute candle hydration plus real-time trade aggregation for every monitored symbol
+- Finnhub candle hydration plus real-time trade aggregation for every monitored symbol
 - Alpaca IEX historical-bar fallback when a Finnhub key does not include stock candles
 - Batched candle requests and incremental history loading for newly added symbols
-- MOE Pine Script v6.3.1 scoring with 1-minute triggers and preferred 15-minute context
+- MOE Pine Script v6.3.1 scoring on the selected timeframe with higher-timeframe context
 - Stateful BUY NOW, repeated BUY AGAIN, HOLD, smart rising stop, and SELL NOW handling
 - Preserved multi-symbol signal history and distinct notifications for repeated signals
 - Automatic WebSocket reconnection and REST quote hydration for the monitored symbols
@@ -40,4 +42,4 @@ Immediate scanning and notifications require the PWA to remain open because this
 
 ## Important
 
-Signals are computed from Finnhub data and can differ from TradingView because provider trades, candle construction, session settings, and browser availability can differ. This software is not investment advice; confirm every order independently.
+Signals are computed from the configured Finnhub/Alpaca market data and can differ from TradingView because provider trades, candle construction, session settings, and browser availability can differ. This software is not investment advice; confirm every order independently.
