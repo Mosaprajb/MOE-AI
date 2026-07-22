@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="ar" dir="rtl">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
+  <meta name="theme-color" content="#08111f" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="MOE AI" />
+  <title>MOE AI — Signal Hub</title>
+  <link rel="manifest" href="manifest.webmanifest" />
+  <link rel="icon" href="assets/icon.svg" type="image/svg+xml" />
+  <link rel="apple-touch-icon" href="assets/icon-180.svg" />
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div class="app-shell">
+    <header class="topbar">
+      <div class="brand">
+        <div class="brand-mark">M</div>
+        <div><strong>MOE AI</strong><span>Signal Hub</span></div>
+      </div>
+      <button id="notifyBtn" class="btn primary">تفعيل التنبيهات</button>
+    </header>
+
+    <main>
+      <section class="hero panel">
+        <div>
+          <span class="eyebrow">مركز قيادة التداول</span>
+          <h1>أفضل الفرص في مكان واحد</h1>
+          <p>نسخة تجريبية للواجهة. الأسعار والإشارات أدناه غير مرتبطة بالسوق الحقيقي بعد.</p>
+        </div>
+        <div class="market-status"><span class="dot"></span><div><b>محرك العرض يعمل</b><small id="clock">--:--:--</small></div></div>
+      </section>
+
+      <section class="stats-grid">
+        <article class="stat panel"><span>فرص شراء</span><strong id="buyCount">0</strong><small>BUY NOW / BUY AGAIN</small></article>
+        <article class="stat panel"><span>فرص خروج</span><strong id="sellCount">0</strong><small>SELL NOW</small></article>
+        <article class="stat panel"><span>متوسط القوة</span><strong id="avgScore">0</strong><small>من 100</small></article>
+        <article class="stat panel"><span>الأسهم المراقبة</span><strong id="watchCount">0</strong><small>قابلة للتعديل</small></article>
+      </section>
+
+      <section class="toolbar panel">
+        <div class="tabs" id="filters">
+          <button class="tab active" data-filter="ALL">الكل</button>
+          <button class="tab" data-filter="BUY">شراء</button>
+          <button class="tab" data-filter="WATCH">مراقبة</button>
+          <button class="tab" data-filter="SELL">بيع</button>
+        </div>
+        <div class="controls">
+          <select id="timeframe" aria-label="الإطار الزمني">
+            <option>5m</option><option selected>15m</option><option>30m</option><option>1h</option>
+          </select>
+          <button id="refreshBtn" class="btn ghost">تحديث</button>
+        </div>
+      </section>
+
+      <section class="signals panel">
+        <div class="section-title"><div><span class="eyebrow">Live Board</span><h2>الإشارات الحالية</h2></div><small id="lastUpdated">آخر تحديث: الآن</small></div>
+        <div id="signalList" class="signal-list"></div>
+      </section>
+
+      <section class="grid-two">
+        <article class="panel trade-card">
+          <div class="section-title"><div><span class="eyebrow">Trade Manager</span><h2>إدارة الصفقة</h2></div><span class="badge muted">تجريبي</span></div>
+          <div id="tradeEmpty" class="empty">اضغط على أي إشارة لعرض تفاصيل الدخول والستوب والهدف.</div>
+          <div id="tradeDetails" class="trade-details hidden"></div>
+        </article>
+        <article class="panel settings-card">
+          <div class="section-title"><div><span class="eyebrow">Preferences</span><h2>إعدادات التنبيه</h2></div></div>
+          <label class="switch-row"><span><b>ANY SIGNAL</b><small>تنبيه واحد لأي إشارة جديدة</small></span><input type="checkbox" checked><i></i></label>
+          <label class="switch-row"><span><b>قوة 85+</b><small>إخفاء الإشارات الضعيفة</small></span><input id="strongOnly" type="checkbox"><i></i></label>
+          <label class="switch-row"><span><b>إشارات الشراء</b><small>BUY NOW و BUY AGAIN</small></span><input type="checkbox" checked><i></i></label>
+          <label class="switch-row"><span><b>إشارات الخروج</b><small>SELL NOW</small></span><input type="checkbox" checked><i></i></label>
+        </article>
+      </section>
+    </main>
+
+    <nav class="bottom-nav">
+      <button class="active">الرئيسية</button><button>Scanner</button><button>التنبيهات</button><button>الإعدادات</button>
+    </nav>
+  </div>
+  <script src="app.js"></script>
+</body>
+</html>
