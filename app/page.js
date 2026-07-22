@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { stocks } from '../lib/stocks';
 
+const basePath = process.env.NEXT_PUBLIC_BASE_PATH || '';
 const filters = ['ALL', 'BUY NOW', 'BUY AGAIN', 'WATCH', 'SELL NOW'];
 const tabs = [
   { id: 'home', label: 'Home', icon: '⌂' },
@@ -46,7 +47,7 @@ export default function Home() {
     }
 
     if ('serviceWorker' in navigator) {
-      navigator.serviceWorker.register('/sw.js').catch(() => undefined);
+      navigator.serviceWorker.register(`${basePath}/sw.js`).catch(() => undefined);
     }
   }, []);
 
@@ -90,8 +91,8 @@ export default function Home() {
     const title = `${stock.symbol} · ${stock.signal}`;
     const options = {
       body: `${stock.reason}. Demo signal only.`,
-      icon: '/icon-192.svg',
-      badge: '/icon-192.svg',
+      icon: `${basePath}/icon-192.svg`,
+      badge: `${basePath}/icon-192.svg`,
       tag: `moe-${stock.symbol}`
     };
 

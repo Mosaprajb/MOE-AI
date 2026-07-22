@@ -1,5 +1,7 @@
 import './globals.css';
 
+const basePath = process.env.NEXT_PUBLIC_BASE_PATH || '';
+
 export const metadata = {
   applicationName: 'MOE AI Pro',
   title: {
@@ -7,10 +9,10 @@ export const metadata = {
     template: '%s · MOE AI Pro'
   },
   description: 'Mobile signal command center for ranked trading opportunities',
-  manifest: '/manifest.webmanifest',
+  manifest: `${basePath}/manifest.webmanifest`,
   icons: {
-    icon: '/icon-192.svg',
-    shortcut: '/icon-192.svg'
+    icon: `${basePath}/icon-192.svg`,
+    shortcut: `${basePath}/icon-192.svg`
   },
   appleWebApp: {
     capable: true,
