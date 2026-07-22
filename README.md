@@ -38,7 +38,19 @@ Deploy the repository with Vercel. Next.js is detected automatically. Browser no
 
 The on-device engine ports the supplied `Moe Day Trading Indicator v6.3.1 Master Alert` rules. It calculates EMA, ATR, RSI, MACD, VWAP, relative volume, breakout/reclaim triggers, preferred-timeframe context, position sizing, repeated entries, the smart rising stop, and weakness exits.
 
-Immediate scanning and notifications require the PWA to remain open because this static GitHub Pages build has no always-on server or push worker. A server-side scanner is the next milestone for alerts while the app is closed.
+Foreground scanning runs inside the PWA. The Cloudflare Worker below provides the always-on scanner required for notifications while the app is closed.
+
+## Background alert worker
+
+`worker/src/index.js` contains the Cloudflare Worker used for closed-app scanning and Web Push. It uses a SQLite-backed Durable Object to persist device subscriptions, per-symbol MOE state, and signal deduplication. The included Cron Trigger runs once per minute and evaluates only the timeframes whose candles have just closed.
+
+Cloudflare must configure these encrypted secrets before background scanning is activated:
+
+- `ALPACA_KEY_ID`
+- `ALPACA_SECRET_KEY`
+- `VAPID_PRIVATE_JWK`
+
+The public VAPID key, application origin, application URL, Durable Object binding, and one-minute Cron Trigger are declared in `wrangler.jsonc`.
 
 ## Important
 

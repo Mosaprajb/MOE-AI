@@ -1,0 +1,32 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "moerand-alerts",
+  "main": "worker/src/index.js",
+  "compatibility_date": "2026-07-22",
+  "observability": {
+    "enabled": true
+  },
+  "triggers": {
+    "crons": ["* * * * *"]
+  },
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "ALERT_COORDINATOR",
+        "class_name": "AlertCoordinator"
+      }
+    ]
+  },
+  "exports": {
+    "AlertCoordinator": {
+      "type": "durable-object",
+      "storage": "sqlite"
+    }
+  },
+  "vars": {
+    "APP_ORIGIN": "https://mosaprajb.github.io",
+    "APP_URL": "https://mosaprajb.github.io/MOE-AI/",
+    "VAPID_PUBLIC_KEY": "BP7XvNvwNZqLog4ldUcwEmMaXieeKD37sBddfWk5BbsC0mXRl09dS-kw-C__JnSUDGYaTDVKcKYJURIlac9T98c",
+    "VAPID_SUBJECT": "https://mosaprajb.github.io/MOE-AI/"
+  }
+}

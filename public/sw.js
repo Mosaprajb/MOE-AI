@@ -1,4 +1,4 @@
-const CACHE_NAME = 'moerand-shell-v7';
+const CACHE_NAME = 'moerand-shell-v8';
 const scopePath = new URL(self.registration.scope).pathname;
 const appPath = scopePath.endsWith('/') ? scopePath : `${scopePath}/`;
 const SHELL = [
@@ -54,12 +54,35 @@ self.addEventListener('fetch', (event) => {
   }
 });
 
+self.addEventListener('push', (event) => {
+  let payload = {};
+  try {
+    payload = event.data ? event.data.json() : {};
+  } catch {
+    payload = { title: 'MOERAND', body: event.data ? event.data.text() : 'New trading signal' };
+  }
+
+  const title = payload.title || 'MOERAND';
+  const options = {
+    body: payload.body || 'New trading signal',
+    icon: payload.icon || `${appPath}icon-192.svg`,
+    badge: payload.badge || `${appPath}icon-192.svg`,
+    tag: payload.tag || 'moerand-signal',
+    renotify: payload.renotify !== false,
+    timestamp: payload.timestamp || Date.now(),
+    data: payload.data || { url: appPath }
+  };
+  event.waitUntil(self.registration.showNotification(title, options));
+});
+
 self.addEventListener('notificationclick', (event) => {
   event.notification.close();
+  const target = event.notification.data?.url || appPath;
   event.waitUntil(
     clients.matchAll({ type: 'window', includeUncontrolled: true }).then((windows) => {
-      const existing = windows.find((client) => client.url.startsWith(self.location.origin));
-      return existing ? existing.focus() : clients.openWindow(appPath);
+      const existing = windows.find((client) => client.url.startsWith(target));
+      if (existing) return existing.focus();
+      return clients.openWindow(target);
     })
   );
 });
