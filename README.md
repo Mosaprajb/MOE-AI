@@ -26,3 +26,10 @@ This version uses simulated values and signals. It is not connected to live mark
 
 ## iPhone refresh
 Open the installed app. If the old design remains, close it fully and reopen it. If necessary, delete the home-screen icon, open the GitHub Pages URL in Safari, then use Share → Add to Home Screen again.
+
+
+## v2.1 Header Fix
+- iPhone safe-area support
+- Compact two-row mobile header
+- Smaller logo and alert button
+- Prevents overlap with Dynamic Island/status bar
