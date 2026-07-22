@@ -2,10 +2,11 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { MOE_VERSION } from '../lib/moeEngine';
-import { stocks } from '../lib/stocks';
+import { createCustomStock, stocks } from '../lib/stocks';
 import { useFinnhubMarket } from '../lib/useFinnhubMarket';
 
 const basePath = process.env.NEXT_PUBLIC_BASE_PATH || '';
+const symbolsStorageKey = 'moerand-symbols-v1';
 const filters = ['ALL', 'BUY NOW', 'BUY AGAIN', 'HOLD / ADD READY', 'WATCH NOW', 'SELL NOW'];
 const tabs = [
   { id: 'home', label: 'Home', icon: '⌂' },
@@ -35,6 +36,7 @@ function TradeMetrics({ stock }) {
 }
 
 export default function Home() {
+  const [trackedStocks, setTrackedStocks] = useState(stocks);
   const [tab, setTab] = useState('home');
   const [filter, setFilter] = useState('ALL');
   const [query, setQuery] = useState('');
@@ -44,6 +46,7 @@ export default function Home() {
   const [toast, setToast] = useState('');
   const [planOpen, setPlanOpen] = useState(false);
   const [marketToken, setMarketToken] = useState('');
+  const [symbolInput, setSymbolInput] = useState('');
   const notifiedEventsRef = useRef(new Set());
   const {
     marketStocks,
@@ -58,12 +61,18 @@ export default function Home() {
     hasToken,
     connect: connectMarket,
     disconnect: disconnectMarket
-  } = useFinnhubMarket(stocks);
+  } = useFinnhubMarket(trackedStocks);
 
   useEffect(() => {
     try {
       setAlerts(localStorage.getItem('moe-alerts') === 'on');
       setWatchlist(JSON.parse(localStorage.getItem('moe-watchlist') || '[]'));
+      const savedSymbols = JSON.parse(localStorage.getItem(symbolsStorageKey) || '[]');
+      if (Array.isArray(savedSymbols) && savedSymbols.length) {
+        const uniqueSymbols = [...new Set(savedSymbols.map((symbol) => String(symbol).toUpperCase()))];
+        setTrackedStocks(uniqueSymbols.map((symbol) => stocks.find((stock) => stock.symbol === symbol) || createCustomStock(symbol)));
+        setSelectedSymbol(uniqueSymbols[0]);
+      }
     } catch {
       setWatchlist([]);
     }
@@ -106,6 +115,47 @@ export default function Home() {
     localStorage.setItem('moe-watchlist', JSON.stringify(next));
   }
 
+  function persistTrackedStocks(next) {
+    setTrackedStocks(next);
+    localStorage.setItem(symbolsStorageKey, JSON.stringify(next.map((stock) => stock.symbol)));
+  }
+
+  function addTrackedStock() {
+    const symbol = symbolInput.trim().toUpperCase();
+    if (!/^[A-Z][A-Z0-9.-]{0,9}$/.test(symbol)) {
+      setToast('Enter a valid US ticker symbol');
+      return;
+    }
+    if (trackedStocks.some((stock) => stock.symbol === symbol)) {
+      setToast(`${symbol} is already in the scanner`);
+      return;
+    }
+
+    const stock = stocks.find((item) => item.symbol === symbol) || createCustomStock(symbol);
+    persistTrackedStocks([...trackedStocks, stock]);
+    setSymbolInput('');
+    setSelectedSymbol(symbol);
+    setToast(`${symbol} added · Finnhub history loading`);
+  }
+
+  function removeTrackedStock(symbol) {
+    if (trackedStocks.length === 1) {
+      setToast('Keep at least one symbol in the scanner');
+      return;
+    }
+    const next = trackedStocks.filter((stock) => stock.symbol !== symbol);
+    persistTrackedStocks(next);
+    if (selectedSymbol === symbol) setSelectedSymbol(next[0].symbol);
+    if (watchlist.includes(symbol)) persistWatchlist(watchlist.filter((item) => item !== symbol));
+    setToast(`${symbol} removed from the scanner`);
+  }
+
+  function restoreDefaultStocks() {
+    persistTrackedStocks(stocks);
+    setSelectedSymbol(stocks[0].symbol);
+    setToast('Default 34-symbol list restored');
+  }
+
   function toggleWatch(symbol) {
     const next = watchlist.includes(symbol)
       ? watchlist.filter((item) => item !== symbol)
@@ -117,7 +167,7 @@ export default function Home() {
   async function showNotification(stock = best, test = false) {
     const score = formatScore(stock.score);
     const signal = stock.signal || stock.type;
-    const title = test ? `MOE TEST · ${stock.symbol}` : `${stock.symbol} · ${signal}`;
+    const title = test ? `MOERAND TEST · ${stock.symbol}` : `${stock.symbol} · ${signal}`;
     const options = {
       body: test
         ? `Notifications are ready. Live price $${stock.price.toFixed(2)}.`
@@ -145,7 +195,7 @@ export default function Home() {
     }
 
     if (!('Notification' in window)) {
-      setToast('Install MOE AI to the Home Screen to enable iPhone alerts');
+      setToast('Install MOERAND to the Home Screen to enable iPhone alerts');
       return;
     }
 
@@ -214,9 +264,9 @@ export default function Home() {
   return (
     <main>
       <header className="topbar">
-        <button className="brand brandButton" onClick={() => setTab('home')} aria-label="MOE AI home">
+        <button className="brand brandButton" onClick={() => setTab('home')} aria-label="MOERAND home">
           <span className="logo">M</span>
-          <span><strong>MOE AI</strong><small>Signal Command Center</small></span>
+          <span><strong>MOERAND</strong><small>Signal Command Center</small></span>
         </button>
         <button className={`alertBtn ${alerts ? 'on' : ''}`} onClick={toggleAlerts}>
           <span className="statusDot" /> {alerts ? 'Alerts On' : 'Enable Alerts'}
@@ -389,6 +439,38 @@ export default function Home() {
 
       {tab === 'settings' && (
         <section className="singleColumn">
+          <div className="card settingsCard symbolManagerCard">
+            <div className="sectionHead">
+              <div><p className="eyebrow">SCANNER UNIVERSE</p><h2>Manage stocks</h2></div>
+              <span className="count">{trackedStocks.length}</span>
+            </div>
+            <p className="subtitle">Add or remove any US ticker. MOERAND reconnects Finnhub and starts the MOE engine for new symbols automatically.</p>
+            <div className="symbolAddRow">
+              <input
+                className="search symbolInput"
+                value={symbolInput}
+                onChange={(event) => setSymbolInput(event.target.value.toUpperCase())}
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter') addTrackedStock();
+                }}
+                placeholder="Ticker, e.g. MSFT"
+                aria-label="Stock ticker"
+                autoCapitalize="characters"
+                spellCheck="false"
+              />
+              <button className="primary compact" onClick={addTrackedStock}>Add stock</button>
+            </div>
+            <div className="managedSymbols">
+              {trackedStocks.map((stock) => (
+                <div className="managedSymbol" key={stock.symbol}>
+                  <span className="symbol"><b>{stock.symbol}</b><small>{stock.company}</small></span>
+                  <button className="removeSymbol" onClick={() => removeTrackedStock(stock.symbol)} aria-label={`Remove ${stock.symbol}`}>Remove</button>
+                </div>
+              ))}
+            </div>
+            <button className="textButton restoreButton" onClick={restoreDefaultStocks}>Restore default 34 stocks</button>
+          </div>
+
           <div className="card settingsCard marketConnectCard">
             <div className="sectionHead">
               <div><p className="eyebrow">LIVE MARKET CONNECTION</p><h2>Finnhub</h2></div>
@@ -420,17 +502,17 @@ export default function Home() {
           </div>
           <div className="card settingsCard">
             <p className="eyebrow">IPHONE INSTALLATION</p>
-            <h2>Add MOE AI to Home Screen</h2>
+            <h2>Add MOERAND to Home Screen</h2>
             <ol className="steps">
               <li><span>1</span><div><b>Open the deployed site in Safari</b><small>Use Safari on your iPhone.</small></div></li>
               <li><span>2</span><div><b>Tap the Share button</b><small>It is the square icon with an upward arrow.</small></div></li>
-              <li><span>3</span><div><b>Choose Add to Home Screen</b><small>Confirm the name MOE AI.</small></div></li>
-              <li><span>4</span><div><b>Open the installed app</b><small>Then enable alerts from inside MOE AI.</small></div></li>
+              <li><span>3</span><div><b>Choose Add to Home Screen</b><small>Confirm the name MOERAND.</small></div></li>
+              <li><span>4</span><div><b>Open the installed app</b><small>Then enable alerts from inside MOERAND.</small></div></li>
             </ol>
           </div>
           <div className="card settingsCard">
             <p className="eyebrow">SYSTEM</p>
-            <h2>MOE AI Pro v3.3</h2>
+            <h2>MOERAND v3.4</h2>
             <div className="settingRow"><div><b>Market prices</b><small>{isLive ? 'Finnhub live stream connected' : 'Static demonstration dataset'}</small></div><span className={`pill ${isLive ? 'green' : 'amber'}`}>{isLive ? 'LIVE' : 'DEMO'}</span></div>
             <div className="settingRow"><div><b>MOE signals</b><small>Exact v{MOE_VERSION} scoring, entries, repeated adds, and smart exits</small></div><span className={`pill ${isEngineLive ? 'green' : 'amber'}`}>{isEngineLive ? 'LIVE' : engineStatus.toUpperCase()}</span></div>
             <div className="settingRow"><div><b>App mode</b><small>Installable progressive web app</small></div><span className="pill green">PWA</span></div>

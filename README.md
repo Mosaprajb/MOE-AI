@@ -1,14 +1,17 @@
-# MOE AI Pro v3.3
+# MOERAND v3.4
 
-Mobile-first Next.js PWA foundation for the MOE AI trading signal command center.
+Mobile-first Next.js PWA for the MOERAND trading signal command center.
 
 ## Included
 
 - Responsive dashboard and ranked multi-symbol scanner
+- Default 34-symbol universe matching the active trading list
+- On-device stock manager for adding, removing, and persisting ticker symbols
 - Persistent watchlist and alert preferences
 - Browser notification permission flow and test alerts
 - Optional Finnhub live-price connection with the API key stored only in the user's browser
 - Finnhub one-minute candle hydration plus real-time trade aggregation for every monitored symbol
+- Batched candle requests and incremental history loading for newly added symbols
 - MOE Pine Script v6.3.1 scoring with 1-minute triggers and preferred 15-minute context
 - Stateful BUY NOW, repeated BUY AGAIN, HOLD, smart rising stop, and SELL NOW handling
 - Preserved multi-symbol signal history and distinct notifications for repeated signals

@@ -3,10 +3,10 @@ import './globals.css';
 const basePath = process.env.NEXT_PUBLIC_BASE_PATH || '';
 
 export const metadata = {
-  applicationName: 'MOE AI Pro',
+  applicationName: 'MOERAND',
   title: {
-    default: 'MOE AI Pro',
-    template: '%s · MOE AI Pro'
+    default: 'MOERAND',
+    template: '%s · MOERAND'
   },
   description: 'Mobile signal command center for ranked trading opportunities',
   manifest: `${basePath}/manifest.webmanifest`,
@@ -16,7 +16,7 @@ export const metadata = {
   },
   appleWebApp: {
     capable: true,
-    title: 'MOE AI',
+    title: 'MOERAND',
     statusBarStyle: 'black-translucent'
   },
   formatDetection: {

@@ -532,6 +532,53 @@ button.stat:hover { border-color: var(--cyan); }
 
 .marketConnectCard { overflow: hidden; }
 
+.symbolManagerCard { overflow: hidden; }
+
+.symbolAddRow {
+  margin-top: 18px;
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 9px;
+}
+
+.symbolAddRow .search { margin: 0; }
+.symbolAddRow .primary { min-width: 120px; }
+
+.managedSymbols {
+  max-height: 330px;
+  margin-top: 14px;
+  padding-right: 4px;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 7px;
+  overflow: auto;
+  scrollbar-color: #29485f transparent;
+}
+
+.managedSymbol {
+  min-width: 0;
+  padding: 10px 11px;
+  border: 1px solid var(--line);
+  border-radius: 13px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  background: #081a29;
+}
+
+.removeSymbol {
+  padding: 6px 8px;
+  border: 0;
+  border-radius: 9px;
+  background: rgba(255, 102, 122, .11);
+  color: var(--red);
+  font-size: 10px;
+  font-weight: 850;
+}
+
+.restoreButton { margin-top: 10px; }
+
 .connectionState {
   padding: 7px 10px;
   border: 1px solid var(--line);
@@ -690,6 +737,9 @@ button.stat:hover { border-color: var(--cyan); }
   .connectionActions .compact { width: 100%; }
   .connectionHelp { grid-template-columns: auto 1fr; }
   .connectionHelp a { grid-column: 2; }
+  .symbolAddRow { grid-template-columns: 1fr; }
+  .symbolAddRow .primary { width: 100%; }
+  .managedSymbols { grid-template-columns: 1fr; }
 }
 
 @media (prefers-reduced-motion: reduce) {

@@ -1,8 +1,8 @@
 {
   "id": "/",
-  "name": "MOE AI Pro",
-  "short_name": "MOE AI",
-  "description": "Mobile signal command center for ranked trading opportunities",
+  "name": "MOERAND",
+  "short_name": "MOERAND",
+  "description": "MOE-powered live market signal command center",
   "start_url": "./",
   "scope": "./",
   "display": "standalone",

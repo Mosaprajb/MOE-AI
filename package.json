@@ -1,6 +1,6 @@
 {
-  "name": "moe-ai-pro",
-  "version": "3.3.0",
+  "name": "moerand",
+  "version": "3.4.0",
   "private": true,
   "scripts": {
     "dev": "next dev",
