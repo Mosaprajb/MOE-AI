@@ -1,4 +1,4 @@
-const CACHE_NAME = 'moerand-shell-v8';
+const CACHE_NAME = 'moerand-shell-v9';
 const scopePath = new URL(self.registration.scope).pathname;
 const appPath = scopePath.endsWith('/') ? scopePath : `${scopePath}/`;
 const SHELL = [
@@ -78,11 +78,12 @@ self.addEventListener('push', (event) => {
 self.addEventListener('notificationclick', (event) => {
   event.notification.close();
   const target = event.notification.data?.url || appPath;
+  const targetUrl = new URL(target, self.location.origin).href;
   event.waitUntil(
     clients.matchAll({ type: 'window', includeUncontrolled: true }).then((windows) => {
-      const existing = windows.find((client) => client.url.startsWith(target));
+      const existing = windows.find((client) => client.url.startsWith(targetUrl));
       if (existing) return existing.focus();
-      return clients.openWindow(target);
+      return clients.openWindow(targetUrl);
     })
   );
 });

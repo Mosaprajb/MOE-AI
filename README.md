@@ -1,4 +1,4 @@
-# MOERAND v3.6
+# MOERAND v3.7
 
 Mobile-first Next.js PWA for the MOERAND trading signal command center.
 
@@ -9,6 +9,8 @@ Mobile-first Next.js PWA for the MOERAND trading signal command center.
 - On-device stock manager for adding, removing, and persisting ticker symbols
 - Persistent watchlist and alert preferences
 - Browser notification permission flow and test alerts
+- Cloud Web Push subscriptions for closed-app and Apple Watch notifications
+- Automatic cloud synchronization of the selected timeframe and managed symbol list
 - Persistent 5m, 15m, 30m, and 1h alert-timeframe selector
 - Signal evaluation and notification delivery only after the selected candle closes
 - Optional Finnhub live-price connection with the API key stored only in the user's browser

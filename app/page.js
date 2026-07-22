@@ -4,8 +4,16 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { MOE_VERSION } from '../lib/moeEngine';
 import { createCustomStock, stocks } from '../lib/stocks';
 import { ALERT_TIMEFRAMES, timeframeLabel, useFinnhubMarket } from '../lib/useFinnhubMarket';
+import {
+  getBackgroundSubscription,
+  sendBackgroundAlertTest,
+  subscribeBackgroundAlerts,
+  syncBackgroundAlerts,
+  unsubscribeBackgroundAlerts
+} from '../lib/backgroundAlerts';
 
 const basePath = process.env.NEXT_PUBLIC_BASE_PATH || '';
+const serviceWorkerPath = `${basePath}/sw.js`;
 const symbolsStorageKey = 'moerand-symbols-v1';
 const filters = ['ALL', 'BUY NOW', 'BUY AGAIN', 'HOLD / ADD READY', 'WATCH NOW', 'SELL NOW'];
 const tabs = [
@@ -42,6 +50,8 @@ export default function Home() {
   const [query, setQuery] = useState('');
   const [selectedSymbol, setSelectedSymbol] = useState(stocks[0].symbol);
   const [alerts, setAlerts] = useState(false);
+  const [backgroundStatus, setBackgroundStatus] = useState('checking');
+  const [backgroundMessage, setBackgroundMessage] = useState('Checking cloud connection…');
   const [watchlist, setWatchlist] = useState([]);
   const [toast, setToast] = useState('');
   const [planOpen, setPlanOpen] = useState(false);
@@ -85,9 +95,22 @@ export default function Home() {
       setWatchlist([]);
     }
 
-    if ('serviceWorker' in navigator) {
-      navigator.serviceWorker.register(`${basePath}/sw.js`).catch(() => undefined);
-    }
+    getBackgroundSubscription(serviceWorkerPath)
+      .then((subscription) => {
+        if (subscription) {
+          setAlerts(true);
+          localStorage.setItem('moe-alerts', 'on');
+          setBackgroundStatus('active');
+          setBackgroundMessage('Cloud scanning works while MOERAND is closed');
+        } else {
+          setBackgroundStatus('off');
+          setBackgroundMessage('Enable once to receive closed-app and Apple Watch alerts');
+        }
+      })
+      .catch((error) => {
+        setBackgroundStatus('error');
+        setBackgroundMessage(error.message || 'Background notifications are unavailable');
+      });
   }, []);
 
   useEffect(() => {
@@ -117,6 +140,23 @@ export default function Home() {
   const watchedStocks = ranked.filter((stock) => watchlist.includes(stock.symbol));
   const isLive = marketStatus === 'live';
   const isEngineLive = engineStatus === 'live' || engineStatus === 'partial';
+  const trackedSymbols = useMemo(() => trackedStocks.map((stock) => stock.symbol), [trackedStocks]);
+  const symbolsFingerprint = trackedSymbols.join(',');
+
+  useEffect(() => {
+    if (backgroundStatus !== 'active') return undefined;
+    let cancelled = false;
+    syncBackgroundAlerts({
+      serviceWorkerPath,
+      symbols: trackedSymbols,
+      timeframe: selectedTimeframe
+    }).catch((error) => {
+      if (cancelled) return;
+      setBackgroundStatus('error');
+      setBackgroundMessage(error.message || 'Could not update background scanning');
+    });
+    return () => { cancelled = true; };
+  }, [backgroundStatus, selectedTimeframe, symbolsFingerprint]);
 
   function persistWatchlist(next) {
     setWatchlist(next);
@@ -196,9 +236,16 @@ export default function Home() {
   }
 
   async function toggleAlerts() {
-    if (alerts) {
+    if (backgroundStatus === 'connecting') return;
+
+    if (alerts && backgroundStatus === 'active') {
+      setBackgroundStatus('connecting');
+      setBackgroundMessage('Disconnecting cloud scanning…');
+      await unsubscribeBackgroundAlerts(serviceWorkerPath).catch(() => undefined);
       setAlerts(false);
       localStorage.setItem('moe-alerts', 'off');
+      setBackgroundStatus('off');
+      setBackgroundMessage('Enable once to receive closed-app and Apple Watch alerts');
       setToast('Alerts disabled');
       return;
     }
@@ -219,19 +266,50 @@ export default function Home() {
 
     setAlerts(true);
     localStorage.setItem('moe-alerts', 'on');
-    setToast('Alerts enabled on this device');
-    await showNotification(best, true).catch(() => undefined);
+    setBackgroundStatus('connecting');
+    setBackgroundMessage('Connecting this device to cloud scanning…');
+
+    try {
+      await subscribeBackgroundAlerts({
+        serviceWorkerPath,
+        symbols: trackedSymbols,
+        timeframe: selectedTimeframe
+      });
+      setBackgroundStatus('active');
+      setBackgroundMessage(`Cloud scanning active · ${timeframeLabel(selectedTimeframe)} candle closes`);
+      setToast('Background alerts activated');
+      await sendBackgroundAlertTest(serviceWorkerPath);
+    } catch (error) {
+      setBackgroundStatus('error');
+      setBackgroundMessage(error.message || 'Cloud connection failed');
+      setToast('Device alerts enabled · cloud connection needs retry');
+      await showNotification(best, true).catch(() => undefined);
+    }
+  }
+
+  async function testAlerts() {
+    try {
+      if (backgroundStatus === 'active') {
+        await sendBackgroundAlertTest(serviceWorkerPath);
+        setToast('Background test sent · check iPhone or Apple Watch');
+        return;
+      }
+      await showNotification(best, true);
+      setToast('Device notification test sent');
+    } catch (error) {
+      setToast(error.message || 'Could not send the test alert');
+    }
   }
 
   useEffect(() => {
-    if (!alerts || !newSignalBatch.length || !('Notification' in window) || Notification.permission !== 'granted') return;
+    if (!alerts || backgroundStatus === 'active' || !newSignalBatch.length || !('Notification' in window) || Notification.permission !== 'granted') return;
 
     newSignalBatch.forEach((event) => {
       if (notifiedEventsRef.current.has(event.id)) return;
       notifiedEventsRef.current.add(event.id);
       showNotification(event).catch(() => undefined);
     });
-  }, [alerts, newSignalBatch]);
+  }, [alerts, backgroundStatus, newSignalBatch]);
 
   function selectStock(stock) {
     setSelectedSymbol(stock.symbol);
@@ -283,6 +361,15 @@ export default function Home() {
     if (minutes === selectedTimeframe) return;
     setToast(`Switching alerts to ${timeframeLabel(minutes)} candle closes…`);
     await setAlertTimeframe(minutes);
+    if (backgroundStatus === 'active') {
+      try {
+        await syncBackgroundAlerts({ serviceWorkerPath, symbols: trackedSymbols, timeframe: minutes });
+        setBackgroundMessage(`Cloud scanning active · ${timeframeLabel(minutes)} candle closes`);
+      } catch (error) {
+        setBackgroundStatus('error');
+        setBackgroundMessage(error.message || 'Could not update the cloud timeframe');
+      }
+    }
     setToast(`Alerts now use closed ${timeframeLabel(minutes)} candles`);
   }
 
@@ -302,8 +389,8 @@ export default function Home() {
           <span className="logo">M</span>
           <span><strong>MOERAND</strong><small>Signal Command Center</small></span>
         </button>
-        <button className={`alertBtn ${alerts ? 'on' : ''}`} onClick={toggleAlerts}>
-          <span className="statusDot" /> {alerts ? 'Alerts On' : 'Enable Alerts'}
+        <button className={`alertBtn ${backgroundStatus === 'active' ? 'on' : ''}`} onClick={toggleAlerts}>
+          <span className="statusDot" /> {backgroundStatus === 'active' ? 'Cloud Alerts On' : alerts ? 'Connect Cloud' : 'Enable Alerts'}
         </button>
       </header>
 
@@ -422,6 +509,12 @@ export default function Home() {
               <div><b>Device notifications</b><small>{alerts ? 'Permission enabled on this device' : 'Tap to request permission'}</small></div>
               <button className={`switch ${alerts ? 'on' : ''}`} onClick={toggleAlerts}><span /></button>
             </div>
+            <div className="settingRow">
+              <div><b>Background cloud scanning</b><small>{backgroundMessage}</small></div>
+              <span className={`pill ${backgroundStatus === 'active' ? 'green' : 'amber'}`}>
+                {backgroundStatus === 'active' ? 'ACTIVE' : backgroundStatus === 'connecting' || backgroundStatus === 'checking' ? 'CONNECTING' : backgroundStatus === 'error' ? 'RETRY' : 'OFF'}
+              </span>
+            </div>
             <div className="timeframeSetting">
               <div><b>Alert timeframe</b><small>Signals and notifications fire only after the selected candle closes.</small></div>
               <div className="timeframePicker" role="group" aria-label="Alert timeframe">
@@ -445,7 +538,7 @@ export default function Home() {
               <div><b>MOE engine</b><small>{engineMessage}</small></div>
               <span className={`pill ${isEngineLive ? 'green' : 'amber'}`}>{isEngineLive ? 'LIVE' : engineStatus.toUpperCase()}</span>
             </div>
-            {alerts && <button className="primary alertTestButton" onClick={() => showNotification(best, true).catch(() => setToast('Could not send the test alert'))}>Send notification test</button>}
+            {alerts && <button className="primary alertTestButton" onClick={testAlerts}>{backgroundStatus === 'active' ? 'Send background test' : 'Send notification test'}</button>}
           </div>
 
           <div className="card signalHistoryCard">
@@ -482,7 +575,7 @@ export default function Home() {
             )) : (
               <div className="emptyState"><span>☆</span><b>Your watchlist is empty</b><p>Add symbols from the scanner, then enable alerts once.</p><button className="secondary" onClick={() => setTab('scanner')}>Open scanner</button></div>
             )}
-            {alerts && watchedStocks.length > 0 && <button className="primary" onClick={() => showNotification(watchedStocks[0], true).catch(() => setToast('Could not send the test alert'))}>Send test alert</button>}
+            {alerts && watchedStocks.length > 0 && <button className="primary" onClick={testAlerts}>{backgroundStatus === 'active' ? 'Send background test' : 'Send test alert'}</button>}
           </div>
         </section>
       )}
@@ -548,7 +641,7 @@ export default function Home() {
               <span>{marketStatusMessage}</span>
               <a href="https://finnhub.io/register" target="_blank" rel="noreferrer">Create free key ↗</a>
             </div>
-            <div className="riskNotice compactNotice"><b>Live price and candle engine</b><p>{engineMessage}. The app must remain open for immediate on-device scanning and notifications.</p></div>
+            <div className="riskNotice compactNotice"><b>Live price and candle engine</b><p>{engineMessage}. Cloud scanning continues on the selected candle timeframe while the app is closed.</p></div>
           </div>
 
           <div className="card settingsCard marketConnectCard">
@@ -605,10 +698,11 @@ export default function Home() {
           </div>
           <div className="card settingsCard">
             <p className="eyebrow">SYSTEM</p>
-            <h2>MOERAND v3.6</h2>
+            <h2>MOERAND v3.7</h2>
             <div className="settingRow"><div><b>Market prices</b><small>{isLive ? 'Finnhub live stream connected' : 'Static demonstration dataset'}</small></div><span className={`pill ${isLive ? 'green' : 'amber'}`}>{isLive ? 'LIVE' : 'DEMO'}</span></div>
             <div className="settingRow"><div><b>Candle history</b><small>{isEngineLive ? `${candleProvider} · ${timeframeLabel(selectedTimeframe)} bars` : 'Alpaca keys required for this Finnhub plan'}</small></div><span className={`pill ${isEngineLive ? 'green' : 'amber'}`}>{isEngineLive ? 'READY' : 'NEEDED'}</span></div>
             <div className="settingRow"><div><b>Alert timeframe</b><small>Signals are evaluated at candle close</small></div><span className="pill green">{timeframeLabel(selectedTimeframe)}</span></div>
+            <div className="settingRow"><div><b>Background alerts</b><small>{backgroundMessage}</small></div><span className={`pill ${backgroundStatus === 'active' ? 'green' : 'amber'}`}>{backgroundStatus === 'active' ? 'CLOUD' : 'SETUP'}</span></div>
             <div className="settingRow"><div><b>MOE signals</b><small>Exact v{MOE_VERSION} scoring, entries, repeated adds, and smart exits</small></div><span className={`pill ${isEngineLive ? 'green' : 'amber'}`}>{isEngineLive ? 'LIVE' : engineStatus.toUpperCase()}</span></div>
             <div className="settingRow"><div><b>App mode</b><small>Installable progressive web app</small></div><span className="pill green">PWA</span></div>
             <div className="riskNotice"><b>Trading notice</b><p>Signals are calculated from the configured minute-candle source using the supplied MOE v{MOE_VERSION} rules. Provider data, session settings, and browser availability can differ from TradingView. Confirm every order independently.</p></div>

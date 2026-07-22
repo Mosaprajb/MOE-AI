@@ -119,7 +119,7 @@ async function sendPush(subscription, payload, env) {
     message: {
       payload,
       adminContact: env.VAPID_SUBJECT,
-      options: { ttl: 3600, urgency: 'high', topic: payload.tag }
+      options: { ttl: 3600, urgency: 'high' }
     }
   });
   return fetch(endpoint, { method: 'POST', headers, body });
@@ -196,8 +196,9 @@ export class AlertCoordinator extends DurableObject {
     const summaries = [];
     for (const minutes of SUPPORTED_TIMEFRAMES) {
       const records = active.filter((item) => item.timeframe === minutes);
-      if (!records.length || (totalMinutes - 1) % minutes !== 0) continue;
-      const scanBucket = Math.floor((totalMinutes - 1) / minutes);
+      const marketOpenOffset = minutes === 60 ? 30 : 0;
+      if (!records.length || (totalMinutes - 1 - marketOpenOffset) % minutes !== 0) continue;
+      const scanBucket = Math.floor((totalMinutes - 1 - marketOpenOffset) / minutes);
       const lastBucket = await this.ctx.storage.get(`last-scan:${minutes}`);
       if (lastBucket === scanBucket) continue;
 
