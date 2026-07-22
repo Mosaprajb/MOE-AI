@@ -1,6 +1,6 @@
 {
   "name": "moe-ai-pro",
-  "version": "3.0.0",
+  "version": "3.1.0",
   "private": true,
   "scripts": {
     "dev": "next dev",
@@ -8,7 +8,7 @@
     "start": "next start"
   },
   "dependencies": {
-    "next": "15.4.6",
+    "next": "15.5.21",
     "react": "19.1.0",
     "react-dom": "19.1.0"
   },

@@ -1,16 +1,31 @@
-# MOE AI Pro v3
+# MOE AI Pro v3.1
 
-Vercel-ready Next.js foundation for the MOE AI trading signal command center.
+Mobile-first Next.js PWA foundation for the MOE AI trading signal command center.
 
-## Current status
-- Professional responsive dashboard
-- Ranked scanner and stock details
-- Mobile safe-area support
-- Demo/simulated signals only
-- No live market-data provider connected yet
+## Included
 
-## Deploy
-Upload all files to the root of the existing `MOE-AI` GitHub repository and commit to `main`. Vercel will detect Next.js and deploy automatically.
+- Responsive dashboard and ranked multi-symbol scanner
+- Persistent watchlist and alert preferences
+- Browser notification permission flow and test alerts
+- Installable web-app manifest, app icons, and offline shell
+- iPhone safe-area support and Add to Home Screen guide
+- Demo/simulated signals clearly separated from live trading data
+
+## Run locally
+
+```bash
+npm install
+npm run dev
+```
+
+## Production
+
+Deploy the repository with Vercel. Next.js is detected automatically. Browser notifications require HTTPS. On iPhone, notification permission is available after the site is added to the Home Screen.
+
+## Next milestone
+
+Connect a protected server-side market-data provider and replace `lib/stocks.js` with validated real-time data. Never expose a market-data API key in client-side code.
 
 ## Important
-Do not use the displayed prices or signals for real trading. They are simulated until a protected server-side market-data API is connected.
+
+The prices, scores, and signals currently displayed are simulated product-demo data. They are not investment advice and must not be used for live trading.

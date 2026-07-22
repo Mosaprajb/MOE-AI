@@ -1,9 +1,28 @@
 {
+  "id": "/",
   "name": "MOE AI Pro",
   "short_name": "MOE AI",
+  "description": "Mobile signal command center for ranked trading opportunities",
   "start_url": "/",
+  "scope": "/",
   "display": "standalone",
+  "orientation": "portrait-primary",
   "background_color": "#061421",
-  "theme_color": "#071522",
-  "icons": []
+  "theme_color": "#061421",
+  "lang": "en-US",
+  "categories": ["finance", "productivity"],
+  "icons": [
+    {
+      "src": "/icon-192.svg",
+      "sizes": "192x192",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    },
+    {
+      "src": "/icon-512.svg",
+      "sizes": "512x512",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
 }
