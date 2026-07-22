@@ -1,4 +1,4 @@
-const CACHE_NAME = 'moe-ai-shell-v3';
+const CACHE_NAME = 'moe-ai-shell-v4';
 const scopePath = new URL(self.registration.scope).pathname;
 const appPath = scopePath.endsWith('/') ? scopePath : `${scopePath}/`;
 const SHELL = [

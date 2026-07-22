@@ -1,4 +1,4 @@
-# MOE AI Pro v3.2
+# MOE AI Pro v3.3
 
 Mobile-first Next.js PWA foundation for the MOE AI trading signal command center.
 
@@ -8,10 +8,14 @@ Mobile-first Next.js PWA foundation for the MOE AI trading signal command center
 - Persistent watchlist and alert preferences
 - Browser notification permission flow and test alerts
 - Optional Finnhub live-price connection with the API key stored only in the user's browser
+- Finnhub one-minute candle hydration plus real-time trade aggregation for every monitored symbol
+- MOE Pine Script v6.3.1 scoring with 1-minute triggers and preferred 15-minute context
+- Stateful BUY NOW, repeated BUY AGAIN, HOLD, smart rising stop, and SELL NOW handling
+- Preserved multi-symbol signal history and distinct notifications for repeated signals
 - Automatic WebSocket reconnection and REST quote hydration for the monitored symbols
 - Installable web-app manifest, app icons, and offline shell
 - iPhone safe-area support and Add to Home Screen guide
-- Demo/simulated signals clearly separated from live trading data
+- Explicit engine loading/error states when candle history is not available
 
 ## Run locally
 
@@ -24,10 +28,12 @@ npm run dev
 
 Deploy the repository with Vercel. Next.js is detected automatically. Browser notifications require HTTPS. On iPhone, notification permission is available after the site is added to the Home Screen.
 
-## Next milestone
+## Signal engine
 
-Port and validate the exact MOE Pine Script strategy rules before promoting BUY/SELL labels from demo to live signals. The current Finnhub integration updates prices only; it intentionally does not treat the demo labels as real trading signals.
+The on-device engine ports the supplied `Moe Day Trading Indicator v6.3.1 Master Alert` rules. It calculates EMA, ATR, RSI, MACD, VWAP, relative volume, breakout/reclaim triggers, preferred-timeframe context, position sizing, repeated entries, the smart rising stop, and weakness exits.
+
+Immediate scanning and notifications require the PWA to remain open because this static GitHub Pages build has no always-on server or push worker. A server-side scanner is the next milestone for alerts while the app is closed.
 
 ## Important
 
-When Finnhub is connected, prices are live but scores and BUY/SELL signals remain simulated product-demo data. They are not investment advice and must not be used for live trading.
+Signals are computed from Finnhub data and can differ from TradingView because provider trades, candle construction, session settings, and browser availability can differ. This software is not investment advice; confirm every order independently.

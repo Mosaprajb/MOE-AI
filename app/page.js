@@ -1,11 +1,12 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { MOE_VERSION } from '../lib/moeEngine';
 import { stocks } from '../lib/stocks';
 import { useFinnhubMarket } from '../lib/useFinnhubMarket';
 
 const basePath = process.env.NEXT_PUBLIC_BASE_PATH || '';
-const filters = ['ALL', 'BUY NOW', 'BUY AGAIN', 'WATCH', 'SELL NOW'];
+const filters = ['ALL', 'BUY NOW', 'BUY AGAIN', 'HOLD / ADD READY', 'WATCH NOW', 'SELL NOW'];
 const tabs = [
   { id: 'home', label: 'Home', icon: '⌂' },
   { id: 'scanner', label: 'Scanner', icon: '⌕' },
@@ -14,8 +15,12 @@ const tabs = [
 ];
 
 function Badge({ signal }) {
-  const className = signal.toLowerCase().replaceAll(' ', '-');
+  const className = signal.toLowerCase().replaceAll(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '');
   return <span className={`badge ${className}`}>{signal}</span>;
+}
+
+function formatScore(score) {
+  return Number.isFinite(score) ? score : '—';
 }
 
 function TradeMetrics({ stock }) {
@@ -39,10 +44,16 @@ export default function Home() {
   const [toast, setToast] = useState('');
   const [planOpen, setPlanOpen] = useState(false);
   const [marketToken, setMarketToken] = useState('');
+  const notifiedEventsRef = useRef(new Set());
   const {
     marketStocks,
     status: marketStatus,
     statusMessage: marketStatusMessage,
+    engineStatus,
+    engineMessage,
+    signalHistory,
+    newSignalBatch,
+    clearSignalHistory,
     lastUpdated,
     hasToken,
     connect: connectMarket,
@@ -69,7 +80,7 @@ export default function Home() {
   }, [toast]);
 
   const ranked = useMemo(
-    () => [...marketStocks].sort((a, b) => b.score - a.score),
+    () => [...marketStocks].sort((a, b) => (b.score ?? -1) - (a.score ?? -1)),
     [marketStocks]
   );
 
@@ -80,12 +91,15 @@ export default function Home() {
     [filter, query, ranked]
   );
 
-  const best = ranked.find((stock) => stock.signal.startsWith('BUY')) || ranked[0];
+  const best = ranked.find((stock) => stock.signal === 'BUY NOW' || stock.signal === 'BUY AGAIN')
+    || ranked.find((stock) => stock.engineReady)
+    || ranked[0];
   const selected = marketStocks.find((stock) => stock.symbol === selectedSymbol) || marketStocks[0];
-  const buyCount = marketStocks.filter((stock) => stock.signal.startsWith('BUY')).length;
+  const buyCount = marketStocks.filter((stock) => stock.signal === 'BUY NOW' || stock.signal === 'BUY AGAIN').length;
   const sellCount = marketStocks.filter((stock) => stock.signal === 'SELL NOW').length;
   const watchedStocks = ranked.filter((stock) => watchlist.includes(stock.symbol));
   const isLive = marketStatus === 'live';
+  const isEngineLive = engineStatus === 'live' || engineStatus === 'partial';
 
   function persistWatchlist(next) {
     setWatchlist(next);
@@ -100,13 +114,17 @@ export default function Home() {
     setToast(next.includes(symbol) ? `${symbol} added to your watchlist` : `${symbol} removed`);
   }
 
-  async function showNotification(stock = best) {
-    const title = `${stock.symbol} · ${stock.signal} (demo signal)`;
+  async function showNotification(stock = best, test = false) {
+    const score = formatScore(stock.score);
+    const signal = stock.signal || stock.type;
+    const title = test ? `MOE TEST · ${stock.symbol}` : `${stock.symbol} · ${signal}`;
     const options = {
-      body: `${isLive ? `Live price $${stock.price.toFixed(2)}` : 'Simulated price'}. ${stock.reason}. Signal logic is still in validation.`,
+      body: test
+        ? `Notifications are ready. Live price $${stock.price.toFixed(2)}.`
+        : `MOE v${MOE_VERSION} · Score ${score}/100 · $${stock.price.toFixed(2)} · ${stock.reason}`,
       icon: `${basePath}/icon-192.svg`,
       badge: `${basePath}/icon-192.svg`,
-      tag: `moe-${stock.symbol}`
+      tag: test ? 'moe-test' : `moe-${stock.symbol}-${stock.barTime || Date.now()}`
     };
 
     if ('serviceWorker' in navigator) {
@@ -143,8 +161,18 @@ export default function Home() {
     setAlerts(true);
     localStorage.setItem('moe-alerts', 'on');
     setToast('Alerts enabled on this device');
-    await showNotification(best).catch(() => undefined);
+    await showNotification(best, true).catch(() => undefined);
   }
+
+  useEffect(() => {
+    if (!alerts || !newSignalBatch.length || !('Notification' in window) || Notification.permission !== 'granted') return;
+
+    newSignalBatch.forEach((event) => {
+      if (notifiedEventsRef.current.has(event.id)) return;
+      notifiedEventsRef.current.add(event.id);
+      showNotification(event).catch(() => undefined);
+    });
+  }, [alerts, newSignalBatch]);
 
   function selectStock(stock) {
     setSelectedSymbol(stock.symbol);
@@ -196,9 +224,9 @@ export default function Home() {
       </header>
 
       <div className={`noticeBar ${isLive ? 'live' : ''}`}>
-        <span>{isLive ? 'LIVE PRICES' : marketStatus === 'connecting' || marketStatus === 'reconnecting' ? 'CONNECTING' : 'DEMO MODE'}</span>
+        <span>{isLive && isEngineLive ? 'MOE LIVE' : isLive ? 'LIVE PRICES' : marketStatus === 'connecting' || marketStatus === 'reconnecting' ? 'CONNECTING' : 'DEMO MODE'}</span>
         {isLive
-          ? `Finnhub connected${lastUpdated ? ` · Updated ${formatUpdateTime(lastUpdated)}` : ''} · MOE signals in validation`
+          ? `Finnhub connected${lastUpdated ? ` · Updated ${formatUpdateTime(lastUpdated)}` : ''} · ${engineMessage}`
           : marketStatusMessage}
       </div>
 
@@ -210,7 +238,7 @@ export default function Home() {
               <h1>{best.symbol} <Badge signal={best.signal} /></h1>
               <p className="subtitle">{best.reason}</p>
             </div>
-            <div className="heroScore"><span>{best.score}</span><small>MOE SCORE</small></div>
+            <div className="heroScore"><span>{formatScore(best.score)}</span><small>MOE SCORE</small></div>
             <TradeMetrics stock={best} />
             <div className="heroActions">
               <button className="primary compact" onClick={() => openScanner(best)}>View setup</button>
@@ -237,7 +265,7 @@ export default function Home() {
                 <span className="rank">#{index + 1}</span>
                 <span className="symbol"><b>{stock.symbol}</b><small>{stock.company}</small></span>
                 <Badge signal={stock.signal} />
-                <span className="score">{stock.score}</span>
+                <span className="score">{formatScore(stock.score)}</span>
               </button>
             ))}
           </section>
@@ -249,7 +277,7 @@ export default function Home() {
           <div className="scanner card">
             <div className="sectionHead">
               <div><p className="eyebrow">RANKED UNIVERSE</p><h2>Scanner</h2></div>
-              <span className={`demo ${isLive ? 'liveBadge' : ''}`}>{isLive ? 'LIVE PRICES' : 'SIMULATED'}</span>
+              <span className={`demo ${isEngineLive ? 'liveBadge' : ''}`}>{isEngineLive ? `MOE v${MOE_VERSION} LIVE` : isLive ? 'MOE LOADING' : 'SIMULATED'}</span>
             </div>
             <div className="filterRow">
               {filters.map((item) => (
@@ -264,7 +292,7 @@ export default function Home() {
                   <span className="symbol"><b>{stock.symbol}</b><small>{stock.company}</small></span>
                   <span className={`change ${stock.change >= 0 ? 'up' : 'down'}`}>{stock.change > 0 ? '+' : ''}{stock.change.toFixed(2)}%</span>
                   <Badge signal={stock.signal} />
-                  <span className="score">{stock.score}</span>
+                  <span className="score">{formatScore(stock.score)}</span>
                 </button>
               ))}
               {!list.length && <p className="empty">No symbols match this filter.</p>}
@@ -280,12 +308,12 @@ export default function Home() {
             <div className="price">${selected.price.toFixed(2)} <span className={selected.change >= 0 ? 'up' : 'down'}>{selected.change > 0 ? '+' : ''}{selected.change.toFixed(2)}%</span></div>
             <Badge signal={selected.signal} />
             <div className="detailGrid">
-              <div><small>Score</small><b>{selected.score}/100</b></div>
+              <div><small>Score</small><b>{formatScore(selected.score)}/100</b></div>
               <div><small>Timeframe</small><b>{selected.timeframe}</b></div>
               <div><small>Entry</small><b>{selected.entry ? `$${selected.entry.toFixed(2)}` : '—'}</b></div>
               <div><small>Stop</small><b>{selected.stop ? `$${selected.stop.toFixed(2)}` : '—'}</b></div>
               <div><small>Target</small><b>{selected.target ? `$${selected.target.toFixed(2)}` : '—'}</b></div>
-              <div><small>Price source</small><b>{selected.priceSource === 'LIVE' ? 'Finnhub Live' : 'Demo'}</b></div>
+              <div><small>Suggested size</small><b>{selected.engineReady ? `${selected.suggestedShares || 0} SH` : '—'}</b></div>
             </div>
             <div className="analysis"><small>WHY THIS SIGNAL?</small><p>{selected.reason}</p></div>
             <button className="primary" onClick={() => setPlanOpen(!planOpen)}>{planOpen ? 'Close trade plan' : 'Open trade plan'}</button>
@@ -293,7 +321,7 @@ export default function Home() {
               <div className="tradePlan">
                 <b>Confirmation checklist</b>
                 <p>Wait for price confirmation at the entry level. Respect the stop. Skip the trade if conditions change.</p>
-                <span>Demo workflow — not financial advice.</span>
+                <span>MOE v{MOE_VERSION} live calculation — not financial advice.</span>
               </div>
             )}
           </aside>
@@ -305,19 +333,39 @@ export default function Home() {
           <div className="card settingsCard">
             <p className="eyebrow">MULTI-SYMBOL MONITORING</p>
             <h2>Alerts</h2>
-            <p className="subtitle">Enable one alert center for every qualified symbol in your watchlist. MOE AI should only alert when the strategy rules match—never manufacture a trade.</p>
+            <p className="subtitle">MOE monitors every symbol in the scanner and records BUY NOW, BUY AGAIN, and SELL NOW pulses. Repeated signals remain separate in the history.</p>
             <div className="settingRow">
               <div><b>Device notifications</b><small>{alerts ? 'Permission enabled on this device' : 'Tap to request permission'}</small></div>
               <button className={`switch ${alerts ? 'on' : ''}`} onClick={toggleAlerts}><span /></button>
             </div>
             <div className="settingRow">
-              <div><b>Quality rule</b><small>Signal score must be 85 or higher</small></div>
-              <span className="pill">85+</span>
+              <div><b>Entry thresholds</b><small>BUY NOW 58+ · BUY AGAIN 62+</small></div>
+              <span className="pill">58 / 62</span>
             </div>
             <div className="settingRow">
-              <div><b>Opportunity rule</b><small>Allow multiple daily alerts only when valid setups exist</small></div>
-              <span className="pill green">RULED</span>
+              <div><b>MOE engine</b><small>{engineMessage}</small></div>
+              <span className={`pill ${isEngineLive ? 'green' : 'amber'}`}>{isEngineLive ? 'LIVE' : engineStatus.toUpperCase()}</span>
             </div>
+          </div>
+
+          <div className="card signalHistoryCard">
+            <div className="sectionHead">
+              <div><p className="eyebrow">PRESERVED SIGNALS</p><h2>Signal history</h2></div>
+              {signalHistory.length > 0 && <button className="textButton dangerText" onClick={clearSignalHistory}>Clear</button>}
+            </div>
+            {signalHistory.length ? signalHistory.map((event) => (
+              <button className="signalEvent" key={event.id} onClick={() => {
+                const stock = marketStocks.find((item) => item.symbol === event.symbol);
+                if (stock) openScanner(stock);
+              }}>
+                <span className="signalEventTime">{formatUpdateTime(event.timestamp)}</span>
+                <span className="symbol"><b>{event.symbol}</b><small>${event.price.toFixed(2)} · Score {event.score}</small></span>
+                <Badge signal={event.type} />
+                <span className="signalReason">{event.reason}</span>
+              </button>
+            )) : (
+              <div className="emptyState"><span>◉</span><b>No live MOE signals yet</b><p>The engine will preserve each actionable signal here.</p></div>
+            )}
           </div>
 
           <div className="card watchCard">
@@ -327,14 +375,14 @@ export default function Home() {
                 <button className="watchMain" onClick={() => openScanner(stock)}>
                   <span className="symbol"><b>{stock.symbol}</b><small>{stock.company}</small></span>
                   <Badge signal={stock.signal} />
-                  <span className="score">{stock.score}</span>
+                  <span className="score">{formatScore(stock.score)}</span>
                 </button>
                 <button className="remove" onClick={() => toggleWatch(stock.symbol)} aria-label={`Remove ${stock.symbol}`}>×</button>
               </div>
             )) : (
               <div className="emptyState"><span>☆</span><b>Your watchlist is empty</b><p>Add symbols from the scanner, then enable alerts once.</p><button className="secondary" onClick={() => setTab('scanner')}>Open scanner</button></div>
             )}
-            {alerts && watchedStocks.length > 0 && <button className="primary" onClick={() => showNotification(watchedStocks[0]).catch(() => setToast('Could not send the test alert'))}>Send test alert</button>}
+            {alerts && watchedStocks.length > 0 && <button className="primary" onClick={() => showNotification(watchedStocks[0], true).catch(() => setToast('Could not send the test alert'))}>Send test alert</button>}
           </div>
         </section>
       )}
@@ -368,7 +416,7 @@ export default function Home() {
               <span>{marketStatusMessage}</span>
               <a href="https://finnhub.io/register" target="_blank" rel="noreferrer">Create free key ↗</a>
             </div>
-            <div className="riskNotice compactNotice"><b>Live prices, demo signals</b><p>The Finnhub connection updates prices immediately. BUY/SELL labels stay in demo mode until the exact MOE indicator rules are ported and validated.</p></div>
+            <div className="riskNotice compactNotice"><b>Live price and candle engine</b><p>{engineMessage}. The app must remain open for immediate on-device scanning and notifications.</p></div>
           </div>
           <div className="card settingsCard">
             <p className="eyebrow">IPHONE INSTALLATION</p>
@@ -382,11 +430,11 @@ export default function Home() {
           </div>
           <div className="card settingsCard">
             <p className="eyebrow">SYSTEM</p>
-            <h2>MOE AI Pro v3.2</h2>
+            <h2>MOE AI Pro v3.3</h2>
             <div className="settingRow"><div><b>Market prices</b><small>{isLive ? 'Finnhub live stream connected' : 'Static demonstration dataset'}</small></div><span className={`pill ${isLive ? 'green' : 'amber'}`}>{isLive ? 'LIVE' : 'DEMO'}</span></div>
-            <div className="settingRow"><div><b>MOE signals</b><small>Strategy rules awaiting exact port and validation</small></div><span className="pill amber">DEMO</span></div>
+            <div className="settingRow"><div><b>MOE signals</b><small>Exact v{MOE_VERSION} scoring, entries, repeated adds, and smart exits</small></div><span className={`pill ${isEngineLive ? 'green' : 'amber'}`}>{isEngineLive ? 'LIVE' : engineStatus.toUpperCase()}</span></div>
             <div className="settingRow"><div><b>App mode</b><small>Installable progressive web app</small></div><span className="pill green">PWA</span></div>
-            <div className="riskNotice"><b>Trading notice</b><p>Prices can update live through Finnhub, but MOE scores and BUY/SELL signals remain simulated until the exact strategy is ported and validated.</p></div>
+            <div className="riskNotice"><b>Trading notice</b><p>Signals are calculated from Finnhub candles using the supplied MOE v{MOE_VERSION} rules. Provider data, session settings, and browser availability can differ from TradingView. Confirm every order independently.</p></div>
           </div>
         </section>
       )}

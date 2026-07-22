@@ -405,7 +405,13 @@ button.stat:hover { border-color: var(--cyan); }
 
 .buy-now { background: rgba(46, 230, 170, .16); color: var(--green); }
 .buy-again { background: rgba(65, 200, 245, .16); color: var(--cyan); }
-.watch { background: rgba(255, 209, 102, .16); color: var(--yellow); }
+.buy-ready,
+.hold-add-ready { background: rgba(46, 230, 170, .1); color: #87e9c7; }
+.watch,
+.watch-now,
+.warming-up,
+.wait,
+.market-quiet { background: rgba(255, 209, 102, .16); color: var(--yellow); }
 .sell-now { background: rgba(255, 102, 122, .16); color: var(--red); }
 
 .detailTitle { justify-content: space-between; }
@@ -487,6 +493,27 @@ button.stat:hover { border-color: var(--cyan); }
 .watchMain { min-width: 0; flex: 1; padding: 14px 0; border: 0; display: grid; grid-template-columns: 1fr 100px 45px; align-items: center; gap: 8px; background: transparent; color: inherit; text-align: left; }
 .remove { width: 34px; height: 34px; border: 0; border-radius: 50%; background: #142d40; color: var(--muted); font-size: 22px; }
 .watchCard > .primary { margin-top: 18px; }
+
+.signalHistoryCard { padding: 22px; }
+.dangerText { color: var(--red); }
+
+.signalEvent {
+  width: 100%;
+  padding: 14px 4px;
+  border: 0;
+  border-bottom: 1px solid var(--line);
+  display: grid;
+  grid-template-columns: 70px minmax(110px, 1fr) 105px minmax(120px, 1.3fr);
+  align-items: center;
+  gap: 10px;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+}
+
+.signalEvent:last-child { border-bottom: 0; }
+.signalEventTime { color: var(--muted); font-size: 11px; }
+.signalReason { overflow: hidden; color: var(--muted); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
 
 .empty,
 .emptyState { color: var(--muted); text-align: center; }
@@ -641,6 +668,9 @@ button.stat:hover { border-color: var(--cyan); }
   .stockRow { grid-template-columns: 29px minmax(85px, 1fr) 67px 87px 35px; padding: 10px 8px; }
   .stockRow .badge { padding: 5px 6px; font-size: 8px; }
   .symbol small { font-size: 10px; }
+  .signalEvent { grid-template-columns: 54px minmax(90px, 1fr) 88px; }
+  .signalEvent .badge { padding: 5px 6px; font-size: 8px; }
+  .signalReason { grid-column: 2 / -1; }
 }
 
 @media (max-width: 430px) {
