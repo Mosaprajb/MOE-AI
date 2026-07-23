@@ -3,6 +3,8 @@ import { buildPushHTTPRequest } from '@pushforge/builder';
 import { createMoeState, evaluateMoe, MOE_CONFIG, MOE_VERSION } from '../../lib/moeEngine.js';
 
 const SUPPORTED_TIMEFRAMES = [5, 15, 30, 60];
+const SUPPORTED_SIGNAL_TYPES = ['BUY NOW', 'BUY AGAIN', 'SELL NOW'];
+const SUPPORTED_COOLDOWNS = [0, 15, 30, 60, 240];
 const MAX_SYMBOLS = 50;
 const MAX_SUBSCRIPTIONS = 20;
 
@@ -34,6 +36,38 @@ function normalizeSymbols(values) {
     .map((value) => String(value).trim().toUpperCase())
     .filter((symbol) => /^[A-Z][A-Z0-9.-]{0,9}$/.test(symbol)))]
     .slice(0, MAX_SYMBOLS);
+}
+
+function normalizePreferences(value = {}) {
+  const requestedScore = Number(value.minScore);
+  const minScore = [70, 80, 90].includes(requestedScore) ? requestedScore : 70;
+  const requestedTypes = Array.isArray(value.signalTypes)
+    ? value.signalTypes.filter((type) => SUPPORTED_SIGNAL_TYPES.includes(type))
+    : [];
+  const cooldown = Number(value.cooldownMinutes);
+  return {
+    minScore,
+    signalTypes: requestedTypes.length ? [...new Set(requestedTypes)] : [...SUPPORTED_SIGNAL_TYPES],
+    cooldownMinutes: SUPPORTED_COOLDOWNS.includes(cooldown) ? cooldown : 60
+  };
+}
+
+function addActivity(record, activity) {
+  record.activity = [activity, ...(Array.isArray(record.activity) ? record.activity : [])].slice(0, 15);
+}
+
+function publicStatus(record) {
+  return {
+    connected: true,
+    timeframe: record.timeframe,
+    symbols: record.symbols,
+    preferences: normalizePreferences(record.preferences),
+    lastCheckedAt: record.lastCheckedAt || null,
+    lastDeliveredAt: record.lastDeliveredAt || null,
+    lastTestAt: record.lastTestAt || null,
+    deliveredCount: Number(record.deliveredCount || 0),
+    activity: Array.isArray(record.activity) ? record.activity : []
+  };
 }
 
 function validSubscription(subscription) {
@@ -139,23 +173,26 @@ export class AlertCoordinator extends DurableObject {
     const timeframe = Number(payload.timeframe);
     if (!SUPPORTED_TIMEFRAMES.includes(timeframe)) throw new Error('Unsupported timeframe');
     const symbols = normalizeSymbols(payload.symbols);
-    if (!symbols.length) throw new Error('Select at least one symbol');
+    const preferences = normalizePreferences(payload.preferences);
 
     const id = await endpointId(payload.subscription.endpoint);
     const subscriptions = await this.subscriptions();
     if (!subscriptions[id] && Object.keys(subscriptions).length >= MAX_SUBSCRIPTIONS) {
       throw new Error('Subscription limit reached');
     }
+    const previous = subscriptions[id] || {};
     subscriptions[id] = {
+      ...previous,
       id,
       subscription: payload.subscription,
       timeframe,
       symbols,
+      preferences,
       enabled: true,
       updatedAt: Date.now()
     };
     await this.saveSubscriptions(subscriptions);
-    return { id, enabled: true, timeframe, symbols };
+    return { id, enabled: true, ...publicStatus(subscriptions[id]) };
   }
 
   async unsubscribe(endpoint) {
@@ -166,6 +203,13 @@ export class AlertCoordinator extends DurableObject {
     return { removed: true };
   }
 
+  async status(endpoint) {
+    const id = await endpointId(endpoint || '');
+    const subscriptions = await this.subscriptions();
+    const record = subscriptions[id];
+    return record ? publicStatus(record) : { connected: false };
+  }
+
   async test(endpoint) {
     const id = await endpointId(endpoint || '');
     const subscriptions = await this.subscriptions();
@@ -173,7 +217,7 @@ export class AlertCoordinator extends DurableObject {
     if (!record) throw new Error('Subscription not found');
     const response = await sendPush(record.subscription, {
       title: 'MOERAND · Background alerts ready',
-      body: `Cloud scanning is active on ${timeframeName(record.timeframe)} candle closes.`,
+      body: `Cloud scanning is active · ${timeframeName(record.timeframe)} · Score ${normalizePreferences(record.preferences).minScore}+.`,
       icon: `${this.env.APP_URL}icon-192.svg`,
       badge: `${this.env.APP_URL}icon-192.svg`,
       tag: 'moerand-background-test',
@@ -181,10 +225,15 @@ export class AlertCoordinator extends DurableObject {
       data: { url: this.env.APP_URL }
     }, this.env);
     if (!response.ok) throw new Error(`Push service returned ${response.status}`);
-    return { sent: true, status: response.status };
+    const now = Date.now();
+    record.lastTestAt = now;
+    addActivity(record, { kind: 'test', at: now, timeframe: timeframeName(record.timeframe) });
+    await this.saveSubscriptions(subscriptions);
+    return { sent: true, status: response.status, ...publicStatus(record) };
   }
 
   async scan(now = Date.now()) {
+    await this.ctx.storage.put('last-cron-at', now);
     if (!this.env.ALPACA_KEY_ID || !this.env.ALPACA_SECRET_KEY || !this.env.VAPID_PRIVATE_JWK) {
       return { skipped: 'Server secrets are not configured' };
     }
@@ -201,6 +250,10 @@ export class AlertCoordinator extends DurableObject {
       const scanBucket = Math.floor((totalMinutes - 1 - marketOpenOffset) / minutes);
       const lastBucket = await this.ctx.storage.get(`last-scan:${minutes}`);
       if (lastBucket === scanBucket) continue;
+      records.forEach((record) => {
+        record.lastCheckedAt = now;
+        record.preferences = normalizePreferences(record.preferences);
+      });
 
       const symbols = [...new Set(records.flatMap((item) => item.symbols))];
       const histories = await fetchBars(symbols, minutes, now, this.env);
@@ -244,13 +297,45 @@ export class AlertCoordinator extends DurableObject {
         };
 
         const delivery = await Promise.allSettled(recipients.map(async (record) => {
+          const preferences = normalizePreferences(record.preferences);
+          const activity = {
+            at: now,
+            symbol,
+            signal: result.event.type,
+            score: result.event.score,
+            price: result.event.price,
+            timeframe: timeframeName(minutes)
+          };
+          if (!preferences.signalTypes.includes(result.event.type)) {
+            addActivity(record, { ...activity, kind: 'filtered', reason: 'signal type' });
+            return false;
+          }
+          if (result.event.score < preferences.minScore) {
+            addActivity(record, { ...activity, kind: 'filtered', reason: `score below ${preferences.minScore}` });
+            return false;
+          }
+          const lastDelivery = Number(record.lastDeliveries?.[symbol] || 0);
+          if (preferences.cooldownMinutes > 0 && now - lastDelivery < preferences.cooldownMinutes * 60_000) {
+            addActivity(record, { ...activity, kind: 'cooldown', reason: `${preferences.cooldownMinutes}m cooldown` });
+            return false;
+          }
+
           const response = await sendPush(record.subscription, payload, this.env);
-          if (response.status === 404 || response.status === 410) delete subscriptions[record.id];
+          if (response.status === 404 || response.status === 410) {
+            delete subscriptions[record.id];
+            return false;
+          }
           if (!response.ok && response.status !== 404 && response.status !== 410) {
+            addActivity(record, { ...activity, kind: 'error', reason: `push ${response.status}` });
             throw new Error(`Push failed: ${response.status}`);
           }
+          record.lastDeliveries = { ...(record.lastDeliveries || {}), [symbol]: now };
+          record.lastDeliveredAt = now;
+          record.deliveredCount = Number(record.deliveredCount || 0) + 1;
+          addActivity(record, { ...activity, kind: 'sent' });
+          return true;
         }));
-        if (delivery.some((item) => item.status === 'fulfilled')) events += 1;
+        if (delivery.some((item) => item.status === 'fulfilled' && item.value === true)) events += 1;
       }
 
       await this.ctx.storage.put(`last-scan:${minutes}`, scanBucket);
@@ -269,7 +354,7 @@ export default {
   async fetch(request, env) {
     const url = new URL(request.url);
     if (url.pathname === '/') {
-      return json({ service: 'MOERAND background alerts', version: '1.0.0', status: 'ready' });
+      return json({ service: 'MOERAND background alerts', version: '1.1.0', status: 'ready' });
     }
 
     const origin = allowedOrigin(request, env);
@@ -291,6 +376,9 @@ export default {
       }
       if (url.pathname === '/api/test' && request.method === 'POST') {
         return json(await stub.test(payload.endpoint), 200, headers);
+      }
+      if (url.pathname === '/api/status' && request.method === 'POST') {
+        return json(await stub.status(payload.endpoint), 200, headers);
       }
       return json({ error: 'Not found' }, 404, headers);
     } catch (error) {

@@ -1,4 +1,4 @@
-# MOERAND v3.7
+# MOERAND v3.8
 
 Mobile-first Next.js PWA for the MOERAND trading signal command center.
 
@@ -11,6 +11,9 @@ Mobile-first Next.js PWA for the MOERAND trading signal command center.
 - Browser notification permission flow and test alerts
 - Cloud Web Push subscriptions for closed-app and Apple Watch notifications
 - Automatic cloud synchronization of the selected timeframe and managed symbol list
+- Smart filters for all symbols or watchlist-only cloud monitoring
+- Selectable 70+, 80+, or 90+ score thresholds and signal-type controls
+- Per-symbol alert cooldown plus cloud health and delivery activity history
 - Persistent 5m, 15m, 30m, and 1h alert-timeframe selector
 - Signal evaluation and notification delivery only after the selected candle closes
 - Optional Finnhub live-price connection with the API key stored only in the user's browser
@@ -34,7 +37,7 @@ npm run dev
 
 ## Production
 
-Deploy the repository with Vercel. Next.js is detected automatically. Browser notifications require HTTPS. On iPhone, notification permission is available after the site is added to the Home Screen.
+The production PWA is exported for GitHub Pages. Browser notifications require HTTPS. On iPhone, notification permission is available after the site is added to the Home Screen.
 
 ## Signal engine
 

@@ -5,6 +5,7 @@ import { MOE_VERSION } from '../lib/moeEngine';
 import { createCustomStock, stocks } from '../lib/stocks';
 import { ALERT_TIMEFRAMES, timeframeLabel, useFinnhubMarket } from '../lib/useFinnhubMarket';
 import {
+  getBackgroundAlertStatus,
   getBackgroundSubscription,
   sendBackgroundAlertTest,
   subscribeBackgroundAlerts,
@@ -15,6 +16,22 @@ import {
 const basePath = process.env.NEXT_PUBLIC_BASE_PATH || '';
 const serviceWorkerPath = `${basePath}/sw.js`;
 const symbolsStorageKey = 'moerand-symbols-v1';
+const alertPreferencesStorageKey = 'moerand-alert-preferences-v1';
+const signalTypeOptions = ['BUY NOW', 'BUY AGAIN', 'SELL NOW'];
+const scoreOptions = [70, 80, 90];
+const cooldownOptions = [
+  { value: 0, label: 'Off' },
+  { value: 15, label: '15m' },
+  { value: 30, label: '30m' },
+  { value: 60, label: '1h' },
+  { value: 240, label: '4h' }
+];
+const defaultAlertPreferences = {
+  scope: 'all',
+  minScore: 70,
+  signalTypes: signalTypeOptions,
+  cooldownMinutes: 60
+};
 const filters = ['ALL', 'BUY NOW', 'BUY AGAIN', 'HOLD / ADD READY', 'WATCH NOW', 'SELL NOW'];
 const tabs = [
   { id: 'home', label: 'Home', icon: '⌂' },
@@ -30,6 +47,23 @@ function Badge({ signal }) {
 
 function formatScore(score) {
   return Number.isFinite(score) ? score : '—';
+}
+
+function normalizeAlertPreferences(value = {}) {
+  const scope = value.scope === 'watchlist' ? 'watchlist' : 'all';
+  const minScore = scoreOptions.includes(Number(value.minScore)) ? Number(value.minScore) : 70;
+  const requestedSignals = Array.isArray(value.signalTypes)
+    ? value.signalTypes.filter((type) => signalTypeOptions.includes(type))
+    : [];
+  const cooldownMinutes = cooldownOptions.some((option) => option.value === Number(value.cooldownMinutes))
+    ? Number(value.cooldownMinutes)
+    : 60;
+  return {
+    scope,
+    minScore,
+    signalTypes: requestedSignals.length ? [...new Set(requestedSignals)] : signalTypeOptions,
+    cooldownMinutes
+  };
 }
 
 function TradeMetrics({ stock }) {
@@ -52,6 +86,8 @@ export default function Home() {
   const [alerts, setAlerts] = useState(false);
   const [backgroundStatus, setBackgroundStatus] = useState('checking');
   const [backgroundMessage, setBackgroundMessage] = useState('Checking cloud connection…');
+  const [backgroundHealth, setBackgroundHealth] = useState(null);
+  const [alertPreferences, setAlertPreferences] = useState(defaultAlertPreferences);
   const [watchlist, setWatchlist] = useState([]);
   const [toast, setToast] = useState('');
   const [planOpen, setPlanOpen] = useState(false);
@@ -85,6 +121,9 @@ export default function Home() {
     try {
       setAlerts(localStorage.getItem('moe-alerts') === 'on');
       setWatchlist(JSON.parse(localStorage.getItem('moe-watchlist') || '[]'));
+      setAlertPreferences(normalizeAlertPreferences(
+        JSON.parse(localStorage.getItem(alertPreferencesStorageKey) || '{}')
+      ));
       const savedSymbols = JSON.parse(localStorage.getItem(symbolsStorageKey) || '[]');
       if (Array.isArray(savedSymbols) && savedSymbols.length) {
         const uniqueSymbols = [...new Set(savedSymbols.map((symbol) => String(symbol).toUpperCase()))];
@@ -141,22 +180,52 @@ export default function Home() {
   const isLive = marketStatus === 'live';
   const isEngineLive = engineStatus === 'live' || engineStatus === 'partial';
   const trackedSymbols = useMemo(() => trackedStocks.map((stock) => stock.symbol), [trackedStocks]);
-  const symbolsFingerprint = trackedSymbols.join(',');
+  const cloudSymbols = alertPreferences.scope === 'watchlist' ? watchlist : trackedSymbols;
+  const symbolsFingerprint = cloudSymbols.join(',');
+  const cloudPreferences = useMemo(() => ({
+    minScore: alertPreferences.minScore,
+    signalTypes: alertPreferences.signalTypes,
+    cooldownMinutes: alertPreferences.cooldownMinutes
+  }), [alertPreferences]);
+  const preferencesFingerprint = JSON.stringify(cloudPreferences);
 
   useEffect(() => {
     if (backgroundStatus !== 'active') return undefined;
     let cancelled = false;
     syncBackgroundAlerts({
       serviceWorkerPath,
-      symbols: trackedSymbols,
-      timeframe: selectedTimeframe
+      symbols: cloudSymbols,
+      timeframe: selectedTimeframe,
+      preferences: cloudPreferences
+    }).then((status) => {
+      if (cancelled || !status) return;
+      setBackgroundHealth(status);
+      setBackgroundMessage(cloudSymbols.length
+        ? `Cloud active · ${cloudSymbols.length} symbols · ${timeframeLabel(selectedTimeframe)} · Score ${alertPreferences.minScore}+`
+        : 'Cloud active · add symbols to your watchlist');
     }).catch((error) => {
       if (cancelled) return;
       setBackgroundStatus('error');
       setBackgroundMessage(error.message || 'Could not update background scanning');
     });
     return () => { cancelled = true; };
-  }, [backgroundStatus, selectedTimeframe, symbolsFingerprint]);
+  }, [backgroundStatus, selectedTimeframe, symbolsFingerprint, preferencesFingerprint]);
+
+  useEffect(() => {
+    if (backgroundStatus !== 'active') return undefined;
+    let cancelled = false;
+    const refresh = () => getBackgroundAlertStatus(serviceWorkerPath)
+      .then((status) => {
+        if (!cancelled && status.connected) setBackgroundHealth(status);
+      })
+      .catch(() => undefined);
+    refresh();
+    const interval = window.setInterval(refresh, 60_000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(interval);
+    };
+  }, [backgroundStatus]);
 
   function persistWatchlist(next) {
     setWatchlist(next);
@@ -166,6 +235,24 @@ export default function Home() {
   function persistTrackedStocks(next) {
     setTrackedStocks(next);
     localStorage.setItem(symbolsStorageKey, JSON.stringify(next.map((stock) => stock.symbol)));
+  }
+
+  function updateAlertPreferences(patch, message = 'Smart alert filters updated') {
+    const next = normalizeAlertPreferences({ ...alertPreferences, ...patch });
+    setAlertPreferences(next);
+    localStorage.setItem(alertPreferencesStorageKey, JSON.stringify(next));
+    setToast(message);
+  }
+
+  function toggleSignalType(type) {
+    const next = alertPreferences.signalTypes.includes(type)
+      ? alertPreferences.signalTypes.filter((item) => item !== type)
+      : [...alertPreferences.signalTypes, type];
+    if (!next.length) {
+      setToast('Keep at least one signal type enabled');
+      return;
+    }
+    updateAlertPreferences({ signalTypes: next }, `${type} alerts ${next.includes(type) ? 'enabled' : 'disabled'}`);
   }
 
   function addTrackedStock() {
@@ -270,13 +357,17 @@ export default function Home() {
     setBackgroundMessage('Connecting this device to cloud scanning…');
 
     try {
-      await subscribeBackgroundAlerts({
+      const { status } = await subscribeBackgroundAlerts({
         serviceWorkerPath,
-        symbols: trackedSymbols,
-        timeframe: selectedTimeframe
+        symbols: cloudSymbols,
+        timeframe: selectedTimeframe,
+        preferences: cloudPreferences
       });
+      setBackgroundHealth(status);
       setBackgroundStatus('active');
-      setBackgroundMessage(`Cloud scanning active · ${timeframeLabel(selectedTimeframe)} candle closes`);
+      setBackgroundMessage(cloudSymbols.length
+        ? `Cloud active · ${cloudSymbols.length} symbols · ${timeframeLabel(selectedTimeframe)} · Score ${alertPreferences.minScore}+`
+        : 'Cloud active · add symbols to your watchlist');
       setToast('Background alerts activated');
       await sendBackgroundAlertTest(serviceWorkerPath);
     } catch (error) {
@@ -290,7 +381,8 @@ export default function Home() {
   async function testAlerts() {
     try {
       if (backgroundStatus === 'active') {
-        await sendBackgroundAlertTest(serviceWorkerPath);
+        const status = await sendBackgroundAlertTest(serviceWorkerPath);
+        setBackgroundHealth(status);
         setToast('Background test sent · check iPhone or Apple Watch');
         return;
       }
@@ -363,8 +455,16 @@ export default function Home() {
     await setAlertTimeframe(minutes);
     if (backgroundStatus === 'active') {
       try {
-        await syncBackgroundAlerts({ serviceWorkerPath, symbols: trackedSymbols, timeframe: minutes });
-        setBackgroundMessage(`Cloud scanning active · ${timeframeLabel(minutes)} candle closes`);
+        const status = await syncBackgroundAlerts({
+          serviceWorkerPath,
+          symbols: cloudSymbols,
+          timeframe: minutes,
+          preferences: cloudPreferences
+        });
+        setBackgroundHealth(status);
+        setBackgroundMessage(cloudSymbols.length
+          ? `Cloud active · ${cloudSymbols.length} symbols · ${timeframeLabel(minutes)} · Score ${alertPreferences.minScore}+`
+          : 'Cloud active · add symbols to your watchlist');
       } catch (error) {
         setBackgroundStatus('error');
         setBackgroundMessage(error.message || 'Could not update the cloud timeframe');
@@ -515,6 +615,78 @@ export default function Home() {
                 {backgroundStatus === 'active' ? 'ACTIVE' : backgroundStatus === 'connecting' || backgroundStatus === 'checking' ? 'CONNECTING' : backgroundStatus === 'error' ? 'RETRY' : 'OFF'}
               </span>
             </div>
+            <div className="smartAlertControls">
+              <div className="smartAlertTitle">
+                <div><p className="eyebrow">SMART FILTERS</p><b>Control alert quality</b></div>
+                <span className="pill green">v3.8</span>
+              </div>
+
+              <div className="alertPreference">
+                <div><b>Symbols to monitor</b><small>Choose the complete scanner or only your watchlist.</small></div>
+                <div className="preferencePicker two">
+                  <button
+                    className={alertPreferences.scope === 'all' ? 'active' : ''}
+                    onClick={() => updateAlertPreferences({ scope: 'all' }, `Monitoring all ${trackedSymbols.length} scanner symbols`)}
+                  >
+                    All ({trackedSymbols.length})
+                  </button>
+                  <button
+                    className={alertPreferences.scope === 'watchlist' ? 'active' : ''}
+                    onClick={() => updateAlertPreferences(
+                      { scope: 'watchlist' },
+                      watchlist.length ? `Monitoring ${watchlist.length} watchlist symbols` : 'Watchlist mode selected · add a symbol to receive alerts'
+                    )}
+                  >
+                    Watchlist ({watchlist.length})
+                  </button>
+                </div>
+              </div>
+
+              <div className="alertPreference">
+                <div><b>Minimum MOE score</b><small>Higher scores produce fewer, more selective alerts.</small></div>
+                <div className="preferencePicker three">
+                  {scoreOptions.map((score) => (
+                    <button
+                      key={score}
+                      className={alertPreferences.minScore === score ? 'active' : ''}
+                      onClick={() => updateAlertPreferences({ minScore: score }, `Minimum alert score set to ${score}`)}
+                    >
+                      {score}+
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <div className="alertPreference">
+                <div><b>Signal types</b><small>Tap a signal to include or exclude it.</small></div>
+                <div className="preferencePicker three signalPicker">
+                  {signalTypeOptions.map((type) => (
+                    <button
+                      key={type}
+                      className={alertPreferences.signalTypes.includes(type) ? 'active' : ''}
+                      onClick={() => toggleSignalType(type)}
+                    >
+                      {type}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <div className="alertPreference">
+                <div><b>Per-symbol cooldown</b><small>Blocks repeated alerts for the same ticker during this period.</small></div>
+                <div className="preferencePicker five">
+                  {cooldownOptions.map((option) => (
+                    <button
+                      key={option.value}
+                      className={alertPreferences.cooldownMinutes === option.value ? 'active' : ''}
+                      onClick={() => updateAlertPreferences({ cooldownMinutes: option.value }, `Alert cooldown set to ${option.label}`)}
+                    >
+                      {option.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            </div>
             <div className="timeframeSetting">
               <div><b>Alert timeframe</b><small>Signals and notifications fire only after the selected candle closes.</small></div>
               <div className="timeframePicker" role="group" aria-label="Alert timeframe">
@@ -538,6 +710,33 @@ export default function Home() {
               <div><b>MOE engine</b><small>{engineMessage}</small></div>
               <span className={`pill ${isEngineLive ? 'green' : 'amber'}`}>{isEngineLive ? 'LIVE' : engineStatus.toUpperCase()}</span>
             </div>
+            {backgroundStatus === 'active' && (
+              <div className="cloudHealthPanel">
+                <div className="smartAlertTitle">
+                  <div><p className="eyebrow">CLOUD HEALTH</p><b>Background activity</b></div>
+                  <span className="pill green">HEALTHY</span>
+                </div>
+                <div className="cloudHealthGrid">
+                  <div><small>Last cloud check</small><b>{backgroundHealth?.lastCheckedAt ? formatUpdateTime(backgroundHealth.lastCheckedAt) : 'Waiting for candle close'}</b></div>
+                  <div><small>Last alert sent</small><b>{backgroundHealth?.lastDeliveredAt ? formatUpdateTime(backgroundHealth.lastDeliveredAt) : 'None yet'}</b></div>
+                  <div><small>Delivered</small><b>{backgroundHealth?.deliveredCount || 0}</b></div>
+                </div>
+                {backgroundHealth?.activity?.length > 0 && (
+                  <div className="cloudActivityList">
+                    {backgroundHealth.activity.slice(0, 5).map((item, index) => (
+                      <div className="cloudActivity" key={`${item.at}-${item.symbol || item.kind}-${index}`}>
+                        <span className={`activityDot ${item.kind}`} />
+                        <span>
+                          <b>{item.kind === 'sent' ? 'Alert sent' : item.kind === 'test' ? 'Test delivered' : item.kind === 'cooldown' ? 'Cooldown applied' : item.kind === 'error' ? 'Delivery error' : 'Signal filtered'}</b>
+                          <small>{item.symbol ? `${item.symbol} · ${item.signal} · Score ${item.score} · ${item.timeframe}` : `Cloud test · ${item.timeframe}`}{item.reason ? ` · ${item.reason}` : ''}</small>
+                        </span>
+                        <time>{formatUpdateTime(item.at)}</time>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
             {alerts && <button className="primary alertTestButton" onClick={testAlerts}>{backgroundStatus === 'active' ? 'Send background test' : 'Send notification test'}</button>}
           </div>
 
@@ -698,11 +897,12 @@ export default function Home() {
           </div>
           <div className="card settingsCard">
             <p className="eyebrow">SYSTEM</p>
-            <h2>MOERAND v3.7</h2>
+            <h2>MOERAND v3.8</h2>
             <div className="settingRow"><div><b>Market prices</b><small>{isLive ? 'Finnhub live stream connected' : 'Static demonstration dataset'}</small></div><span className={`pill ${isLive ? 'green' : 'amber'}`}>{isLive ? 'LIVE' : 'DEMO'}</span></div>
             <div className="settingRow"><div><b>Candle history</b><small>{isEngineLive ? `${candleProvider} · ${timeframeLabel(selectedTimeframe)} bars` : 'Alpaca keys required for this Finnhub plan'}</small></div><span className={`pill ${isEngineLive ? 'green' : 'amber'}`}>{isEngineLive ? 'READY' : 'NEEDED'}</span></div>
             <div className="settingRow"><div><b>Alert timeframe</b><small>Signals are evaluated at candle close</small></div><span className="pill green">{timeframeLabel(selectedTimeframe)}</span></div>
             <div className="settingRow"><div><b>Background alerts</b><small>{backgroundMessage}</small></div><span className={`pill ${backgroundStatus === 'active' ? 'green' : 'amber'}`}>{backgroundStatus === 'active' ? 'CLOUD' : 'SETUP'}</span></div>
+            <div className="settingRow"><div><b>Smart filters</b><small>{alertPreferences.scope === 'watchlist' ? 'Watchlist' : 'All scanner symbols'} · Score {alertPreferences.minScore}+ · {cooldownOptions.find((option) => option.value === alertPreferences.cooldownMinutes)?.label || '1h'} cooldown</small></div><span className="pill green">ACTIVE</span></div>
             <div className="settingRow"><div><b>MOE signals</b><small>Exact v{MOE_VERSION} scoring, entries, repeated adds, and smart exits</small></div><span className={`pill ${isEngineLive ? 'green' : 'amber'}`}>{isEngineLive ? 'LIVE' : engineStatus.toUpperCase()}</span></div>
             <div className="settingRow"><div><b>App mode</b><small>Installable progressive web app</small></div><span className="pill green">PWA</span></div>
             <div className="riskNotice"><b>Trading notice</b><p>Signals are calculated from the configured minute-candle source using the supplied MOE v{MOE_VERSION} rules. Provider data, session settings, and browser availability can differ from TradingView. Confirm every order independently.</p></div>

@@ -526,6 +526,115 @@ button.stat:hover { border-color: var(--cyan); }
 .watchCard > .primary { margin-top: 18px; }
 .alertTestButton { margin-top: 16px; }
 
+.smartAlertControls,
+.cloudHealthPanel {
+  margin: 16px 0 2px;
+  padding: 16px;
+  border: 1px solid rgba(46, 230, 170, .22);
+  border-radius: 18px;
+  background: linear-gradient(145deg, rgba(46, 230, 170, .07), rgba(65, 200, 245, .035));
+}
+
+.smartAlertTitle {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.smartAlertTitle .eyebrow { margin-bottom: 5px; }
+.smartAlertTitle > div > b { font-size: 17px; }
+
+.alertPreference {
+  padding: 15px 0;
+  border-bottom: 1px solid rgba(29, 58, 82, .78);
+}
+
+.alertPreference:last-child { padding-bottom: 0; border-bottom: 0; }
+.alertPreference b { display: block; }
+.alertPreference small { display: block; margin-top: 4px; color: var(--muted); line-height: 1.45; }
+
+.preferencePicker {
+  margin-top: 11px;
+  display: grid;
+  gap: 7px;
+}
+
+.preferencePicker.two { grid-template-columns: repeat(2, 1fr); }
+.preferencePicker.three { grid-template-columns: repeat(3, 1fr); }
+.preferencePicker.five { grid-template-columns: repeat(5, 1fr); }
+
+.preferencePicker button {
+  min-height: 40px;
+  padding: 8px 7px;
+  border: 1px solid var(--line);
+  border-radius: 11px;
+  background: #10283d;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 900;
+}
+
+.preferencePicker button.active {
+  border-color: var(--green);
+  background: rgba(46, 230, 170, .15);
+  color: var(--green);
+  box-shadow: 0 0 0 2px rgba(46, 230, 170, .07);
+}
+
+.signalPicker button { font-size: 9px; }
+
+.cloudHealthPanel { border-color: rgba(65, 200, 245, .22); }
+
+.cloudHealthGrid {
+  margin-top: 14px;
+  display: grid;
+  grid-template-columns: 1.4fr 1.4fr .7fr;
+  gap: 8px;
+}
+
+.cloudHealthGrid div {
+  min-width: 0;
+  padding: 11px;
+  border: 1px solid rgba(29, 58, 82, .8);
+  border-radius: 12px;
+  background: rgba(7, 23, 37, .72);
+}
+
+.cloudHealthGrid small { display: block; color: var(--muted); font-size: 9px; }
+.cloudHealthGrid b { display: block; margin-top: 5px; font-size: 11px; line-height: 1.35; }
+
+.cloudActivityList {
+  margin-top: 12px;
+  border-top: 1px solid rgba(29, 58, 82, .8);
+}
+
+.cloudActivity {
+  padding: 10px 2px;
+  border-bottom: 1px solid rgba(29, 58, 82, .55);
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: center;
+  gap: 9px;
+}
+
+.cloudActivity:last-child { border-bottom: 0; }
+.cloudActivity b { display: block; font-size: 11px; }
+.cloudActivity small { display: block; margin-top: 2px; color: var(--muted); font-size: 9px; line-height: 1.4; }
+.cloudActivity time { color: var(--muted); font-size: 9px; }
+
+.activityDot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--yellow);
+}
+
+.activityDot.sent,
+.activityDot.test { background: var(--green); box-shadow: 0 0 0 4px rgba(46, 230, 170, .09); }
+.activityDot.error { background: var(--red); }
+.activityDot.cooldown { background: var(--cyan); }
+
 .signalHistoryCard { padding: 22px; }
 .dangerText { color: var(--red); }
 
@@ -774,6 +883,11 @@ button.stat:hover { border-color: var(--cyan); }
   .symbolAddRow { grid-template-columns: 1fr; }
   .symbolAddRow .primary { width: 100%; }
   .managedSymbols { grid-template-columns: 1fr; }
+  .preferencePicker.five { grid-template-columns: repeat(5, 1fr); }
+  .preferencePicker button { padding: 7px 4px; font-size: 10px; }
+  .signalPicker button { font-size: 8px; }
+  .cloudHealthGrid { grid-template-columns: 1fr 1fr; }
+  .cloudHealthGrid div:last-child { grid-column: 1 / -1; }
 }
 
 @media (prefers-reduced-motion: reduce) {
