@@ -1,5 +1,6 @@
 import { buildTradePlan } from './trade-engine.js';
 import { evaluatePortfolioRisk } from './portfolio-manager.js';
+import { evaluateBrainCandidate, MOE_AI_BRAIN_VERSION } from './moe-ai-brain.js';
 import { getWebullAccountSnapshot, placeWebullSandboxOrder } from './webull-client.js';
 
 const ALLOWED_SIDES = new Set(['BUY', 'SELL']);
@@ -65,12 +66,10 @@ function normalizeWebullPortfolio(snapshot, fallback = {}) {
 
 function evaluateAccountSafety(snapshot, signal, referencePrice, quantity, env = {}) {
   if (!snapshot) return { accepted: true, reasons: [], metrics: {} };
-
   const balance = snapshot.balance || {};
   const currencyAsset = Array.isArray(balance.account_currency_assets)
     ? balance.account_currency_assets.find((item) => String(item.currency || '').toUpperCase() === 'USD') || balance.account_currency_assets[0]
     : null;
-
   const dayBuyingPower = firstFinite(currencyAsset?.day_buying_power, balance.day_buying_power);
   const overnightBuyingPower = firstFinite(currencyAsset?.overnight_buying_power, balance.overnight_buying_power);
   const cashBalance = firstFinite(currencyAsset?.cash_balance, balance.total_cash_balance, balance.cash_balance);
@@ -79,41 +78,19 @@ function evaluateAccountSafety(snapshot, signal, referencePrice, quantity, env =
   const marginCalls = Array.isArray(balance.open_margin_calls) ? balance.open_margin_calls : [];
   const estimatedNotional = Number.isFinite(referencePrice) && Number.isFinite(quantity) ? referencePrice * quantity : null;
   const reasons = [];
-
   const requirePositiveOvernight = env.WEBULL_REQUIRE_POSITIVE_OVERNIGHT_BP !== 'false';
   const blockNegativeCash = env.WEBULL_BLOCK_NEGATIVE_CASH === 'true';
   const minEquity = Number(env.WEBULL_MIN_NET_LIQUIDATION || 2000);
   const maintenanceBuffer = Number(env.WEBULL_MIN_MAINTENANCE_BUFFER || 1.15);
-
   if (marginCalls.length > 0) reasons.push('Account has an open margin call');
   if (Number.isFinite(netLiquidation) && netLiquidation < minEquity) reasons.push('Net liquidation is below the configured minimum');
-  if (Number.isFinite(netLiquidation) && Number.isFinite(maintenanceMargin) && maintenanceMargin > 0 && netLiquidation < maintenanceMargin * maintenanceBuffer) {
-    reasons.push('Maintenance margin safety buffer is too low');
-  }
-
+  if (Number.isFinite(netLiquidation) && Number.isFinite(maintenanceMargin) && maintenanceMargin > 0 && netLiquidation < maintenanceMargin * maintenanceBuffer) reasons.push('Maintenance margin safety buffer is too low');
   if (signal.side === 'BUY') {
-    if (requirePositiveOvernight && Number.isFinite(overnightBuyingPower) && overnightBuyingPower <= 0) {
-      reasons.push('Overnight buying power is not positive');
-    }
+    if (requirePositiveOvernight && Number.isFinite(overnightBuyingPower) && overnightBuyingPower <= 0) reasons.push('Overnight buying power is not positive');
     if (blockNegativeCash && Number.isFinite(cashBalance) && cashBalance < 0) reasons.push('Cash balance is negative');
-    if (Number.isFinite(dayBuyingPower) && Number.isFinite(estimatedNotional) && estimatedNotional > dayBuyingPower) {
-      reasons.push('Estimated order value exceeds day buying power');
-    }
+    if (Number.isFinite(dayBuyingPower) && Number.isFinite(estimatedNotional) && estimatedNotional > dayBuyingPower) reasons.push('Estimated order value exceeds day buying power');
   }
-
-  return {
-    accepted: reasons.length === 0,
-    reasons,
-    metrics: {
-      dayBuyingPower,
-      overnightBuyingPower,
-      cashBalance,
-      netLiquidation,
-      maintenanceMargin,
-      estimatedNotional,
-      marginCallCount: marginCalls.length,
-    },
-  };
+  return { accepted: reasons.length === 0, reasons, metrics: { dayBuyingPower, overnightBuyingPower, cashBalance, netLiquidation, maintenanceMargin, estimatedNotional, marginCallCount: marginCalls.length } };
 }
 
 export function normalizeWebullSignal(input = {}) {
@@ -135,18 +112,7 @@ export function normalizeWebullSignal(input = {}) {
   if (side === 'BUY' && takeProfit <= referencePrice) throw new Error('BUY takeProfit must be above entry price');
   if (side === 'SELL' && stopLoss <= referencePrice) throw new Error('SELL stopLoss must be above entry price');
   if (side === 'SELL' && takeProfit >= referencePrice) throw new Error('SELL takeProfit must be below entry price');
-  return {
-    symbol,
-    side,
-    orderType,
-    session,
-    requestedQuantity,
-    limitPrice,
-    stopLoss,
-    takeProfit,
-    source: String(input.source || 'MOERAND').slice(0, 32),
-    signalId: String(input.signalId || crypto.randomUUID()).slice(0, 64),
-  };
+  return { symbol, side, orderType, session, requestedQuantity, limitPrice, stopLoss, takeProfit, source: String(input.source || 'MOERAND').slice(0, 32), signalId: String(input.signalId || crypto.randomUUID()).slice(0, 64) };
 }
 
 export function enforceRiskLimits(order, env = {}) {
@@ -159,13 +125,18 @@ export function enforceRiskLimits(order, env = {}) {
   return order;
 }
 
+function brainWindow(signal, context = {}) {
+  return {
+    session: signal.session,
+    label: String(context.tradingSession || (signal.session === 'CORE' ? 'CORE' : signal.session === 'NIGHT' ? 'OVERNIGHT' : 'EXTENDED')).toUpperCase(),
+  };
+}
+
 export async function handleWebullSandboxOrder(request, env = {}) {
   if (request.method !== 'POST') return Response.json({ ok: false, error: 'Method not allowed' }, { status: 405 });
   try {
     const suppliedSecret = request.headers.get('x-moe-webhook-secret') || '';
-    if (!env.MOE_WEBHOOK_SECRET || suppliedSecret !== env.MOE_WEBHOOK_SECRET) {
-      return Response.json({ ok: false, error: 'Unauthorized' }, { status: 401 });
-    }
+    if (!env.MOE_WEBHOOK_SECRET || suppliedSecret !== env.MOE_WEBHOOK_SECRET) return Response.json({ ok: false, error: 'Unauthorized' }, { status: 401 });
     const payload = await request.json();
     const signal = normalizeWebullSignal(payload);
     const accountId = String(payload.accountId || env.WEBULL_ACCOUNT_ID || '').trim();
@@ -185,43 +156,40 @@ export async function handleWebullSandboxOrder(request, env = {}) {
       accountEquity: portfolioInput.accountEquity,
       riskPercent: payload.riskPercent ?? payload.context?.riskPercent,
     };
+    const brain = evaluateBrainCandidate({
+      symbol: signal.symbol,
+      entry: signal.limitPrice || context.marketPrice,
+      stopLoss: signal.stopLoss,
+      takeProfit: signal.takeProfit,
+      score: context.signalScore,
+      relativeVolume: context.relativeVolume,
+      atr: context.atr,
+      spreadPercent: context.spreadPercent,
+      driftPercent: context.driftPercent,
+    }, brainWindow(signal, context), env);
     const plan = buildTradePlan(signal, context, env);
+    if (!brain.accepted) {
+      plan.evaluation.accepted = false;
+      plan.evaluation.reasons.push(...brain.rejectionReasons.filter((reason) => !plan.evaluation.reasons.includes(reason)));
+    }
     const portfolio = evaluatePortfolioRisk({ signal, plan, portfolio: portfolioInput, env });
     if (!portfolio.accepted) {
       plan.evaluation.accepted = false;
       plan.evaluation.reasons.push(...portfolio.reasons.filter((reason) => !plan.evaluation.reasons.includes(reason)));
     }
-    const quantity = signal.requestedQuantity == null
-      ? plan.sizing.quantity
-      : Math.min(Math.floor(signal.requestedQuantity), plan.sizing.quantity);
-    const order = enforceRiskLimits({
-      symbol: signal.symbol,
-      side: signal.side,
-      orderType: signal.orderType,
-      session: signal.session,
-      quantity,
-      limitPrice: signal.limitPrice,
-      stopLoss: signal.stopLoss,
-      takeProfit: signal.takeProfit,
-      source: signal.source,
-      signalId: signal.signalId,
-    }, env);
+    const quantity = signal.requestedQuantity == null ? plan.sizing.quantity : Math.min(Math.floor(signal.requestedQuantity), plan.sizing.quantity);
+    const order = enforceRiskLimits({ symbol: signal.symbol, side: signal.side, orderType: signal.orderType, session: signal.session, quantity, limitPrice: signal.limitPrice, stopLoss: signal.stopLoss, takeProfit: signal.takeProfit, source: signal.source, signalId: signal.signalId }, env);
     if (quantity < 1) {
       plan.evaluation.accepted = false;
       if (!plan.evaluation.reasons.includes('Calculated position size is zero')) plan.evaluation.reasons.push('Calculated position size is zero');
     }
-
     const referencePrice = signal.limitPrice || Number((payload.marketPrice ?? payload.context?.marketPrice ?? env.WEBULL_MARKET_PRICE_CAP) || 0);
     const accountSafety = evaluateAccountSafety(accountSnapshot, signal, referencePrice, quantity, env);
     if (!accountSafety.accepted) {
       plan.evaluation.accepted = false;
       plan.evaluation.reasons.push(...accountSafety.reasons.filter((reason) => !plan.evaluation.reasons.includes(reason)));
     }
-
-    if (env.WEBULL_LIVE_TRADING === 'true' || env.WEBULL_ENVIRONMENT === 'production') {
-      return Response.json({ ok: false, blocked: true, error: 'Production trading is intentionally disabled' }, { status: 423 });
-    }
-
+    if (env.WEBULL_LIVE_TRADING === 'true' || env.WEBULL_ENVIRONMENT === 'production') return Response.json({ ok: false, blocked: true, error: 'Production trading is intentionally disabled' }, { status: 423 });
     const submissionRequested = payload.submitSandbox === true;
     const submissionEnabled = env.WEBULL_SANDBOX_ENABLED === 'true' && env.WEBULL_SANDBOX_ORDER_SUBMISSION === 'true';
     let submission = null;
@@ -236,14 +204,14 @@ export async function handleWebullSandboxOrder(request, env = {}) {
           blocked: true,
           order,
           plan,
+          brain: { version: MOE_AI_BRAIN_VERSION, ...brain },
           portfolio,
           accountSafety,
-          message: 'Sandbox order was not submitted because the trade failed MOE safety rules.',
+          message: 'Sandbox order was not submitted because the trade failed MOE AI or safety rules.',
         }, { status: 422 });
       }
       submission = await placeWebullSandboxOrder(accountId, order, env);
     }
-
     const submitted = Boolean(submission);
     return Response.json({
       ok: plan.evaluation.accepted,
@@ -253,21 +221,13 @@ export async function handleWebullSandboxOrder(request, env = {}) {
       submitted,
       order,
       plan,
+      brain: { version: MOE_AI_BRAIN_VERSION, ...brain },
       portfolio,
       accountSafety,
       submission,
-      accountSync: {
-        enabled: env.WEBULL_READ_ONLY_SYNC === 'true',
-        used: Boolean(accountSnapshot),
-        accountId: accountSnapshot ? accountId : null,
-        fetchedAt: accountSnapshot?.fetchedAt || null,
-      },
-      decisionPipeline: ['SIGNAL_VALIDATION', 'WEBULL_ACCOUNT_SYNC', 'TRADE_ENGINE', 'POSITION_SIZING', 'PORTFOLIO_MANAGER', 'MARGIN_ACCOUNT_SAFETY', submitted ? 'SANDBOX_SUBMISSION' : 'ORDER_PREVIEW'],
-      message: submitted
-        ? 'Trade passed all decision layers and was submitted to Webull Sandbox.'
-        : plan.evaluation.accepted
-          ? 'Trade accepted by all decision layers for preview but not submitted.'
-          : 'Trade rejected by MOE decision pipeline.',
+      accountSync: { enabled: env.WEBULL_READ_ONLY_SYNC === 'true', used: Boolean(accountSnapshot), accountId: accountSnapshot ? accountId : null, fetchedAt: accountSnapshot?.fetchedAt || null },
+      decisionPipeline: ['SIGNAL_VALIDATION', 'MOE_AI_BRAIN', 'WEBULL_ACCOUNT_SYNC', 'TRADE_ENGINE', 'POSITION_SIZING', 'PORTFOLIO_MANAGER', 'MARGIN_ACCOUNT_SAFETY', submitted ? 'SANDBOX_SUBMISSION' : 'ORDER_PREVIEW'],
+      message: submitted ? 'Trade passed MOE AI Brain and all safety layers and was submitted to Webull Sandbox.' : plan.evaluation.accepted ? 'Trade accepted by MOE AI Brain and all safety layers for preview but not submitted.' : 'Trade rejected by MOE decision pipeline.',
       createdAt: new Date().toISOString(),
     }, { status: plan.evaluation.accepted ? 200 : 422 });
   } catch (error) {
