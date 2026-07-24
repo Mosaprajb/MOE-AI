@@ -6,20 +6,92 @@ export { AlertCoordinator };
 
 const WEBULL_WEBHOOK_PATH = '/api/tradingview/webull-preview';
 const TRADINGVIEW_SIGNAL_PATH = '/api/tradingview/signal';
+const TRADINGVIEW_DECISIONS_PATH = '/api/tradingview/decisions';
+const DECISIONS_CACHE_URL = 'https://moerand.internal/tradingview-decisions';
+const MAX_DECISIONS = 100;
 
 function authorized(request, env) {
   const supplied = request.headers.get('x-moe-webhook-secret') || '';
   return Boolean(env.MOE_WEBHOOK_SECRET) && supplied === env.MOE_WEBHOOK_SECRET;
 }
 
-function secureJson(data, status = 200) {
+function secureJson(data, status = 200, extraHeaders = {}) {
   return Response.json(data, {
     status,
     headers: {
       'cache-control': 'no-store',
       'x-content-type-options': 'nosniff',
+      ...extraHeaders,
     },
   });
+}
+
+function allowedDashboardOrigin(request, env) {
+  const origin = request.headers.get('origin');
+  if (!origin) return null;
+  if (origin === env.APP_ORIGIN || origin === 'http://localhost:3000') return origin;
+  return null;
+}
+
+function dashboardCors(origin) {
+  return origin ? {
+    'access-control-allow-origin': origin,
+    'access-control-allow-methods': 'GET, OPTIONS',
+    'access-control-allow-headers': 'content-type',
+    vary: 'Origin',
+  } : {};
+}
+
+async function readRecentDecisions() {
+  const cached = await caches.default.match(DECISIONS_CACHE_URL);
+  if (!cached) return [];
+  try {
+    const payload = await cached.json();
+    return Array.isArray(payload) ? payload : [];
+  } catch {
+    return [];
+  }
+}
+
+async function storeDecision(decision) {
+  const current = await readRecentDecisions();
+  const next = [decision, ...current.filter((item) => item.signalId !== decision.signalId)].slice(0, MAX_DECISIONS);
+  await caches.default.put(DECISIONS_CACHE_URL, new Response(JSON.stringify(next), {
+    headers: {
+      'content-type': 'application/json; charset=utf-8',
+      'cache-control': 'public, max-age=2592000',
+    },
+  }));
+}
+
+function decisionFromResult(payload, signalId, result, status) {
+  const evaluation = result?.plan?.evaluation || {};
+  const order = result?.order || {};
+  return {
+    signalId,
+    symbol: String(order.symbol || payload.symbol || '').toUpperCase(),
+    side: String(order.side || payload.side || '').toUpperCase(),
+    timeframe: String(payload.timeframe || payload.interval || ''),
+    accepted: result?.accepted === true,
+    submitted: result?.submitted === true,
+    mode: result?.mode || null,
+    status,
+    entry: order.limitPrice ?? payload.limitPrice ?? payload.marketPrice ?? null,
+    stopLoss: order.stopLoss ?? payload.stopLoss ?? null,
+    takeProfit: order.takeProfit ?? payload.takeProfit ?? null,
+    quantity: order.quantity ?? null,
+    score: evaluation.score ?? null,
+    minimumScore: evaluation.minimumScore ?? null,
+    riskReward: evaluation.riskReward ?? null,
+    reasons: Array.isArray(evaluation.reasons)
+      ? evaluation.reasons
+      : (Array.isArray(result?.accountSafety?.reasons) ? result.accountSafety.reasons : []),
+    sizing: result?.plan?.sizing || null,
+    accountSafety: result?.accountSafety || null,
+    portfolio: result?.portfolio || null,
+    message: result?.message || null,
+    createdAt: result?.createdAt || new Date().toISOString(),
+  };
 }
 
 function findAccessToken(payload, depth = 0) {
@@ -95,6 +167,17 @@ async function signalFingerprint(payload) {
   return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, '0')).join('').slice(0, 64);
 }
 
+async function handleTradingViewDecisions(request, env) {
+  const origin = allowedDashboardOrigin(request, env);
+  if (request.method === 'OPTIONS') return new Response(null, { status: 204, headers: dashboardCors(origin) });
+  if (request.method !== 'GET') return secureJson({ ok: false, error: 'Method not allowed' }, 405, dashboardCors(origin));
+  if (!origin) return secureJson({ ok: false, error: 'Origin not allowed' }, 403);
+  const url = new URL(request.url);
+  const limit = Math.max(1, Math.min(MAX_DECISIONS, Number(url.searchParams.get('limit') || 50)));
+  const decisions = (await readRecentDecisions()).slice(0, limit);
+  return secureJson({ ok: true, count: decisions.length, decisions, generatedAt: new Date().toISOString() }, 200, dashboardCors(origin));
+}
+
 async function handleTradingViewSignal(request, env) {
   if (request.method !== 'POST') return secureJson({ ok: false, error: 'Method not allowed' }, 405);
 
@@ -154,6 +237,9 @@ async function handleTradingViewSignal(request, env) {
     }));
   }
 
+  const decision = decisionFromResult(sanitized, signalId, result, response.status);
+  await storeDecision(decision);
+
   console.log(JSON.stringify({
     event: 'TRADINGVIEW_SIGNAL_RESULT',
     signalId,
@@ -166,7 +252,16 @@ async function handleTradingViewSignal(request, env) {
     createdAt: new Date().toISOString(),
   }));
 
-  if (response.status === 422) {   return secureJson({     ...result,     webhookReceived: true,     decisionStatus: 422,     message:       result?.message ||       "Signal received successfully but rejected by the MOE decision pipeline.",   }, 200); }  return response;
+  if (response.status === 422) {
+    return secureJson({
+      ...result,
+      webhookReceived: true,
+      decisionStatus: 422,
+      message: result?.message || 'Signal received successfully but rejected by the MOE decision pipeline.',
+    }, 200);
+  }
+
+  return response;
 }
 
 async function handleWebullBootstrap(request, env) {
@@ -249,6 +344,7 @@ export default {
     const url = new URL(request.url);
 
     if (url.pathname === TRADINGVIEW_SIGNAL_PATH) return handleTradingViewSignal(request, env);
+    if (url.pathname === TRADINGVIEW_DECISIONS_PATH) return handleTradingViewDecisions(request, env);
     if (url.pathname === WEBULL_WEBHOOK_PATH) return handleWebullSandboxOrder(request, env);
     if (url.pathname === '/api/webull/bootstrap') return handleWebullBootstrap(request, env);
     if (url.pathname === '/api/webull/accounts') return handleWebullAccounts(request, env);
