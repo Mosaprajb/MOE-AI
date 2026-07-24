@@ -25,6 +25,16 @@ function cardTone(item) {
   return styles.cardRejected;
 }
 
+function actionLabel(action) {
+  const labels = {
+    KEEP_PENDING_ORDER: 'Keep pending order',
+    PROTECT_EXISTING_POSITION: 'Protect existing position',
+    REVIEW_REPLACEMENT: 'Review replacement opportunity',
+    BLOCK_DUPLICATE: 'Block duplicate exposure',
+  };
+  return labels[action] || action || '';
+}
+
 export default function DecisionsPage() {
   const [decisions, setDecisions] = useState([]);
   const [status, setStatus] = useState('loading');
@@ -64,9 +74,7 @@ export default function DecisionsPage() {
     }
   }, []);
 
-  useEffect(() => {
-    load();
-  }, [load]);
+  useEffect(() => { load(); }, [load]);
 
   useEffect(() => {
     if (!live) return undefined;
@@ -78,7 +86,7 @@ export default function DecisionsPage() {
     if (filter === 'ACCEPTED' && !item.accepted) return false;
     if (filter === 'REJECTED' && item.accepted) return false;
     if (filter === 'SUBMITTED' && !item.submitted) return false;
-    const text = `${item.symbol || ''} ${item.side || ''} ${(item.reasons || []).join(' ')}`.toLowerCase();
+    const text = `${item.symbol || ''} ${item.side || ''} ${(item.reasons || []).join(' ')} ${item.portfolio?.action || ''}`.toLowerCase();
     return text.includes(query.trim().toLowerCase());
   }), [decisions, filter, query]);
 
@@ -110,7 +118,7 @@ export default function DecisionsPage() {
           <div>
             <p style={styles.eyebrow}>MOE AI · TRADINGVIEW</p>
             <h1 style={styles.title}>Decision History</h1>
-            <p style={styles.subtitle}>Live MOERAND signals, safety decisions, scores and Webull execution status.</p>
+            <p style={styles.subtitle}>Live MOERAND signals, safety decisions, smart portfolio actions and Webull execution status.</p>
           </div>
           <div style={styles.headerActions}>
             <a href="../" style={styles.linkButton}>Back to MOERAND</a>
@@ -131,21 +139,11 @@ export default function DecisionsPage() {
         <section style={styles.toolbar}>
           <div style={styles.filters}>
             {['ALL', 'ACCEPTED', 'REJECTED', 'SUBMITTED'].map((item) => (
-              <button
-                key={item}
-                type="button"
-                onClick={() => setFilter(item)}
-                style={{ ...styles.filterButton, ...(filter === item ? styles.filterButtonActive : {}) }}
-              >
+              <button key={item} type="button" onClick={() => setFilter(item)} style={{ ...styles.filterButton, ...(filter === item ? styles.filterButtonActive : {}) }}>
                 {item}
               </button>
             ))}
-            <input
-              value={query}
-              onChange={(event) => setQuery(event.target.value)}
-              placeholder="Search symbol or reason"
-              style={styles.search}
-            />
+            <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search symbol, reason or action" style={styles.search} />
           </div>
           <div style={styles.liveBlock}>
             <button type="button" onClick={() => setLive((value) => !value)} style={{ ...styles.liveButton, ...(live ? styles.liveOn : {}) }}>
@@ -157,49 +155,66 @@ export default function DecisionsPage() {
 
         {status === 'loading' && <div style={styles.notice}>Loading MOE decisions…</div>}
         {error && <div style={{ ...styles.notice, ...styles.error }}>{error}</div>}
-        {status === 'ready' && visible.length === 0 && (
-          <div style={styles.notice}>No decisions match the current filters. New TradingView signals appear automatically.</div>
-        )}
+        {status === 'ready' && visible.length === 0 && <div style={styles.notice}>No decisions match the current filters. New TradingView signals appear automatically.</div>}
 
         <section style={styles.list}>
-          {visible.map((item) => (
-            <article key={item.signalId} style={{ ...styles.card, ...cardTone(item) }}>
-              <div style={styles.cardTop}>
-                <div style={styles.symbolBlock}>
-                  <span style={styles.symbol}>{item.symbol || '—'}</span>
-                  <span style={styles.side}>{item.side || '—'} {item.timeframe ? `· ${item.timeframe}` : ''}</span>
+          {visible.map((item) => {
+            const portfolio = item.portfolio || {};
+            const metrics = portfolio.metrics || {};
+            return (
+              <article key={item.signalId} style={{ ...styles.card, ...cardTone(item) }}>
+                <div style={styles.cardTop}>
+                  <div style={styles.symbolBlock}>
+                    <span style={styles.symbol}>{item.symbol || '—'}</span>
+                    <span style={styles.side}>{item.side || '—'} {item.timeframe ? `· ${item.timeframe}` : ''}</span>
+                  </div>
+                  <span style={{ ...styles.status, ...(item.submitted ? styles.submitted : item.accepted ? styles.accepted : styles.rejected) }}>{statusLabel(item)}</span>
                 </div>
-                <span style={{ ...styles.status, ...(item.submitted ? styles.submitted : item.accepted ? styles.accepted : styles.rejected) }}>
-                  {statusLabel(item)}
-                </span>
-              </div>
 
-              <div style={styles.metrics}>
-                <Metric label="ENTRY" value={money(item.entry)} />
-                <Metric label="STOP" value={money(item.stopLoss)} />
-                <Metric label="TARGET" value={money(item.takeProfit)} />
-                <Metric label="SCORE" value={`${numberOrDash(item.score)}/100`} />
-                <Metric label="R:R" value={numberOrDash(item.riskReward, 2)} />
-                <Metric label="QTY" value={numberOrDash(item.quantity)} />
-              </div>
-
-              <div style={styles.details}>
-                <div><b>Mode:</b> {item.mode || '—'}</div>
-                <div><b>Risk budget:</b> {money(item.sizing?.riskBudget)}</div>
-                <div><b>Estimated risk:</b> {money(item.sizing?.estimatedRisk)}</div>
-                <div><b>Created:</b> {item.createdAt ? new Date(item.createdAt).toLocaleString() : '—'}</div>
-              </div>
-
-              {item.reasons?.length > 0 && (
-                <div style={styles.reasons}>
-                  <b>Decision reasons</b>
-                  <ul style={styles.reasonList}>{item.reasons.map((reason) => <li key={reason}>{reason}</li>)}</ul>
+                <div style={styles.metrics}>
+                  <Metric label="ENTRY" value={money(item.entry)} />
+                  <Metric label="STOP" value={money(item.stopLoss)} />
+                  <Metric label="TARGET" value={money(item.takeProfit)} />
+                  <Metric label="SCORE" value={`${numberOrDash(item.score)}/100`} />
+                  <Metric label="R:R" value={numberOrDash(item.riskReward, 2)} />
+                  <Metric label="QTY" value={numberOrDash(item.quantity)} />
                 </div>
-              )}
 
-              {item.message && <p style={styles.message}>{item.message}</p>}
-            </article>
-          ))}
+                <div style={styles.details}>
+                  <div><b>Mode:</b> {item.mode || '—'}</div>
+                  <div><b>Risk budget:</b> {money(item.sizing?.riskBudget)}</div>
+                  <div><b>Estimated risk:</b> {money(item.sizing?.estimatedRisk)}</div>
+                  <div><b>Created:</b> {item.createdAt ? new Date(item.createdAt).toLocaleString() : '—'}</div>
+                </div>
+
+                {portfolio.action && (
+                  <section style={styles.actionPanel}>
+                    <div style={styles.actionHeader}>
+                      <span style={styles.actionTitle}>SMART PORTFOLIO ACTION</span>
+                      <span style={styles.actionBadge}>{actionLabel(portfolio.action)}</span>
+                    </div>
+                    {portfolio.actionReason && <p style={styles.actionReason}>{portfolio.actionReason}</p>}
+                    <div style={styles.actionMetrics}>
+                      <Metric label="OPEN POSITIONS" value={numberOrDash(metrics.openPositions)} />
+                      <Metric label="DAILY TRADES" value={`${numberOrDash(metrics.dailyTrades)}/${numberOrDash(metrics.maxDailyTrades)}`} />
+                      <Metric label="PORTFOLIO RISK" value={metrics.totalRiskPercent == null ? '—' : `${numberOrDash(metrics.totalRiskPercent, 2)}%`} />
+                      <Metric label="CORRELATION" value={metrics.correlationGroup || '—'} />
+                    </div>
+                    <p style={styles.safetyNote}>Recommendation only. Automatic position closing or replacement remains disabled.</p>
+                  </section>
+                )}
+
+                {item.reasons?.length > 0 && (
+                  <div style={styles.reasons}>
+                    <b>Decision reasons</b>
+                    <ul style={styles.reasonList}>{item.reasons.map((reason) => <li key={reason}>{reason}</li>)}</ul>
+                  </div>
+                )}
+
+                {item.message && <p style={styles.message}>{item.message}</p>}
+              </article>
+            );
+          })}
         </section>
       </section>
     </main>
@@ -207,12 +222,7 @@ export default function DecisionsPage() {
 }
 
 function Summary({ label, value, positive, warning }) {
-  return (
-    <div style={{ ...styles.summaryCard, ...(positive ? styles.summaryPositive : {}), ...(warning ? styles.summaryWarning : {}) }}>
-      <small style={styles.summaryLabel}>{label}</small>
-      <strong style={styles.summaryValue}>{value}</strong>
-    </div>
-  );
+  return <div style={{ ...styles.summaryCard, ...(positive ? styles.summaryPositive : {}), ...(warning ? styles.summaryWarning : {}) }}><small style={styles.summaryLabel}>{label}</small><strong style={styles.summaryValue}>{value}</strong></div>;
 }
 
 function Metric({ label, value }) {
@@ -225,7 +235,7 @@ const styles = {
   header: { display: 'flex', justifyContent: 'space-between', gap: 20, alignItems: 'flex-start', flexWrap: 'wrap', marginBottom: 24 },
   eyebrow: { color: '#36dc91', letterSpacing: '0.16em', fontSize: 12, fontWeight: 800, margin: '0 0 8px' },
   title: { fontSize: 'clamp(32px, 5vw, 54px)', margin: 0, lineHeight: 1 },
-  subtitle: { color: '#94a89e', maxWidth: 680, marginTop: 12 },
+  subtitle: { color: '#94a89e', maxWidth: 760, marginTop: 12 },
   headerActions: { display: 'flex', gap: 10, flexWrap: 'wrap' },
   linkButton: { color: '#d6e8df', background: 'transparent', border: '1px solid #29443a', borderRadius: 12, padding: '11px 14px', textDecoration: 'none', fontWeight: 700, cursor: 'pointer' },
   primaryButton: { background: '#21c77a', color: '#04130d', border: 0, borderRadius: 12, padding: '11px 18px', fontWeight: 900, cursor: 'pointer' },
@@ -239,7 +249,7 @@ const styles = {
   filters: { display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' },
   filterButton: { background: '#0d1814', color: '#a9bbb2', border: '1px solid #263c33', borderRadius: 999, padding: '8px 12px', cursor: 'pointer', fontWeight: 800, fontSize: 12 },
   filterButtonActive: { background: '#1dbd72', color: '#03110b', borderColor: '#1dbd72' },
-  search: { background: '#0d1814', color: '#edf7f2', border: '1px solid #263c33', borderRadius: 999, padding: '9px 14px', minWidth: 210, outline: 'none' },
+  search: { background: '#0d1814', color: '#edf7f2', border: '1px solid #263c33', borderRadius: 999, padding: '9px 14px', minWidth: 230, outline: 'none' },
   liveBlock: { display: 'flex', alignItems: 'center', gap: 10 },
   liveButton: { border: '1px solid #3a4b44', background: '#111b17', color: '#9badA4', borderRadius: 999, padding: '8px 12px', fontWeight: 900, cursor: 'pointer' },
   liveOn: { color: '#53e99e', borderColor: '#237a50' },
@@ -264,6 +274,13 @@ const styles = {
   metricLabel: { color: '#6f847a', display: 'block', marginBottom: 5, fontSize: 10, letterSpacing: '0.1em' },
   metricValue: { fontSize: 16 },
   details: { display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 8, color: '#9badA4', fontSize: 13 },
+  actionPanel: { marginTop: 14, padding: 14, borderRadius: 14, background: '#101a22', border: '1px solid #2c536b' },
+  actionHeader: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10, flexWrap: 'wrap' },
+  actionTitle: { color: '#8fd0ff', fontWeight: 900, fontSize: 11, letterSpacing: '0.1em' },
+  actionBadge: { background: '#193b58', color: '#a9dcff', borderRadius: 999, padding: '6px 10px', fontWeight: 800, fontSize: 12 },
+  actionReason: { color: '#c1d8e7', margin: '10px 0' },
+  actionMetrics: { display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(130px, 1fr))', gap: 8 },
+  safetyNote: { color: '#7893a3', fontSize: 12, margin: '10px 0 0' },
   reasons: { marginTop: 14, background: '#1d1714', border: '1px solid #4f3029', borderRadius: 12, padding: 13, color: '#ffc0b5' },
   reasonList: { margin: '8px 0 0', paddingLeft: 20 },
   message: { margin: '14px 0 0', color: '#8fa29a', fontSize: 13 },
