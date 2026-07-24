@@ -54,9 +54,12 @@ function md5(input) {
   }
   const bytes = [...encoder.encode(input)];
   const bitLength = bytes.length * 8;
+  const lowBits = bitLength >>> 0;
+  const highBits = Math.floor(bitLength / 0x100000000) >>> 0;
   bytes.push(0x80);
   while (bytes.length % 64 !== 56) bytes.push(0);
-  for (let i = 0; i < 8; i++) bytes.push((bitLength >>> (8 * i)) & 0xff);
+  for (let i = 0; i < 4; i++) bytes.push((lowBits >>> (8 * i)) & 0xff);
+  for (let i = 0; i < 4; i++) bytes.push((highBits >>> (8 * i)) & 0xff);
   const state = [1732584193, -271733879, -1732584194, 271733878];
   for (let offset = 0; offset < bytes.length; offset += 64) {
     const block = [];
@@ -120,7 +123,7 @@ export async function webullRequest(method, path, { query = {}, body = null, req
 }
 
 export function createWebullAccessToken(env = {}) {
-  return webullRequest('POST', '/openapi/auth/token/create', { body: {}, requiresAccessToken: false }, env);
+  return webullRequest('POST', '/openapi/auth/token/create', { requiresAccessToken: false }, env);
 }
 
 export function webullGet(path, query = {}, env = {}) {
