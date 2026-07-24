@@ -22,7 +22,7 @@ function getBaseUrl(env) {
   if (configured) return configured.replace(/\/$/, '');
   return env.WEBULL_ENVIRONMENT === 'production'
     ? 'https://api.webull.com'
-    : 'https://broker-api.sandbox.webull.com';
+    : 'https://api.sandbox.webull.com';
 }
 
 function md5(input) {
@@ -85,11 +85,11 @@ async function createSignature({ path, query, body, appKey, appSecret, host, tim
   return toBase64(await crypto.subtle.sign('HMAC', cryptoKey, encoder.encode(encodeURIComponent(signingString))));
 }
 
-export async function webullRequest(method, path, { query = {}, body = null } = {}, env = {}) {
+export async function webullRequest(method, path, { query = {}, body = null, requiresAccessToken = true } = {}, env = {}) {
   if (!path.startsWith('/')) throw new Error('Webull path must start with /');
   const appKey = requireSecret(env, 'WEBULL_APP_KEY');
   const appSecret = requireSecret(env, 'WEBULL_APP_SECRET');
-  const accessToken = requireSecret(env, 'WEBULL_ACCESS_TOKEN');
+  const accessToken = requiresAccessToken ? requireSecret(env, 'WEBULL_ACCESS_TOKEN') : '';
   const url = new URL(path, `${getBaseUrl(env)}/`);
   for (const [key, value] of Object.entries(query)) if (value != null && value !== '') url.searchParams.set(key, String(value));
   const bodyText = body == null ? '' : JSON.stringify(body);
@@ -108,7 +108,7 @@ export async function webullRequest(method, path, { query = {}, body = null } = 
       'x-signature-nonce': nonce,
       'x-version': 'v2',
       'x-signature': signature,
-      'x-access-token': accessToken,
+      ...(accessToken ? { 'x-access-token': accessToken } : {}),
     },
     ...(bodyText ? { body: bodyText } : {}),
   });
@@ -117,6 +117,10 @@ export async function webullRequest(method, path, { query = {}, body = null } = 
   try { data = text ? JSON.parse(text) : null; } catch { data = { raw: text }; }
   if (!response.ok) throw new Error(data?.message || data?.error || `Webull request failed with ${response.status}`);
   return data;
+}
+
+export function createWebullAccessToken(env = {}) {
+  return webullRequest('POST', '/openapi/auth/token/create', { body: {}, requiresAccessToken: false }, env);
 }
 
 export function webullGet(path, query = {}, env = {}) {

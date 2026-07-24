@@ -1,7 +1,7 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "moerand-alerts",
-  "main": "worker/src/index.js",
+  "main": "worker/src/router.js",
   "compatibility_date": "2026-07-22",
   "observability": {
     "enabled": true
