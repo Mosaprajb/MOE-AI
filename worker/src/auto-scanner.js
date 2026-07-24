@@ -1,5 +1,7 @@
 import { createMoeState, evaluateMoe, MOE_CONFIG } from '../../lib/moeEngine.js';
 import { handleWebullSandboxOrder } from './webull-sandbox.js';
+import { buildMarketIntelligence, enrichCandidateWithMarket } from './market-intelligence.js';
+import { rankBrainCandidates, MOE_AI_BRAIN_VERSION } from './moe-ai-brain.js';
 
 const SYMBOLS = [
 'AAPL','MSFT','NVDA','AMZN','META','GOOGL','GOOG','TSLA','AVGO','AMD','NFLX','PLTR','MU','ARM','INTC','QCOM','TSM','ASML',
@@ -30,13 +32,7 @@ const CORE_END_MINUTES = 16 * 60;
 const EXTENDED_END_MINUTES = 20 * 60;
 
 function nyParts(date = new Date()) {
-  const parts = new Intl.DateTimeFormat('en-US', {
-    timeZone: 'America/New_York',
-    weekday: 'short',
-    hour: '2-digit',
-    minute: '2-digit',
-    hourCycle: 'h23',
-  }).formatToParts(date);
+  const parts = new Intl.DateTimeFormat('en-US', { timeZone: 'America/New_York', weekday: 'short', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).formatToParts(date);
   return Object.fromEntries(parts.map((part) => [part.type, part.value]));
 }
 
@@ -53,40 +49,18 @@ function activeTradingWindow(date = new Date(), env = {}) {
   const minutes = Number(parts.hour) * 60 + Number(parts.minute);
   const isWeekday = DAY_NAMES.includes(weekday);
   const mode = normalizedHoursMode(env);
-
-  if (mode === 'CORE') {
-    return isWeekday && minutes >= CORE_START_MINUTES && minutes < CORE_END_MINUTES
-      ? { open: true, session: 'CORE', label: 'CORE', dataFeed: 'iex', dataDelayMinutes: 0 }
-      : { open: false, mode, label: 'CLOSED' };
-  }
-
-  if (isWeekday && minutes >= DAY_START_MINUTES && minutes < EXTENDED_END_MINUTES) {
-    return { open: true, session: 'ALL', label: minutes >= CORE_START_MINUTES && minutes < CORE_END_MINUTES ? 'CORE' : 'EXTENDED', dataFeed: 'iex', dataDelayMinutes: 0 };
-  }
-
-  if (mode !== 'AUTO' || env.AUTO_SCANNER_OVERNIGHT_ENABLED !== 'true') {
-    return { open: false, mode, label: 'CLOSED' };
-  }
-
+  if (mode === 'CORE') return isWeekday && minutes >= CORE_START_MINUTES && minutes < CORE_END_MINUTES ? { open: true, session: 'CORE', label: 'CORE', dataFeed: 'iex', dataDelayMinutes: 0 } : { open: false, mode, label: 'CLOSED' };
+  if (isWeekday && minutes >= DAY_START_MINUTES && minutes < EXTENDED_END_MINUTES) return { open: true, session: 'ALL', label: minutes >= CORE_START_MINUTES && minutes < CORE_END_MINUTES ? 'CORE' : 'EXTENDED', dataFeed: 'iex', dataDelayMinutes: 0 };
+  if (mode !== 'AUTO' || env.AUTO_SCANNER_OVERNIGHT_ENABLED !== 'true') return { open: false, mode, label: 'CLOSED' };
   const sundayNight = weekday === 'Sun' && minutes >= NIGHT_START_MINUTES;
   const mondayToThursdayNight = ['Mon', 'Tue', 'Wed', 'Thu'].includes(weekday) && (minutes < DAY_START_MINUTES || minutes >= NIGHT_START_MINUTES);
   const fridayEarly = weekday === 'Fri' && minutes < DAY_START_MINUTES;
-  if (sundayNight || mondayToThursdayNight || fridayEarly) {
-    return { open: true, session: 'NIGHT', label: 'OVERNIGHT', dataFeed: 'boats', dataDelayMinutes: 15 };
-  }
-
+  if (sundayNight || mondayToThursdayNight || fridayEarly) return { open: true, session: 'NIGHT', label: 'OVERNIGHT', dataFeed: 'boats', dataDelayMinutes: 15 };
   return { open: false, mode, label: 'CLOSED' };
 }
 
 function parseBars(items = []) {
-  return items.map((bar) => ({
-    t: new Date(bar.t).getTime(),
-    o: Number(bar.o),
-    h: Number(bar.h),
-    l: Number(bar.l),
-    c: Number(bar.c),
-    v: Number(bar.v || 0),
-  })).filter((bar) => [bar.t, bar.o, bar.h, bar.l, bar.c].every(Number.isFinite));
+  return items.map((bar) => ({ t: new Date(bar.t).getTime(), o: Number(bar.o), h: Number(bar.h), l: Number(bar.l), c: Number(bar.c), v: Number(bar.v || 0) })).filter((bar) => [bar.t, bar.o, bar.h, bar.l, bar.c].every(Number.isFinite));
 }
 
 async function fetchUniverseBars(env, now, window) {
@@ -98,28 +72,12 @@ async function fetchUniverseBars(env, now, window) {
     let token = '';
     let pages = 0;
     do {
-      const query = new URLSearchParams({
-        symbols: batch.join(','),
-        timeframe: '5Min',
-        start,
-        end,
-        limit: '10000',
-        adjustment: 'raw',
-        feed: window.dataFeed,
-        sort: 'asc',
-      });
+      const query = new URLSearchParams({ symbols: batch.join(','), timeframe: '5Min', start, end, limit: '10000', adjustment: 'raw', feed: window.dataFeed, sort: 'asc' });
       if (token) query.set('page_token', token);
-      const response = await fetch(`https://data.alpaca.markets/v2/stocks/bars?${query}`, {
-        headers: {
-          'APCA-API-KEY-ID': env.ALPACA_KEY_ID,
-          'APCA-API-SECRET-KEY': env.ALPACA_SECRET_KEY,
-        },
-      });
+      const response = await fetch(`https://data.alpaca.markets/v2/stocks/bars?${query}`, { headers: { 'APCA-API-KEY-ID': env.ALPACA_KEY_ID, 'APCA-API-SECRET-KEY': env.ALPACA_SECRET_KEY } });
       if (!response.ok) throw new Error(`Auto scanner ${window.label} market data failed: ${response.status}`);
       const payload = await response.json();
-      for (const [symbol, bars] of Object.entries(payload.bars || {})) {
-        output.set(symbol, [...(output.get(symbol) || []), ...parseBars(bars)]);
-      }
+      for (const [symbol, bars] of Object.entries(payload.bars || {})) output.set(symbol, [...(output.get(symbol) || []), ...parseBars(bars)]);
       token = payload.next_page_token || '';
       pages += 1;
     } while (token && pages < 5);
@@ -133,45 +91,20 @@ function candidate(symbol, bars, now, window) {
   const latest = complete.at(-1);
   const maximumStaleness = window.session === 'NIGHT' ? 27 * 60_000 : 12 * 60_000;
   if (now - (latest.t + 300_000) > maximumStaleness) return null;
-  const result = evaluateMoe(complete, createMoeState(), {
-    ...MOE_CONFIG,
-    primaryTimeframeMinutes: 5,
-    preferredTimeframeMinutes: 60,
-    allowRepeatedBuys: false,
-    baseBuyScore: 70,
-    initialTargetRR: 2,
-  });
+  const result = evaluateMoe(complete, createMoeState(), { ...MOE_CONFIG, primaryTimeframeMinutes: 5, preferredTimeframeMinutes: 60, allowRepeatedBuys: false, baseBuyScore: 70, initialTargetRR: 2 });
   if (!result.event || result.event.type !== 'BUY NOW') return null;
   const snapshot = result.snapshot || {};
-  return {
-    symbol,
-    barTime: result.event.barTime,
-    entry: result.event.entry,
-    stopLoss: result.event.stop,
-    takeProfit: result.event.target,
-    score: result.event.score,
-    relativeVolume: snapshot.relativeVolume,
-    atr: snapshot.atr,
-    reason: result.event.reason,
-  };
+  return { symbol, barTime: result.event.barTime, entry: result.event.entry, stopLoss: result.event.stop, takeProfit: result.event.target, score: result.event.score, relativeVolume: snapshot.relativeVolume, atr: snapshot.atr, reason: result.event.reason };
 }
 
 function firstPositive(...values) {
-  for (const value of values) {
-    const parsed = Number(value);
-    if (Number.isFinite(parsed) && parsed > 0) return parsed;
-  }
+  for (const value of values) { const parsed = Number(value); if (Number.isFinite(parsed) && parsed > 0) return parsed; }
   return null;
 }
 
 async function currentSnapshot(candidateItem, env, window) {
   const feed = window.session === 'NIGHT' ? 'overnight' : 'iex';
-  const response = await fetch(`https://data.alpaca.markets/v2/stocks/${encodeURIComponent(candidateItem.symbol)}/snapshot?feed=${feed}`, {
-    headers: {
-      'APCA-API-KEY-ID': env.ALPACA_KEY_ID,
-      'APCA-API-SECRET-KEY': env.ALPACA_SECRET_KEY,
-    },
-  });
+  const response = await fetch(`https://data.alpaca.markets/v2/stocks/${encodeURIComponent(candidateItem.symbol)}/snapshot?feed=${feed}`, { headers: { 'APCA-API-KEY-ID': env.ALPACA_KEY_ID, 'APCA-API-SECRET-KEY': env.ALPACA_SECRET_KEY } });
   if (!response.ok) return null;
   const snapshot = await response.json();
   const bid = firstPositive(snapshot?.latestQuote?.bp);
@@ -182,22 +115,15 @@ async function currentSnapshot(candidateItem, env, window) {
   return { latestPrice, bid, ask, spreadPercent, feed };
 }
 
-function roundPrice(value) {
-  return Number(Number(value).toFixed(2));
-}
+function roundPrice(value) { return Number(Number(value).toFixed(2)); }
 
 async function prepareCandidate(candidateItem, env, window) {
   const snapshot = await currentSnapshot(candidateItem, env, window);
   if (!snapshot && window.session === 'NIGHT') return null;
   const latestPrice = snapshot?.latestPrice || candidateItem.entry;
   const driftPercent = Math.abs(latestPrice - candidateItem.entry) / candidateItem.entry * 100;
-  const maximumDrift = Number(window.session === 'NIGHT'
-    ? env.AUTO_SCANNER_MAX_DRIFT_NIGHT_PERCENT || 0.4
-    : window.label === 'EXTENDED'
-      ? env.AUTO_SCANNER_MAX_DRIFT_EXTENDED_PERCENT || 0.6
-      : env.AUTO_SCANNER_MAX_DRIFT_CORE_PERCENT || 0.8);
+  const maximumDrift = Number(window.session === 'NIGHT' ? env.AUTO_SCANNER_MAX_DRIFT_NIGHT_PERCENT || 0.4 : window.label === 'EXTENDED' ? env.AUTO_SCANNER_MAX_DRIFT_EXTENDED_PERCENT || 0.6 : env.AUTO_SCANNER_MAX_DRIFT_CORE_PERCENT || 0.8);
   if (driftPercent > maximumDrift) return null;
-
   const originalRisk = Math.max(candidateItem.entry - candidateItem.stopLoss, 0.01);
   const originalReward = Math.max(candidateItem.takeProfit - candidateItem.entry, originalRisk * 2);
   const riskReward = Math.max(2, originalReward / originalRisk);
@@ -205,17 +131,7 @@ async function prepareCandidate(candidateItem, env, window) {
   const stopLoss = roundPrice(entry - originalRisk);
   const takeProfit = roundPrice(entry + originalRisk * riskReward);
   if (!(stopLoss > 0 && stopLoss < entry && takeProfit > entry)) return null;
-
-  return {
-    ...candidateItem,
-    entry,
-    stopLoss,
-    takeProfit,
-    latestPrice,
-    driftPercent: Number(driftPercent.toFixed(3)),
-    spreadPercent: snapshot?.spreadPercent == null ? null : Number(snapshot.spreadPercent.toFixed(3)),
-    snapshotFeed: snapshot?.feed || window.dataFeed,
-  };
+  return { ...candidateItem, entry, stopLoss, takeProfit, latestPrice, driftPercent: Number(driftPercent.toFixed(3)), spreadPercent: snapshot?.spreadPercent == null ? null : Number(snapshot.spreadPercent.toFixed(3)), snapshotFeed: snapshot?.feed || window.dataFeed };
 }
 
 function sessionMinimumScore(env, window) {
@@ -234,10 +150,7 @@ async function submitBest(best, env, window) {
   const signalId = `AUTO5-${window.session}-${best.symbol}-${best.barTime}`.slice(0, 64);
   const request = new Request('https://moerand.internal/api/tradingview/signal', {
     method: 'POST',
-    headers: {
-      'content-type': 'application/json',
-      'x-moe-webhook-secret': env.MOE_WEBHOOK_SECRET,
-    },
+    headers: { 'content-type': 'application/json', 'x-moe-webhook-secret': env.MOE_WEBHOOK_SECRET },
     body: JSON.stringify({
       symbol: best.symbol,
       side: 'BUY',
@@ -251,14 +164,24 @@ async function submitBest(best, env, window) {
       submitSandbox: true,
       timeframe: '5m',
       barTime: best.barTime,
+      sector: best.sector,
       context: {
         htfAligned: true,
         relativeVolume: best.relativeVolume,
+        atr: best.atr,
         liquidityScore: window.session === 'NIGHT' ? 60 : window.label === 'EXTENDED' ? 72 : 85,
-        marketScore: window.session === 'NIGHT' ? 55 : window.label === 'EXTENDED' ? 62 : 70,
+        marketScore: best.marketScore,
+        marketRegime: best.marketRegime,
+        sector: best.sector,
+        sectorScore: best.sectorScore,
+        sectorTrend: best.sectorTrend,
         signalScore: best.score,
+        brainScore: best.brain?.brainScore,
+        brainVersion: MOE_AI_BRAIN_VERSION,
+        brainReasons: best.brain?.reasons || [],
         signalExpired: false,
         spreadPercent: best.spreadPercent,
+        driftPercent: best.driftPercent,
         tradingSession: window.label,
         marketDataFeed: best.snapshotFeed,
         marketDataDelayMinutes: window.dataDelayMinutes,
@@ -276,52 +199,39 @@ export async function runAutoScanner(env, scheduledTime = Date.now()) {
   if (env.WEBULL_ENVIRONMENT !== 'sandbox' || env.WEBULL_LIVE_TRADING === 'true') return { skipped: 'Sandbox safety lock is not active' };
   const window = activeTradingWindow(new Date(now), env);
   if (!window.open) return { skipped: 'No configured US stock trading session is open', hoursMode: normalizedHoursMode(env) };
-  if (window.session === 'NIGHT' && env.AUTO_SCANNER_ALLOW_DELAYED_OVERNIGHT_SANDBOX !== 'true') {
-    return { skipped: 'Overnight scan is disabled until delayed-data sandbox testing is explicitly allowed' };
-  }
+  if (window.session === 'NIGHT' && env.AUTO_SCANNER_ALLOW_DELAYED_OVERNIGHT_SANDBOX !== 'true') return { skipped: 'Overnight scan is disabled until delayed-data sandbox testing is explicitly allowed' };
   if (Math.floor(now / 60_000) % 5 !== 1) return { skipped: 'Waiting for completed 5-minute candle', session: window.label };
   if (!env.ALPACA_KEY_ID || !env.ALPACA_SECRET_KEY || !env.MOE_WEBHOOK_SECRET) return { skipped: 'Required scanner secrets are missing' };
 
   const bars = await fetchUniverseBars(env, now, window);
+  const intelligence = buildMarketIntelligence(bars);
   const minimumScore = sessionMinimumScore(env, window);
   const minimumRelativeVolume = sessionMinimumRelativeVolume(env, window);
-  const candidates = SYMBOLS.map((symbol) => candidate(symbol, bars.get(symbol) || [], now, window)).filter(Boolean)
+  const rawCandidates = SYMBOLS.map((symbol) => candidate(symbol, bars.get(symbol) || [], now, window)).filter(Boolean)
     .filter((item) => item.score >= minimumScore)
     .filter((item) => !Number.isFinite(item.relativeVolume) || item.relativeVolume >= minimumRelativeVolume)
     .sort((a, b) => (b.score - a.score) || ((b.relativeVolume || 0) - (a.relativeVolume || 0)));
-  if (!candidates.length) {
-    return { scanned: SYMBOLS.length, candidates: 0, submitted: false, session: window.label, minimumScore };
-  }
 
-  let best = null;
-  for (const item of candidates.slice(0, 10)) {
-    best = await prepareCandidate(item, env, window);
-    if (best) break;
+  if (!rawCandidates.length) return { scanned: SYMBOLS.length, candidates: 0, submitted: false, session: window.label, minimumScore, market: intelligence };
+
+  const preparedCandidates = [];
+  for (const item of rawCandidates.slice(0, 15)) {
+    const prepared = await prepareCandidate(item, env, window);
+    if (prepared) preparedCandidates.push(enrichCandidateWithMarket(prepared, intelligence));
   }
-  if (!best) {
-    return { scanned: SYMBOLS.length, candidates: candidates.length, submitted: false, session: window.label, reason: 'Candidates failed current-price validation' };
-  }
+  if (!preparedCandidates.length) return { scanned: SYMBOLS.length, candidates: rawCandidates.length, submitted: false, session: window.label, reason: 'Candidates failed current-price validation', market: intelligence };
+
+  const ranked = rankBrainCandidates(preparedCandidates, window, env);
+  const best = ranked.accepted[0] || null;
+  if (!best) return { scanned: SYMBOLS.length, candidates: rawCandidates.length, prepared: preparedCandidates.length, submitted: false, session: window.label, reason: 'All candidates were rejected by MOE AI Brain', market: intelligence, topRejected: ranked.rejected.slice(0, 5) };
 
   const dedupe = new Request(`https://moerand.internal/auto-scanner/${window.session}/${best.symbol}/${best.barTime}`);
-  if (await caches.default.match(dedupe)) {
-    return { scanned: SYMBOLS.length, candidates: candidates.length, duplicate: true, best, session: window.label };
-  }
+  if (await caches.default.match(dedupe)) return { scanned: SYMBOLS.length, candidates: rawCandidates.length, duplicate: true, best, session: window.label, market: intelligence };
   await caches.default.put(dedupe, new Response('1', { headers: { 'cache-control': 'public, max-age=86400' } }));
 
   const submission = await submitBest(best, env, window);
-  console.log(JSON.stringify({
-    event: 'AUTO_SCANNER_RESULT',
-    universe: SYMBOLS.length,
-    hoursMode: normalizedHoursMode(env),
-    tradingSession: window.label,
-    webullSession: window.session,
-    candidateCount: candidates.length,
-    minimumScore,
-    best,
-    submission,
-    createdAt: new Date(now).toISOString(),
-  }));
-  return { scanned: SYMBOLS.length, candidates: candidates.length, best, submission, session: window.label };
+  console.log(JSON.stringify({ event: 'AUTO_SCANNER_RESULT', universe: SYMBOLS.length, hoursMode: normalizedHoursMode(env), tradingSession: window.label, webullSession: window.session, rawCandidateCount: rawCandidates.length, preparedCandidateCount: preparedCandidates.length, acceptedCandidateCount: ranked.accepted.length, rejectedCandidateCount: ranked.rejected.length, minimumScore, market: intelligence, best, submission, createdAt: new Date(now).toISOString() }));
+  return { scanned: SYMBOLS.length, candidates: rawCandidates.length, prepared: preparedCandidates.length, accepted: ranked.accepted.length, rejected: ranked.rejected.length, best, submission, session: window.label, market: intelligence };
 }
 
 export { SYMBOLS as AUTO_SCANNER_SYMBOLS, activeTradingWindow };
