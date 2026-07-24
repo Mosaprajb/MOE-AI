@@ -10,6 +10,7 @@ const AUTO_SUBMIT_PATHS = new Set([
 ]);
 
 const DASHBOARD_PAGE_PATHS = new Set([
+  '/',
   '/moe-ai',
   '/moe-ai/',
   '/dashboard',
