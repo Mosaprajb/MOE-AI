@@ -166,7 +166,7 @@ async function handleTradingViewSignal(request, env) {
     createdAt: new Date().toISOString(),
   }));
 
-  return response;
+  if (response.status === 422) {   return secureJson({     ...result,     webhookReceived: true,     decisionStatus: 422,     message:       result?.message ||       "Signal received successfully but rejected by the MOE decision pipeline.",   }, 200); }  return response;
 }
 
 async function handleWebullBootstrap(request, env) {
