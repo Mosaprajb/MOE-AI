@@ -211,7 +211,7 @@ export async function handleWebullSandboxOrder(request, env = {}) {
       if (!plan.evaluation.reasons.includes('Calculated position size is zero')) plan.evaluation.reasons.push('Calculated position size is zero');
     }
 
-    const referencePrice = signal.limitPrice || Number(payload.marketPrice ?? payload.context?.marketPrice ?? env.WEBULL_MARKET_PRICE_CAP || 0);
+    const referencePrice = signal.limitPrice || Number((payload.marketPrice ?? payload.context?.marketPrice ?? env.WEBULL_MARKET_PRICE_CAP) || 0);
     const accountSafety = evaluateAccountSafety(accountSnapshot, signal, referencePrice, quantity, env);
     if (!accountSafety.accepted) {
       plan.evaluation.accepted = false;
