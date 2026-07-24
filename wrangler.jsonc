@@ -27,6 +27,13 @@
     "APP_ORIGIN": "https://mosaprajb.github.io",
     "APP_URL": "https://mosaprajb.github.io/MOE-AI/",
     "VAPID_PUBLIC_KEY": "BP7XvNvwNZqLog4ldUcwEmMaXieeKD37sBddfWk5BbsC0mXRl09dS-kw-C__JnSUDGYaTDVKcKYJURIlac9T98c",
-    "VAPID_SUBJECT": "https://mosaprajb.github.io/MOE-AI/"
+    "VAPID_SUBJECT": "https://mosaprajb.github.io/MOE-AI/",
+    "WEBULL_ENVIRONMENT": "sandbox",
+    "WEBULL_SANDBOX_ENABLED": "true",
+    "WEBULL_SANDBOX_ORDER_SUBMISSION": "false",
+    "WEBULL_READ_ONLY_SYNC": "true",
+    "WEBULL_LIVE_TRADING": "false",
+    "WEBULL_MAX_QUANTITY": "1",
+    "WEBULL_MAX_NOTIONAL": "100"
   }
 }
