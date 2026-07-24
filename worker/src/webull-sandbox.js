@@ -1,5 +1,6 @@
 import { buildTradePlan } from './trade-engine.js';
 import { evaluatePortfolioRisk } from './portfolio-manager.js';
+import { getWebullAccountSnapshot } from './webull-client.js';
 
 const ALLOWED_SIDES = new Set(['BUY', 'SELL']);
 const ALLOWED_ORDER_TYPES = new Set(['MARKET', 'LIMIT']);
@@ -13,6 +14,55 @@ function finitePositive(value, field) {
 
 function optionalPositive(value, field) {
   return value == null || value === '' ? null : finitePositive(value, field);
+}
+
+function firstFinite(...values) {
+  for (const value of values) {
+    const parsed = Number(value);
+    if (Number.isFinite(parsed)) return parsed;
+  }
+  return null;
+}
+
+function pickArray(value) {
+  if (Array.isArray(value)) return value;
+  if (!value || typeof value !== 'object') return [];
+  for (const key of ['data', 'items', 'positions', 'position_list', 'list']) {
+    if (Array.isArray(value[key])) return value[key];
+  }
+  return [];
+}
+
+function normalizeWebullPortfolio(snapshot, fallback = {}) {
+  const balance = snapshot?.balance || {};
+  const balanceData = balance?.data && !Array.isArray(balance.data) ? balance.data : balance;
+  const rawPositions = pickArray(snapshot?.positions);
+
+  const accountEquity = firstFinite(
+    balanceData?.net_liquidation,
+    balanceData?.netLiquidation,
+    balanceData?.total_asset,
+    balanceData?.totalAsset,
+    balanceData?.equity,
+    fallback.accountEquity,
+  );
+
+  const openPositions = rawPositions.map((item) => ({
+    symbol: String(item.symbol || item.ticker?.symbol || item.instrument?.symbol || '').trim().toUpperCase(),
+    quantity: firstFinite(item.quantity, item.qty, item.position, item.holding_quantity) || 0,
+    marketValue: firstFinite(item.market_value, item.marketValue, item.position_value),
+    unrealizedPnl: firstFinite(item.unrealized_profit_loss, item.unrealizedPnl, item.unrealized_pl),
+    sector: String(item.sector || '').trim().toUpperCase(),
+    riskDollars: firstFinite(item.risk_dollars, item.riskDollars),
+  })).filter((item) => item.symbol && item.quantity !== 0);
+
+  return {
+    ...fallback,
+    accountEquity: accountEquity ?? fallback.accountEquity,
+    openPositions,
+    source: 'WEBULL_READ_ONLY',
+    snapshotFetchedAt: snapshot?.fetchedAt,
+  };
 }
 
 export function normalizeWebullSignal(input = {}) {
@@ -78,18 +128,26 @@ export async function handleWebullSandboxOrder(request, env = {}) {
 
     const payload = await request.json();
     const signal = normalizeWebullSignal(payload);
+    const accountId = String(payload.accountId || env.WEBULL_ACCOUNT_ID || '').trim();
+    let accountSnapshot = null;
+    let portfolioInput = {
+      ...(payload.portfolio || {}),
+      accountEquity: payload.portfolio?.accountEquity ?? payload.accountEquity ?? payload.context?.accountEquity,
+      signalSector: payload.portfolio?.signalSector ?? payload.sector,
+    };
+
+    if (env.WEBULL_READ_ONLY_SYNC === 'true' && accountId) {
+      accountSnapshot = await getWebullAccountSnapshot(accountId, env);
+      portfolioInput = normalizeWebullPortfolio(accountSnapshot, portfolioInput);
+    }
+
     const context = {
       ...(payload.context || {}),
       marketPrice: payload.marketPrice ?? payload.context?.marketPrice,
-      accountEquity: payload.accountEquity ?? payload.context?.accountEquity,
+      accountEquity: portfolioInput.accountEquity,
       riskPercent: payload.riskPercent ?? payload.context?.riskPercent,
     };
     const plan = buildTradePlan(signal, context, env);
-    const portfolioInput = {
-      ...(payload.portfolio || {}),
-      accountEquity: payload.portfolio?.accountEquity ?? context.accountEquity,
-      signalSector: payload.portfolio?.signalSector ?? payload.sector,
-    };
     const portfolio = evaluatePortfolioRisk({ signal, plan, portfolio: portfolioInput, env });
 
     if (!portfolio.accepted) {
@@ -121,10 +179,7 @@ export async function handleWebullSandboxOrder(request, env = {}) {
       }
     }
 
-    const liveEnabled = env.WEBULL_LIVE_TRADING === 'true';
-    const sandboxEnabled = env.WEBULL_SANDBOX_ENABLED === 'true';
-
-    if (liveEnabled) {
+    if (env.WEBULL_LIVE_TRADING === 'true') {
       return Response.json(
         { ok: false, blocked: true, error: 'Live trading is intentionally disabled in phase 1' },
         { status: 423 },
@@ -134,13 +189,19 @@ export async function handleWebullSandboxOrder(request, env = {}) {
     return Response.json({
       ok: plan.evaluation.accepted,
       accepted: plan.evaluation.accepted,
-      mode: sandboxEnabled ? 'SANDBOX_DRY_RUN' : 'DRY_RUN',
+      mode: env.WEBULL_SANDBOX_ENABLED === 'true' ? 'SANDBOX_DRY_RUN' : 'DRY_RUN',
       previewRequired: true,
       submitted: false,
       order,
       plan,
       portfolio,
-      decisionPipeline: ['SIGNAL_VALIDATION', 'TRADE_ENGINE', 'POSITION_SIZING', 'PORTFOLIO_MANAGER', 'ORDER_PREVIEW'],
+      accountSync: {
+        enabled: env.WEBULL_READ_ONLY_SYNC === 'true',
+        used: Boolean(accountSnapshot),
+        accountId: accountSnapshot ? accountId : null,
+        fetchedAt: accountSnapshot?.fetchedAt || null,
+      },
+      decisionPipeline: ['SIGNAL_VALIDATION', 'WEBULL_ACCOUNT_SYNC', 'TRADE_ENGINE', 'POSITION_SIZING', 'PORTFOLIO_MANAGER', 'ORDER_PREVIEW'],
       message: plan.evaluation.accepted
         ? 'Trade accepted by all decision layers for preview but not sent to Webull.'
         : 'Trade rejected by MOE decision pipeline.',
