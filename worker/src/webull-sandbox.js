@@ -4,7 +4,7 @@ import { getWebullAccountSnapshot, placeWebullSandboxOrder } from './webull-clie
 
 const ALLOWED_SIDES = new Set(['BUY', 'SELL']);
 const ALLOWED_ORDER_TYPES = new Set(['MARKET', 'LIMIT']);
-const ALLOWED_SESSIONS = new Set(['CORE', 'ALL']);
+const ALLOWED_SESSIONS = new Set(['CORE', 'ALL', 'NIGHT']);
 
 function finitePositive(value, field) {
   const number = Number(value);
