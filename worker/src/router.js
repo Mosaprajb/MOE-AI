@@ -1,14 +1,39 @@
-import alertsWorker, { AlertCoordinator } from './index.js';
+import alertsWorker, { AlertCoordinator as BaseAlertCoordinator } from './index.js';
 import { handleWebullSandboxOrder } from './webull-sandbox.js';
 import { createWebullAccessToken, getWebullAccounts, getWebullAccountSnapshot } from './webull-client.js';
-
-export { AlertCoordinator };
 
 const WEBULL_WEBHOOK_PATH = '/api/tradingview/webull-preview';
 const TRADINGVIEW_SIGNAL_PATH = '/api/tradingview/signal';
 const TRADINGVIEW_DECISIONS_PATH = '/api/tradingview/decisions';
-const DECISIONS_CACHE_URL = 'https://moerand.internal/tradingview-decisions';
 const MAX_DECISIONS = 100;
+const DECISIONS_STORAGE_KEY = 'tradingview-decisions';
+
+export class AlertCoordinator extends BaseAlertCoordinator {
+  async storeTradingViewDecision(decision) {
+    if (!decision || typeof decision !== 'object' || !decision.signalId) {
+      throw new Error('A valid TradingView decision is required');
+    }
+    const current = (await this.ctx.storage.get(DECISIONS_STORAGE_KEY)) || [];
+    const decisions = Array.isArray(current) ? current : [];
+    const next = [
+      decision,
+      ...decisions.filter((item) => item?.signalId !== decision.signalId),
+    ].slice(0, MAX_DECISIONS);
+    await this.ctx.storage.put(DECISIONS_STORAGE_KEY, next);
+    return { stored: true, count: next.length, signalId: decision.signalId };
+  }
+
+  async getTradingViewDecisions(limit = 50) {
+    const requestedLimit = Math.max(1, Math.min(MAX_DECISIONS, Number(limit) || 50));
+    const current = (await this.ctx.storage.get(DECISIONS_STORAGE_KEY)) || [];
+    const decisions = Array.isArray(current) ? current.slice(0, requestedLimit) : [];
+    return { count: decisions.length, decisions };
+  }
+}
+
+function coordinator(env) {
+  return env.ALERT_COORDINATOR.getByName('global');
+}
 
 function authorized(request, env) {
   const supplied = request.headers.get('x-moe-webhook-secret') || '';
@@ -42,28 +67,6 @@ function dashboardCors(origin) {
   } : {};
 }
 
-async function readRecentDecisions() {
-  const cached = await caches.default.match(DECISIONS_CACHE_URL);
-  if (!cached) return [];
-  try {
-    const payload = await cached.json();
-    return Array.isArray(payload) ? payload : [];
-  } catch {
-    return [];
-  }
-}
-
-async function storeDecision(decision) {
-  const current = await readRecentDecisions();
-  const next = [decision, ...current.filter((item) => item.signalId !== decision.signalId)].slice(0, MAX_DECISIONS);
-  await caches.default.put(DECISIONS_CACHE_URL, new Response(JSON.stringify(next), {
-    headers: {
-      'content-type': 'application/json; charset=utf-8',
-      'cache-control': 'public, max-age=2592000',
-    },
-  }));
-}
-
 function decisionFromResult(payload, signalId, result, status) {
   const evaluation = result?.plan?.evaluation || {};
   const order = result?.order || {};
@@ -89,7 +92,7 @@ function decisionFromResult(payload, signalId, result, status) {
     sizing: result?.plan?.sizing || null,
     accountSafety: result?.accountSafety || null,
     portfolio: result?.portfolio || null,
-    message: result?.message || null,
+    message: result?.message || result?.error || null,
     createdAt: result?.createdAt || new Date().toISOString(),
   };
 }
@@ -172,10 +175,17 @@ async function handleTradingViewDecisions(request, env) {
   if (request.method === 'OPTIONS') return new Response(null, { status: 204, headers: dashboardCors(origin) });
   if (request.method !== 'GET') return secureJson({ ok: false, error: 'Method not allowed' }, 405, dashboardCors(origin));
   if (!origin) return secureJson({ ok: false, error: 'Origin not allowed' }, 403);
+
   const url = new URL(request.url);
   const limit = Math.max(1, Math.min(MAX_DECISIONS, Number(url.searchParams.get('limit') || 50)));
-  const decisions = (await readRecentDecisions()).slice(0, limit);
-  return secureJson({ ok: true, count: decisions.length, decisions, generatedAt: new Date().toISOString() }, 200, dashboardCors(origin));
+  const result = await coordinator(env).getTradingViewDecisions(limit);
+  return secureJson({
+    ok: true,
+    count: result.count,
+    decisions: result.decisions,
+    storage: 'DURABLE_OBJECT',
+    generatedAt: new Date().toISOString(),
+  }, 200, dashboardCors(origin));
 }
 
 async function handleTradingViewSignal(request, env) {
@@ -222,23 +232,27 @@ async function handleTradingViewSignal(request, env) {
   });
 
   const response = await handleWebullSandboxOrder(forwarded, env);
-  let result = null;
+  let result;
   try {
     result = await response.clone().json();
   } catch {
-    result = { error: 'Non-JSON response' };
+    result = { accepted: false, submitted: false, error: 'Non-JSON response' };
   }
 
   if (response.status >= 400 && response.status < 500 && response.status !== 422) {
     await cache.delete(dedupeKey);
   } else {
-    await cache.put(dedupeKey, new Response(JSON.stringify({ status: response.status, accepted: result?.accepted, createdAt: new Date().toISOString() }), {
+    await cache.put(dedupeKey, new Response(JSON.stringify({
+      status: response.status,
+      accepted: result?.accepted,
+      createdAt: new Date().toISOString(),
+    }), {
       headers: { 'content-type': 'application/json', 'cache-control': `public, max-age=${ttlSeconds}` },
     }));
   }
 
   const decision = decisionFromResult(sanitized, signalId, result, response.status);
-  await storeDecision(decision);
+  const stored = await coordinator(env).storeTradingViewDecision(decision);
 
   console.log(JSON.stringify({
     event: 'TRADINGVIEW_SIGNAL_RESULT',
@@ -248,6 +262,9 @@ async function handleTradingViewSignal(request, env) {
     status: response.status,
     accepted: result?.accepted ?? false,
     submitted: result?.submitted ?? false,
+    decisionStored: stored.stored,
+    decisionCount: stored.count,
+    storage: 'DURABLE_OBJECT',
     reasons: result?.plan?.evaluation?.reasons || result?.accountSafety?.reasons || [],
     createdAt: new Date().toISOString(),
   }));
@@ -256,12 +273,17 @@ async function handleTradingViewSignal(request, env) {
     return secureJson({
       ...result,
       webhookReceived: true,
+      decisionStored: true,
       decisionStatus: 422,
       message: result?.message || 'Signal received successfully but rejected by the MOE decision pipeline.',
     }, 200);
   }
 
-  return response;
+  return secureJson({
+    ...result,
+    webhookReceived: true,
+    decisionStored: true,
+  }, response.status);
 }
 
 async function handleWebullBootstrap(request, env) {
@@ -355,5 +377,5 @@ export default {
 
   async scheduled(controller, env, ctx) {
     return alertsWorker.scheduled(controller, env, ctx);
-  }
+  },
 };
