@@ -5,6 +5,7 @@ import { createWebullAccessToken, getWebullAccounts, getWebullAccountSnapshot } 
 export { AlertCoordinator };
 
 const WEBULL_WEBHOOK_PATH = '/api/tradingview/webull-preview';
+const TRADINGVIEW_SIGNAL_PATH = '/api/tradingview/signal';
 
 function authorized(request, env) {
   const supplied = request.headers.get('x-moe-webhook-secret') || '';
@@ -76,6 +77,96 @@ function findAccounts(payload) {
     if (Array.isArray(value)) return value;
   }
   return [];
+}
+
+async function signalFingerprint(payload) {
+  const explicit = String(payload.signalId || payload.signal_id || '').trim();
+  if (explicit) return explicit.slice(0, 64);
+  const raw = [
+    payload.symbol,
+    payload.side,
+    payload.timeframe || payload.interval,
+    payload.barTime || payload.time || payload.timestamp,
+    payload.limitPrice || payload.marketPrice,
+    payload.stopLoss,
+    payload.takeProfit,
+  ].map((value) => String(value ?? '')).join('|');
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(raw));
+  return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, '0')).join('').slice(0, 64);
+}
+
+async function handleTradingViewSignal(request, env) {
+  if (request.method !== 'POST') return secureJson({ ok: false, error: 'Method not allowed' }, 405);
+
+  let payload;
+  try {
+    payload = await request.json();
+  } catch {
+    return secureJson({ ok: false, error: 'Invalid JSON payload' }, 400);
+  }
+
+  const suppliedSecret = request.headers.get('x-moe-webhook-secret')
+    || String(payload.secret || payload.webhookSecret || payload.webhook_secret || '');
+  if (!env.MOE_WEBHOOK_SECRET || suppliedSecret !== env.MOE_WEBHOOK_SECRET) {
+    return secureJson({ ok: false, error: 'Unauthorized' }, 401);
+  }
+
+  const signalId = await signalFingerprint(payload);
+  const cache = caches.default;
+  const dedupeKey = new Request(`https://moerand.internal/tradingview-signal/${encodeURIComponent(signalId)}`, { method: 'GET' });
+  if (await cache.match(dedupeKey)) {
+    return secureJson({ ok: false, accepted: false, duplicate: true, signalId, error: 'Duplicate signal ignored' }, 409);
+  }
+
+  const ttlSeconds = Math.max(60, Math.min(86400, Number(env.TRADINGVIEW_DEDUPE_TTL_SECONDS || 900)));
+  await cache.put(dedupeKey, new Response('pending', {
+    headers: { 'cache-control': `public, max-age=${ttlSeconds}` },
+  }));
+
+  const sanitized = { ...payload, signalId };
+  delete sanitized.secret;
+  delete sanitized.webhookSecret;
+  delete sanitized.webhook_secret;
+
+  const headers = new Headers(request.headers);
+  headers.set('content-type', 'application/json');
+  headers.set('x-moe-webhook-secret', suppliedSecret);
+
+  const forwarded = new Request(request.url, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify(sanitized),
+  });
+
+  const response = await handleWebullSandboxOrder(forwarded, env);
+  let result = null;
+  try {
+    result = await response.clone().json();
+  } catch {
+    result = { error: 'Non-JSON response' };
+  }
+
+  if (response.status >= 400 && response.status < 500 && response.status !== 422) {
+    await cache.delete(dedupeKey);
+  } else {
+    await cache.put(dedupeKey, new Response(JSON.stringify({ status: response.status, accepted: result?.accepted, createdAt: new Date().toISOString() }), {
+      headers: { 'content-type': 'application/json', 'cache-control': `public, max-age=${ttlSeconds}` },
+    }));
+  }
+
+  console.log(JSON.stringify({
+    event: 'TRADINGVIEW_SIGNAL_RESULT',
+    signalId,
+    symbol: sanitized.symbol,
+    side: sanitized.side,
+    status: response.status,
+    accepted: result?.accepted ?? false,
+    submitted: result?.submitted ?? false,
+    reasons: result?.plan?.evaluation?.reasons || result?.accountSafety?.reasons || [],
+    createdAt: new Date().toISOString(),
+  }));
+
+  return response;
 }
 
 async function handleWebullBootstrap(request, env) {
@@ -157,6 +248,7 @@ export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
 
+    if (url.pathname === TRADINGVIEW_SIGNAL_PATH) return handleTradingViewSignal(request, env);
     if (url.pathname === WEBULL_WEBHOOK_PATH) return handleWebullSandboxOrder(request, env);
     if (url.pathname === '/api/webull/bootstrap') return handleWebullBootstrap(request, env);
     if (url.pathname === '/api/webull/accounts') return handleWebullAccounts(request, env);
