@@ -1,11 +1,19 @@
 import routerWorker, { AlertCoordinator } from './router.js';
 import { runAutoScanner } from './auto-scanner.js';
+import { buildDashboardSnapshot, htmlResponse } from './moe-dashboard.js';
 
 export { AlertCoordinator };
 
 const AUTO_SUBMIT_PATHS = new Set([
   '/api/tradingview/signal',
   '/api/tradingview/webull-preview',
+]);
+
+const DASHBOARD_PAGE_PATHS = new Set([
+  '/moe-ai',
+  '/moe-ai/',
+  '/dashboard',
+  '/dashboard/',
 ]);
 
 async function withSandboxSubmission(request, env) {
@@ -40,8 +48,55 @@ async function withSandboxSubmission(request, env) {
   });
 }
 
+async function dashboardData(request, env, ctx) {
+  if (request.method !== 'GET') {
+    return Response.json({ ok: false, error: 'Method not allowed' }, { status: 405 });
+  }
+
+  const incomingUrl = new URL(request.url);
+  const decisionsUrl = new URL('/api/tradingview/decisions', incomingUrl.origin);
+  decisionsUrl.searchParams.set('limit', '100');
+  const headers = new Headers();
+  headers.set('origin', env.APP_ORIGIN || 'http://localhost:3000');
+
+  const internalRequest = new Request(decisionsUrl.toString(), {
+    method: 'GET',
+    headers,
+  });
+
+  const response = await routerWorker.fetch(internalRequest, env, ctx);
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({ error: 'Dashboard storage lookup failed' }));
+    return Response.json({ ok: false, ...error }, {
+      status: response.status,
+      headers: { 'cache-control': 'no-store', 'x-content-type-options': 'nosniff' },
+    });
+  }
+
+  const payload = await response.json();
+  const snapshot = buildDashboardSnapshot(payload.decisions || []);
+  return Response.json({
+    ok: true,
+    ...snapshot,
+    storage: payload.storage || 'DURABLE_OBJECT',
+    brainVersion: '2.0.0',
+    environment: env.WEBULL_ENVIRONMENT || 'sandbox',
+    liveTrading: env.WEBULL_LIVE_TRADING === 'true',
+  }, {
+    headers: {
+      'cache-control': 'no-store',
+      'x-content-type-options': 'nosniff',
+    },
+  });
+}
+
 export default {
   async fetch(request, env, ctx) {
+    const url = new URL(request.url);
+
+    if (DASHBOARD_PAGE_PATHS.has(url.pathname)) return htmlResponse();
+    if (url.pathname === '/api/moe-ai/dashboard') return dashboardData(request, env, ctx);
+
     const effectiveRequest = await withSandboxSubmission(request, env);
     return routerWorker.fetch(effectiveRequest, env, ctx);
   },
