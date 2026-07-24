@@ -23,7 +23,6 @@ function secureJson(data, status = 200) {
 
 function findAccessToken(payload, depth = 0) {
   if (depth > 6 || payload == null) return '';
-  if (typeof payload === 'string') return '';
   if (Array.isArray(payload)) {
     for (const item of payload) {
       const token = findAccessToken(item, depth + 1);
@@ -32,15 +31,34 @@ function findAccessToken(payload, depth = 0) {
     return '';
   }
   if (typeof payload !== 'object') return '';
-
   for (const key of ['access_token', 'accessToken', 'token']) {
     const value = payload[key];
     if (typeof value === 'string' && value.trim()) return value.trim();
   }
-
   for (const value of Object.values(payload)) {
     const token = findAccessToken(value, depth + 1);
     if (token) return token;
+  }
+  return '';
+}
+
+function findTokenStatus(payload, depth = 0) {
+  if (depth > 6 || payload == null) return '';
+  if (Array.isArray(payload)) {
+    for (const item of payload) {
+      const status = findTokenStatus(item, depth + 1);
+      if (status) return status;
+    }
+    return '';
+  }
+  if (typeof payload !== 'object') return '';
+  for (const key of ['status', 'token_status', 'tokenStatus']) {
+    const value = payload[key];
+    if (typeof value === 'string' && value.trim()) return value.trim().toUpperCase();
+  }
+  for (const value of Object.values(payload)) {
+    const status = findTokenStatus(value, depth + 1);
+    if (status) return status;
   }
   return '';
 }
@@ -49,15 +67,7 @@ function describePayload(payload) {
   if (payload == null) return { type: String(payload), keys: [] };
   if (Array.isArray(payload)) return { type: 'array', length: payload.length };
   if (typeof payload !== 'object') return { type: typeof payload };
-  const summary = { type: 'object', keys: Object.keys(payload).slice(0, 20) };
-  for (const [key, value] of Object.entries(payload).slice(0, 20)) {
-    if (value && typeof value === 'object') {
-      summary[key] = Array.isArray(value)
-        ? { type: 'array', length: value.length }
-        : { type: 'object', keys: Object.keys(value).slice(0, 20) };
-    }
-  }
-  return summary;
+  return { type: 'object', keys: Object.keys(payload).slice(0, 20) };
 }
 
 function findAccounts(payload) {
@@ -78,12 +88,25 @@ async function handleWebullBootstrap(request, env) {
   try {
     const tokenResponse = await createWebullAccessToken(env);
     const accessToken = findAccessToken(tokenResponse);
+    const tokenStatus = findTokenStatus(tokenResponse) || 'UNKNOWN';
+
     if (!accessToken) {
       return secureJson({
         ok: false,
         error: 'Webull did not return an access token',
         diagnostic: describePayload(tokenResponse),
       }, 400);
+    }
+
+    if (tokenStatus !== 'NORMAL') {
+      return secureJson({
+        ok: true,
+        pendingVerification: tokenStatus === 'PENDING',
+        environment: env.WEBULL_ENVIRONMENT || 'sandbox',
+        tokenStatus,
+        accessToken,
+        nextStep: 'Verify this token in the Webull app, then save it as the WEBULL_ACCESS_TOKEN Cloudflare secret. Do not run bootstrap again because that creates a new token.',
+      });
     }
 
     const temporaryEnv = { ...env, WEBULL_ACCESS_TOKEN: accessToken };
@@ -93,6 +116,7 @@ async function handleWebullBootstrap(request, env) {
     return secureJson({
       ok: true,
       environment: env.WEBULL_ENVIRONMENT || 'sandbox',
+      tokenStatus,
       accessToken,
       accounts,
       nextSecrets: {
