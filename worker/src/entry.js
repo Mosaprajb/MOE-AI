@@ -1,4 +1,5 @@
 import routerWorker, { AlertCoordinator } from './router.js';
+import { runAutoScanner } from './auto-scanner.js';
 
 export { AlertCoordinator };
 
@@ -46,6 +47,9 @@ export default {
   },
 
   async scheduled(controller, env, ctx) {
-    return routerWorker.scheduled(controller, env, ctx);
+    ctx.waitUntil(Promise.allSettled([
+      routerWorker.scheduled(controller, env, ctx),
+      runAutoScanner(env, controller.scheduledTime),
+    ]));
   },
 };
