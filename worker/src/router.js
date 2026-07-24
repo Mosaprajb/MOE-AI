@@ -21,14 +21,43 @@ function secureJson(data, status = 200) {
   });
 }
 
-function findAccessToken(payload) {
-  return String(
-    payload?.access_token ||
-    payload?.accessToken ||
-    payload?.data?.access_token ||
-    payload?.data?.accessToken ||
-    ''
-  ).trim();
+function findAccessToken(payload, depth = 0) {
+  if (depth > 6 || payload == null) return '';
+  if (typeof payload === 'string') return '';
+  if (Array.isArray(payload)) {
+    for (const item of payload) {
+      const token = findAccessToken(item, depth + 1);
+      if (token) return token;
+    }
+    return '';
+  }
+  if (typeof payload !== 'object') return '';
+
+  for (const key of ['access_token', 'accessToken', 'token']) {
+    const value = payload[key];
+    if (typeof value === 'string' && value.trim()) return value.trim();
+  }
+
+  for (const value of Object.values(payload)) {
+    const token = findAccessToken(value, depth + 1);
+    if (token) return token;
+  }
+  return '';
+}
+
+function describePayload(payload) {
+  if (payload == null) return { type: String(payload), keys: [] };
+  if (Array.isArray(payload)) return { type: 'array', length: payload.length };
+  if (typeof payload !== 'object') return { type: typeof payload };
+  const summary = { type: 'object', keys: Object.keys(payload).slice(0, 20) };
+  for (const [key, value] of Object.entries(payload).slice(0, 20)) {
+    if (value && typeof value === 'object') {
+      summary[key] = Array.isArray(value)
+        ? { type: 'array', length: value.length }
+        : { type: 'object', keys: Object.keys(value).slice(0, 20) };
+    }
+  }
+  return summary;
 }
 
 function findAccounts(payload) {
@@ -49,7 +78,13 @@ async function handleWebullBootstrap(request, env) {
   try {
     const tokenResponse = await createWebullAccessToken(env);
     const accessToken = findAccessToken(tokenResponse);
-    if (!accessToken) throw new Error('Webull did not return an access token');
+    if (!accessToken) {
+      return secureJson({
+        ok: false,
+        error: 'Webull did not return an access token',
+        diagnostic: describePayload(tokenResponse),
+      }, 400);
+    }
 
     const temporaryEnv = { ...env, WEBULL_ACCESS_TOKEN: accessToken };
     const accountsResponse = await getWebullAccounts(temporaryEnv);
