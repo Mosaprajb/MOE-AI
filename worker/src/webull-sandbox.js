@@ -1,4 +1,5 @@
 import { buildTradePlan } from './trade-engine.js';
+import { evaluatePortfolioRisk } from './portfolio-manager.js';
 
 const ALLOWED_SIDES = new Set(['BUY', 'SELL']);
 const ALLOWED_ORDER_TYPES = new Set(['MARKET', 'LIMIT']);
@@ -6,9 +7,7 @@ const ALLOWED_SESSIONS = new Set(['CORE', 'ALL']);
 
 function finitePositive(value, field) {
   const number = Number(value);
-  if (!Number.isFinite(number) || number <= 0) {
-    throw new Error(`${field} must be a positive number`);
-  }
+  if (!Number.isFinite(number) || number <= 0) throw new Error(`${field} must be a positive number`);
   return number;
 }
 
@@ -34,7 +33,6 @@ export function normalizeWebullSignal(input = {}) {
   const referencePrice = limitPrice || optionalPositive(input.marketPrice, 'marketPrice');
 
   if (!referencePrice) throw new Error('A reference price is required');
-
   if (side === 'BUY' && stopLoss >= referencePrice) throw new Error('BUY stopLoss must be below entry price');
   if (side === 'BUY' && takeProfit <= referencePrice) throw new Error('BUY takeProfit must be above entry price');
   if (side === 'SELL' && stopLoss <= referencePrice) throw new Error('SELL stopLoss must be above entry price');
@@ -64,7 +62,6 @@ export function enforceRiskLimits(order, env = {}) {
     throw new Error('Market orders require WEBULL_MARKET_PRICE_CAP during sandbox testing');
   }
   if (referencePrice * order.quantity > maxNotional) throw new Error('Order exceeds maximum notional value');
-
   return order;
 }
 
@@ -88,6 +85,17 @@ export async function handleWebullSandboxOrder(request, env = {}) {
       riskPercent: payload.riskPercent ?? payload.context?.riskPercent,
     };
     const plan = buildTradePlan(signal, context, env);
+    const portfolioInput = {
+      ...(payload.portfolio || {}),
+      accountEquity: payload.portfolio?.accountEquity ?? context.accountEquity,
+      signalSector: payload.portfolio?.signalSector ?? payload.sector,
+    };
+    const portfolio = evaluatePortfolioRisk({ signal, plan, portfolio: portfolioInput, env });
+
+    if (!portfolio.accepted) {
+      plan.evaluation.accepted = false;
+      plan.evaluation.reasons.push(...portfolio.reasons.filter((reason) => !plan.evaluation.reasons.includes(reason)));
+    }
 
     const quantity = signal.requestedQuantity == null
       ? plan.sizing.quantity
@@ -131,9 +139,11 @@ export async function handleWebullSandboxOrder(request, env = {}) {
       submitted: false,
       order,
       plan,
+      portfolio,
+      decisionPipeline: ['SIGNAL_VALIDATION', 'TRADE_ENGINE', 'POSITION_SIZING', 'PORTFOLIO_MANAGER', 'ORDER_PREVIEW'],
       message: plan.evaluation.accepted
-        ? 'Trade accepted for preview but not sent to Webull.'
-        : 'Trade rejected by MOE risk and confidence rules.',
+        ? 'Trade accepted by all decision layers for preview but not sent to Webull.'
+        : 'Trade rejected by MOE decision pipeline.',
       createdAt: new Date().toISOString(),
     }, { status: plan.evaluation.accepted ? 200 : 422 });
   } catch (error) {
