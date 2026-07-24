@@ -20,6 +20,57 @@ function groupFor(symbol, groups = DEFAULT_CORRELATION_GROUPS) {
   return Object.entries(groups).find(([, symbols]) => symbols.includes(normalized))?.[0] || null;
 }
 
+function duplicateAction({ signal, plan, duplicatePosition, duplicateOrder, env }) {
+  if (!duplicatePosition && !duplicateOrder) return null;
+
+  const score = number(plan?.evaluation?.score, 0);
+  const minimumReplacementScore = number(env.MOE_REPLACEMENT_MIN_SCORE, 92);
+  const unrealizedPnl = number(duplicatePosition?.unrealizedPnl, 0);
+  const allowSandboxReplacement = env.WEBULL_ENVIRONMENT === 'sandbox'
+    && env.MOE_SANDBOX_REPLACEMENT_RECOMMENDATIONS !== 'false';
+
+  if (duplicateOrder) {
+    return {
+      type: 'KEEP_PENDING_ORDER',
+      eligible: false,
+      automatic: false,
+      reason: 'A pending order already exists for this symbol.',
+    };
+  }
+
+  if (allowSandboxReplacement && score >= minimumReplacementScore && unrealizedPnl <= 0) {
+    return {
+      type: 'REVIEW_REPLACEMENT',
+      eligible: true,
+      automatic: false,
+      reason: `New setup score ${score} is strong and the existing position is not profitable. Manual sandbox replacement review is recommended.`,
+      safeguards: {
+        minimumReplacementScore,
+        existingUnrealizedPnl: unrealizedPnl,
+      },
+    };
+  }
+
+  if (unrealizedPnl > 0) {
+    return {
+      type: 'PROTECT_EXISTING_POSITION',
+      eligible: false,
+      automatic: false,
+      reason: 'Existing position is profitable. Keep the duplicate-entry block and consider moving protection toward break-even.',
+      safeguards: {
+        existingUnrealizedPnl: unrealizedPnl,
+      },
+    };
+  }
+
+  return {
+    type: 'BLOCK_DUPLICATE',
+    eligible: false,
+    automatic: false,
+    reason: 'Existing exposure remains protected from duplicate entry.',
+  };
+}
+
 export function evaluatePortfolioRisk({ signal, plan, portfolio = {}, env = {} }) {
   const positions = Array.isArray(portfolio.openPositions) ? portfolio.openPositions : [];
   const pendingOrders = Array.isArray(portfolio.pendingOrders) ? portfolio.pendingOrders : [];
@@ -35,7 +86,9 @@ export function evaluatePortfolioRisk({ signal, plan, portfolio = {}, env = {} }
   if (positions.length >= maxOpenPositions) reasons.push('Maximum open positions reached');
   if (dailyTrades >= maxDailyTrades) reasons.push('Maximum daily trades reached');
 
-  const duplicate = [...positions, ...pendingOrders].some((item) => normalizeSymbol(item.symbol) === signal.symbol);
+  const duplicatePosition = positions.find((item) => normalizeSymbol(item.symbol) === signal.symbol) || null;
+  const duplicateOrder = pendingOrders.find((item) => normalizeSymbol(item.symbol) === signal.symbol) || null;
+  const duplicate = Boolean(duplicatePosition || duplicateOrder);
   if (duplicate) reasons.push('Symbol already has an open position or pending order');
 
   const currentRiskDollars = positions.reduce((sum, item) => {
@@ -70,9 +123,12 @@ export function evaluatePortfolioRisk({ signal, plan, portfolio = {}, env = {} }
     if (sectorCount >= maxSectorPositions) reasons.push(`Sector exposure limit reached for ${sector}`);
   }
 
+  const action = duplicateAction({ signal, plan, duplicatePosition, duplicateOrder, env });
+
   return {
     accepted: reasons.length === 0,
     reasons,
+    action,
     metrics: {
       openPositions: positions.length,
       maxOpenPositions,
@@ -86,6 +142,9 @@ export function evaluatePortfolioRisk({ signal, plan, portfolio = {}, env = {} }
       correlationGroup: signalGroup,
       correlatedPositions: correlatedPositions.map((item) => normalizeSymbol(item.symbol)),
       maxCorrelatedPositions,
+      duplicateSymbol: duplicate ? signal.symbol : null,
+      duplicateKind: duplicateOrder ? 'PENDING_ORDER' : duplicatePosition ? 'OPEN_POSITION' : null,
+      duplicatePositionUnrealizedPnl: duplicatePosition ? number(duplicatePosition.unrealizedPnl, 0) : null,
     },
   };
 }
