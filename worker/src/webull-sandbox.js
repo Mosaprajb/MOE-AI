@@ -40,6 +40,7 @@ function normalizeWebullPortfolio(snapshot, fallback = {}) {
   const accountEquity = firstFinite(
     balanceData?.net_liquidation,
     balanceData?.netLiquidation,
+    balanceData?.total_net_liquidation_value,
     balanceData?.total_asset,
     balanceData?.totalAsset,
     balanceData?.equity,
@@ -59,6 +60,59 @@ function normalizeWebullPortfolio(snapshot, fallback = {}) {
     openPositions,
     source: 'WEBULL_READ_ONLY',
     snapshotFetchedAt: snapshot?.fetchedAt,
+  };
+}
+
+function evaluateAccountSafety(snapshot, signal, referencePrice, quantity, env = {}) {
+  if (!snapshot) return { accepted: true, reasons: [], metrics: {} };
+
+  const balance = snapshot.balance || {};
+  const currencyAsset = Array.isArray(balance.account_currency_assets)
+    ? balance.account_currency_assets.find((item) => String(item.currency || '').toUpperCase() === 'USD') || balance.account_currency_assets[0]
+    : null;
+
+  const dayBuyingPower = firstFinite(currencyAsset?.day_buying_power, balance.day_buying_power);
+  const overnightBuyingPower = firstFinite(currencyAsset?.overnight_buying_power, balance.overnight_buying_power);
+  const cashBalance = firstFinite(currencyAsset?.cash_balance, balance.total_cash_balance, balance.cash_balance);
+  const netLiquidation = firstFinite(currencyAsset?.net_liquidation_value, balance.total_net_liquidation_value, balance.net_liquidation_value);
+  const maintenanceMargin = firstFinite(balance.maintenance_margin);
+  const marginCalls = Array.isArray(balance.open_margin_calls) ? balance.open_margin_calls : [];
+  const estimatedNotional = Number.isFinite(referencePrice) && Number.isFinite(quantity) ? referencePrice * quantity : null;
+  const reasons = [];
+
+  const requirePositiveOvernight = env.WEBULL_REQUIRE_POSITIVE_OVERNIGHT_BP !== 'false';
+  const blockNegativeCash = env.WEBULL_BLOCK_NEGATIVE_CASH === 'true';
+  const minEquity = Number(env.WEBULL_MIN_NET_LIQUIDATION || 2000);
+  const maintenanceBuffer = Number(env.WEBULL_MIN_MAINTENANCE_BUFFER || 1.15);
+
+  if (marginCalls.length > 0) reasons.push('Account has an open margin call');
+  if (Number.isFinite(netLiquidation) && netLiquidation < minEquity) reasons.push('Net liquidation is below the configured minimum');
+  if (Number.isFinite(netLiquidation) && Number.isFinite(maintenanceMargin) && maintenanceMargin > 0 && netLiquidation < maintenanceMargin * maintenanceBuffer) {
+    reasons.push('Maintenance margin safety buffer is too low');
+  }
+
+  if (signal.side === 'BUY') {
+    if (requirePositiveOvernight && Number.isFinite(overnightBuyingPower) && overnightBuyingPower <= 0) {
+      reasons.push('Overnight buying power is not positive');
+    }
+    if (blockNegativeCash && Number.isFinite(cashBalance) && cashBalance < 0) reasons.push('Cash balance is negative');
+    if (Number.isFinite(dayBuyingPower) && Number.isFinite(estimatedNotional) && estimatedNotional > dayBuyingPower) {
+      reasons.push('Estimated order value exceeds day buying power');
+    }
+  }
+
+  return {
+    accepted: reasons.length === 0,
+    reasons,
+    metrics: {
+      dayBuyingPower,
+      overnightBuyingPower,
+      cashBalance,
+      netLiquidation,
+      maintenanceMargin,
+      estimatedNotional,
+      marginCallCount: marginCalls.length,
+    },
   };
 }
 
@@ -156,6 +210,14 @@ export async function handleWebullSandboxOrder(request, env = {}) {
       plan.evaluation.accepted = false;
       if (!plan.evaluation.reasons.includes('Calculated position size is zero')) plan.evaluation.reasons.push('Calculated position size is zero');
     }
+
+    const referencePrice = signal.limitPrice || Number(payload.marketPrice ?? payload.context?.marketPrice ?? env.WEBULL_MARKET_PRICE_CAP || 0);
+    const accountSafety = evaluateAccountSafety(accountSnapshot, signal, referencePrice, quantity, env);
+    if (!accountSafety.accepted) {
+      plan.evaluation.accepted = false;
+      plan.evaluation.reasons.push(...accountSafety.reasons.filter((reason) => !plan.evaluation.reasons.includes(reason)));
+    }
+
     if (env.WEBULL_LIVE_TRADING === 'true' || env.WEBULL_ENVIRONMENT === 'production') {
       return Response.json({ ok: false, blocked: true, error: 'Production trading is intentionally disabled' }, { status: 423 });
     }
@@ -175,7 +237,8 @@ export async function handleWebullSandboxOrder(request, env = {}) {
           order,
           plan,
           portfolio,
-          message: 'Sandbox order was not submitted because the trade failed MOE decision rules.',
+          accountSafety,
+          message: 'Sandbox order was not submitted because the trade failed MOE safety rules.',
         }, { status: 422 });
       }
       submission = await placeWebullSandboxOrder(accountId, order, env);
@@ -191,6 +254,7 @@ export async function handleWebullSandboxOrder(request, env = {}) {
       order,
       plan,
       portfolio,
+      accountSafety,
       submission,
       accountSync: {
         enabled: env.WEBULL_READ_ONLY_SYNC === 'true',
@@ -198,7 +262,7 @@ export async function handleWebullSandboxOrder(request, env = {}) {
         accountId: accountSnapshot ? accountId : null,
         fetchedAt: accountSnapshot?.fetchedAt || null,
       },
-      decisionPipeline: ['SIGNAL_VALIDATION', 'WEBULL_ACCOUNT_SYNC', 'TRADE_ENGINE', 'POSITION_SIZING', 'PORTFOLIO_MANAGER', submitted ? 'SANDBOX_SUBMISSION' : 'ORDER_PREVIEW'],
+      decisionPipeline: ['SIGNAL_VALIDATION', 'WEBULL_ACCOUNT_SYNC', 'TRADE_ENGINE', 'POSITION_SIZING', 'PORTFOLIO_MANAGER', 'MARGIN_ACCOUNT_SAFETY', submitted ? 'SANDBOX_SUBMISSION' : 'ORDER_PREVIEW'],
       message: submitted
         ? 'Trade passed all decision layers and was submitted to Webull Sandbox.'
         : plan.evaluation.accepted
