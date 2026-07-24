@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { BACKGROUND_ALERTS_URL } from '../../lib/backgroundAlerts';
 
 function money(value) {
@@ -19,12 +19,21 @@ function statusLabel(item) {
   return 'REJECTED';
 }
 
+function cardTone(item) {
+  if (item.submitted) return styles.cardSubmitted;
+  if (item.accepted) return styles.cardAccepted;
+  return styles.cardRejected;
+}
+
 export default function DecisionsPage() {
   const [decisions, setDecisions] = useState([]);
   const [status, setStatus] = useState('loading');
   const [error, setError] = useState('');
   const [updatedAt, setUpdatedAt] = useState(null);
   const [filter, setFilter] = useState('ALL');
+  const [query, setQuery] = useState('');
+  const [live, setLive] = useState(true);
+  const knownIds = useRef(new Set());
 
   const load = useCallback(async () => {
     try {
@@ -36,9 +45,19 @@ export default function DecisionsPage() {
       });
       const payload = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(payload.error || `Decision service returned ${response.status}`);
-      setDecisions(Array.isArray(payload.decisions) ? payload.decisions : []);
+      const next = Array.isArray(payload.decisions) ? payload.decisions : [];
+      const previousIds = knownIds.current;
+      const newest = next.find((item) => item.signalId && !previousIds.has(item.signalId));
+      setDecisions(next);
+      knownIds.current = new Set(next.map((item) => item.signalId).filter(Boolean));
       setUpdatedAt(new Date());
       setStatus('ready');
+
+      if (newest && previousIds.size > 0 && 'Notification' in window && Notification.permission === 'granted') {
+        new Notification(`${newest.symbol || 'MOERAND'} · ${statusLabel(newest)}`, {
+          body: `${newest.side || ''} · Score ${numberOrDash(newest.score)}/100 · Entry ${money(newest.entry)}`,
+        });
+      }
     } catch (loadError) {
       setError(loadError.message || 'Could not load decision history');
       setStatus('error');
@@ -47,23 +66,42 @@ export default function DecisionsPage() {
 
   useEffect(() => {
     load();
-    const timer = window.setInterval(load, 15_000);
-    return () => window.clearInterval(timer);
   }, [load]);
 
-  const visible = useMemo(() => decisions.filter((item) => {
-    if (filter === 'ACCEPTED') return item.accepted;
-    if (filter === 'REJECTED') return !item.accepted;
-    if (filter === 'SUBMITTED') return item.submitted;
-    return true;
-  }), [decisions, filter]);
+  useEffect(() => {
+    if (!live) return undefined;
+    const timer = window.setInterval(load, 5_000);
+    return () => window.clearInterval(timer);
+  }, [live, load]);
 
-  const totals = useMemo(() => ({
-    all: decisions.length,
-    accepted: decisions.filter((item) => item.accepted).length,
-    rejected: decisions.filter((item) => !item.accepted).length,
-    submitted: decisions.filter((item) => item.submitted).length,
-  }), [decisions]);
+  const visible = useMemo(() => decisions.filter((item) => {
+    if (filter === 'ACCEPTED' && !item.accepted) return false;
+    if (filter === 'REJECTED' && item.accepted) return false;
+    if (filter === 'SUBMITTED' && !item.submitted) return false;
+    const text = `${item.symbol || ''} ${item.side || ''} ${(item.reasons || []).join(' ')}`.toLowerCase();
+    return text.includes(query.trim().toLowerCase());
+  }), [decisions, filter, query]);
+
+  const totals = useMemo(() => {
+    const accepted = decisions.filter((item) => item.accepted).length;
+    const rejected = decisions.length - accepted;
+    const submitted = decisions.filter((item) => item.submitted).length;
+    const scores = decisions.map((item) => Number(item.score)).filter(Number.isFinite);
+    const averageScore = scores.length ? scores.reduce((sum, value) => sum + value, 0) / scores.length : 0;
+    return {
+      all: decisions.length,
+      accepted,
+      rejected,
+      submitted,
+      acceptanceRate: decisions.length ? (accepted / decisions.length) * 100 : 0,
+      averageScore,
+    };
+  }, [decisions]);
+
+  async function enableNotifications() {
+    if (!('Notification' in window)) return;
+    await Notification.requestPermission();
+  }
 
   return (
     <main style={styles.page}>
@@ -72,10 +110,11 @@ export default function DecisionsPage() {
           <div>
             <p style={styles.eyebrow}>MOE AI · TRADINGVIEW</p>
             <h1 style={styles.title}>Decision History</h1>
-            <p style={styles.subtitle}>Live MOERAND signals, safety decisions, scores and Webull Sandbox status.</p>
+            <p style={styles.subtitle}>Live MOERAND signals, safety decisions, scores and Webull execution status.</p>
           </div>
           <div style={styles.headerActions}>
             <a href="../" style={styles.linkButton}>Back to MOERAND</a>
+            <button type="button" onClick={enableNotifications} style={styles.linkButton}>Notifications</button>
             <button type="button" onClick={load} style={styles.primaryButton}>Refresh</button>
           </div>
         </header>
@@ -85,6 +124,8 @@ export default function DecisionsPage() {
           <Summary label="Accepted" value={totals.accepted} positive />
           <Summary label="Rejected" value={totals.rejected} warning />
           <Summary label="Submitted" value={totals.submitted} />
+          <Summary label="Acceptance" value={`${totals.acceptanceRate.toFixed(0)}%`} positive />
+          <Summary label="Avg score" value={totals.averageScore ? totals.averageScore.toFixed(0) : '—'} />
         </section>
 
         <section style={styles.toolbar}>
@@ -99,30 +140,36 @@ export default function DecisionsPage() {
                 {item}
               </button>
             ))}
+            <input
+              value={query}
+              onChange={(event) => setQuery(event.target.value)}
+              placeholder="Search symbol or reason"
+              style={styles.search}
+            />
           </div>
-          <span style={styles.updated}>
-            {updatedAt ? `Updated ${updatedAt.toLocaleTimeString()}` : 'Connecting…'}
-          </span>
+          <div style={styles.liveBlock}>
+            <button type="button" onClick={() => setLive((value) => !value)} style={{ ...styles.liveButton, ...(live ? styles.liveOn : {}) }}>
+              {live ? '● LIVE 5s' : '○ PAUSED'}
+            </button>
+            <span style={styles.updated}>{updatedAt ? `Updated ${updatedAt.toLocaleTimeString()}` : 'Connecting…'}</span>
+          </div>
         </section>
 
         {status === 'loading' && <div style={styles.notice}>Loading MOE decisions…</div>}
         {error && <div style={{ ...styles.notice, ...styles.error }}>{error}</div>}
         {status === 'ready' && visible.length === 0 && (
-          <div style={styles.notice}>No TradingView decisions stored yet. The next webhook signal will appear here automatically.</div>
+          <div style={styles.notice}>No decisions match the current filters. New TradingView signals appear automatically.</div>
         )}
 
         <section style={styles.list}>
           {visible.map((item) => (
-            <article key={item.signalId} style={styles.card}>
+            <article key={item.signalId} style={{ ...styles.card, ...cardTone(item) }}>
               <div style={styles.cardTop}>
                 <div style={styles.symbolBlock}>
                   <span style={styles.symbol}>{item.symbol || '—'}</span>
                   <span style={styles.side}>{item.side || '—'} {item.timeframe ? `· ${item.timeframe}` : ''}</span>
                 </div>
-                <span style={{
-                  ...styles.status,
-                  ...(item.submitted ? styles.submitted : item.accepted ? styles.accepted : styles.rejected),
-                }}>
+                <span style={{ ...styles.status, ...(item.submitted ? styles.submitted : item.accepted ? styles.accepted : styles.rejected) }}>
                   {statusLabel(item)}
                 </span>
               </div>
@@ -146,9 +193,7 @@ export default function DecisionsPage() {
               {item.reasons?.length > 0 && (
                 <div style={styles.reasons}>
                   <b>Decision reasons</b>
-                  <ul style={styles.reasonList}>
-                    {item.reasons.map((reason) => <li key={reason}>{reason}</li>)}
-                  </ul>
+                  <ul style={styles.reasonList}>{item.reasons.map((reason) => <li key={reason}>{reason}</li>)}</ul>
                 </div>
               )}
 
@@ -171,12 +216,7 @@ function Summary({ label, value, positive, warning }) {
 }
 
 function Metric({ label, value }) {
-  return (
-    <div style={styles.metric}>
-      <small style={styles.metricLabel}>{label}</small>
-      <strong style={styles.metricValue}>{value}</strong>
-    </div>
-  );
+  return <div style={styles.metric}><small style={styles.metricLabel}>{label}</small><strong style={styles.metricValue}>{value}</strong></div>;
 }
 
 const styles = {
@@ -186,24 +226,31 @@ const styles = {
   eyebrow: { color: '#36dc91', letterSpacing: '0.16em', fontSize: 12, fontWeight: 800, margin: '0 0 8px' },
   title: { fontSize: 'clamp(32px, 5vw, 54px)', margin: 0, lineHeight: 1 },
   subtitle: { color: '#94a89e', maxWidth: 680, marginTop: 12 },
-  headerActions: { display: 'flex', gap: 10 },
-  linkButton: { color: '#d6e8df', border: '1px solid #29443a', borderRadius: 12, padding: '11px 14px', textDecoration: 'none', fontWeight: 700 },
+  headerActions: { display: 'flex', gap: 10, flexWrap: 'wrap' },
+  linkButton: { color: '#d6e8df', background: 'transparent', border: '1px solid #29443a', borderRadius: 12, padding: '11px 14px', textDecoration: 'none', fontWeight: 700, cursor: 'pointer' },
   primaryButton: { background: '#21c77a', color: '#04130d', border: 0, borderRadius: 12, padding: '11px 18px', fontWeight: 900, cursor: 'pointer' },
-  summaryGrid: { display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 12, marginBottom: 18 },
+  summaryGrid: { display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: 12, marginBottom: 18 },
   summaryCard: { background: '#101d18', border: '1px solid #22372f', borderRadius: 16, padding: 18 },
   summaryPositive: { borderColor: '#1f7a52' },
   summaryWarning: { borderColor: '#83483e' },
   summaryLabel: { color: '#8ea198', display: 'block', marginBottom: 8, textTransform: 'uppercase', letterSpacing: '0.08em' },
   summaryValue: { fontSize: 30 },
   toolbar: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap', marginBottom: 18 },
-  filters: { display: 'flex', gap: 8, flexWrap: 'wrap' },
+  filters: { display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' },
   filterButton: { background: '#0d1814', color: '#a9bbb2', border: '1px solid #263c33', borderRadius: 999, padding: '8px 12px', cursor: 'pointer', fontWeight: 800, fontSize: 12 },
   filterButtonActive: { background: '#1dbd72', color: '#03110b', borderColor: '#1dbd72' },
+  search: { background: '#0d1814', color: '#edf7f2', border: '1px solid #263c33', borderRadius: 999, padding: '9px 14px', minWidth: 210, outline: 'none' },
+  liveBlock: { display: 'flex', alignItems: 'center', gap: 10 },
+  liveButton: { border: '1px solid #3a4b44', background: '#111b17', color: '#9badA4', borderRadius: 999, padding: '8px 12px', fontWeight: 900, cursor: 'pointer' },
+  liveOn: { color: '#53e99e', borderColor: '#237a50' },
   updated: { color: '#74877e', fontSize: 13 },
   notice: { background: '#101d18', border: '1px solid #263c33', borderRadius: 16, padding: 20, color: '#a8bab1' },
   error: { borderColor: '#8b3e36', color: '#ffb9ad' },
   list: { display: 'grid', gap: 14 },
-  card: { background: 'linear-gradient(180deg, #111f19 0%, #0d1814 100%)', border: '1px solid #243a31', borderRadius: 18, padding: 18, boxShadow: '0 16px 40px rgba(0,0,0,.22)' },
+  card: { background: 'linear-gradient(180deg, #111f19 0%, #0d1814 100%)', border: '1px solid #243a31', borderLeftWidth: 5, borderRadius: 18, padding: 18, boxShadow: '0 16px 40px rgba(0,0,0,.22)' },
+  cardAccepted: { borderLeftColor: '#28cf82', background: 'linear-gradient(180deg, #10241b 0%, #0d1814 100%)' },
+  cardRejected: { borderLeftColor: '#e16c5c', background: 'linear-gradient(180deg, #211512 0%, #0d1814 100%)' },
+  cardSubmitted: { borderLeftColor: '#55b4f5', background: 'linear-gradient(180deg, #10202c 0%, #0d1814 100%)' },
   cardTop: { display: 'flex', justifyContent: 'space-between', gap: 14, alignItems: 'center', marginBottom: 16 },
   symbolBlock: { display: 'flex', gap: 10, alignItems: 'baseline', flexWrap: 'wrap' },
   symbol: { fontSize: 24, fontWeight: 900 },
