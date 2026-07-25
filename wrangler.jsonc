@@ -3,26 +3,12 @@
   "name": "moerand-alerts",
   "main": "worker/src/trading-mode-entry.js",
   "compatibility_date": "2026-07-22",
-  "observability": {
-    "enabled": true
-  },
-  "triggers": {
-    "crons": ["* * * * *"]
-  },
+  "observability": { "enabled": true },
+  "triggers": { "crons": ["* * * * *"] },
   "durable_objects": {
-    "bindings": [
-      {
-        "name": "ALERT_COORDINATOR",
-        "class_name": "AlertCoordinator"
-      }
-    ]
+    "bindings": [{ "name": "ALERT_COORDINATOR", "class_name": "AlertCoordinator" }]
   },
-  "exports": {
-    "AlertCoordinator": {
-      "type": "durable-object",
-      "storage": "sqlite"
-    }
-  },
+  "exports": { "AlertCoordinator": { "type": "durable-object", "storage": "sqlite" } },
   "vars": {
     "APP_ORIGIN": "https://mosaprajb.github.io",
     "APP_URL": "https://mosaprajb.github.io/MOE-AI/",
@@ -38,8 +24,14 @@
     "WEBULL_AUTOMATION_ARMED": "false",
     "WEBULL_PROTECTED_ORDERS": "true",
     "WEBULL_READ_ONLY_SYNC": "true",
+    "WEBULL_LIVE_API_BASE_URL": "https://api.webull.com",
     "WEBULL_LIVE_TRADING": "false",
     "WEBULL_LIVE_ORDER_SUBMISSION": "false",
+    "WEBULL_LIVE_AUTOMATION_ARMED": "false",
+    "WEBULL_LIVE_KILL_SWITCH": "true",
+    "WEBULL_LIVE_MAX_QUANTITY": "1",
+    "WEBULL_LIVE_MAX_NOTIONAL": "100",
+    "WEBULL_BOOTSTRAP_ENABLED": "false",
     "WEBULL_MAX_QUANTITY": "1",
     "WEBULL_MAX_NOTIONAL": "100",
     "AUTO_SCANNER_ENABLED": "false",
