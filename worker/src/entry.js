@@ -1,5 +1,5 @@
 import routerWorker, { AlertCoordinator } from './learning-router.js';
-import { runAutoScanner } from './auto-scanner.js';
+import { activeTradingWindow, AUTO_SCANNER_SYMBOLS, runAutoScanner } from './auto-scanner.js';
 import { buildDashboardSnapshot, htmlResponse } from './moe-dashboard-v2.js';
 import { learningHtmlResponse } from './learning-dashboard.js';
 import { getWebullAccountSnapshot } from './webull-client.js';
@@ -24,6 +24,50 @@ const LEARNING_PAGE_PATHS = new Set([
   '/moe-ai/learning',
   '/moe-ai/learning/',
 ]);
+
+function nySessionSnapshot(date, window = {}) {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'America/New_York',
+    weekday: 'short',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    hourCycle: 'h23',
+  }).formatToParts(date);
+  const values = Object.fromEntries(parts.map((part) => [part.type, part.value]));
+  const minutes = Number(values.hour) * 60 + Number(values.minute);
+  let phase = 'CLOSED';
+  let startMinute = null;
+
+  if (window.open && window.session === 'NIGHT') {
+    phase = 'OVERNIGHT';
+    startMinute = 20 * 60;
+  } else if (window.open && minutes < 9 * 60 + 30) {
+    phase = 'PREMARKET';
+    startMinute = 4 * 60;
+  } else if (window.open && minutes < 16 * 60) {
+    phase = 'CORE';
+    startMinute = 9 * 60 + 30;
+  } else if (window.open) {
+    phase = 'AFTER_HOURS';
+    startMinute = 16 * 60;
+  }
+
+  return {
+    open: window.open === true,
+    session: window.session || null,
+    label: window.label || 'CLOSED',
+    phase,
+    atSessionStart: startMinute != null && minutes >= startMinute && minutes < startMinute + 2,
+    newYorkDate: `${values.year}-${values.month}-${values.day}`,
+    newYorkTime: `${values.hour}:${values.minute}`,
+    weekday: values.weekday,
+    dataFeed: window.dataFeed || null,
+    dataDelayMinutes: Number(window.dataDelayMinutes || 0),
+  };
+}
 
 function firstFinite(...values) {
   for (const value of values) {
@@ -224,9 +268,40 @@ export default {
   },
 
   async scheduled(controller, env, ctx) {
-    ctx.waitUntil(Promise.allSettled([
-      routerWorker.scheduled(controller, env, ctx),
-      runAutoScanner(env, controller.scheduledTime),
-    ]));
+    const scheduledTime = Number(controller.scheduledTime) || Date.now();
+    const window = activeTradingWindow(new Date(scheduledTime), env);
+    const session = nySessionSnapshot(new Date(scheduledTime), window);
+    const stub = env.ALERT_COORDINATOR.getByName('global');
+
+    const statusTask = (async () => {
+      const startedAt = Date.now();
+      let autoScannerResult = null;
+      let autoScannerError = null;
+      try {
+        autoScannerResult = await runAutoScanner(env, scheduledTime);
+      } catch (error) {
+        autoScannerError = error instanceof Error ? error.message : 'Auto scanner failed';
+      }
+
+      await stub.notifySessionStart({ session, scheduledTime });
+      return stub.recordBotStatus({
+        heartbeatAt: Date.now(),
+        scheduledTime,
+        completedAt: Date.now(),
+        durationMs: Date.now() - startedAt,
+        environment: env.WEBULL_ENVIRONMENT || 'sandbox',
+        autoScannerEnabled: env.AUTO_SCANNER_ENABLED === 'true',
+        automationArmed: env.WEBULL_AUTOMATION_ARMED === 'true',
+        liveAutomationArmed: env.WEBULL_LIVE_AUTOMATION_ARMED === 'true',
+        liveTrading: env.WEBULL_LIVE_TRADING === 'true',
+        universeSize: AUTO_SCANNER_SYMBOLS.length,
+        session,
+        autoScannerResult,
+        autoScannerError,
+      });
+    })();
+
+    if (ctx?.waitUntil) ctx.waitUntil(statusTask);
+    return routerWorker.scheduled(controller, env, ctx);
   },
 };
