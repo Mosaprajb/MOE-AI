@@ -1,6 +1,8 @@
 import routerWorker, { AlertCoordinator as BaseAlertCoordinator } from './router.js';
 import { closeTrade, listTrades, tradeAnalytics, upsertTrade } from './trade-history.js';
 
+const TRADINGVIEW_SIGNAL_PATH = '/api/tradingview/signal';
+
 export class AlertCoordinator extends BaseAlertCoordinator {
   async listTrades(options = {}) {
     return listTrades(this.ctx.storage, options);
@@ -63,6 +65,88 @@ async function parseJson(request) {
   }
 }
 
+async function signalFingerprint(payload) {
+  const explicit = String(payload.signalId || payload.signal_id || '').trim();
+  if (explicit) return explicit.slice(0, 64);
+  const raw = [
+    payload.symbol,
+    payload.side,
+    payload.timeframe || payload.interval,
+    payload.barTime || payload.time || payload.timestamp,
+    payload.limitPrice || payload.marketPrice,
+    payload.stopLoss,
+    payload.takeProfit,
+  ].map((value) => String(value ?? '')).join('|');
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(raw));
+  return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, '0')).join('').slice(0, 64);
+}
+
+function automaticTrade(payload, result, signalId) {
+  const order = result?.order || {};
+  const evaluation = result?.plan?.evaluation || {};
+  const brain = result?.brain || result?.plan?.brain || {};
+  return {
+    signalId,
+    symbol: String(order.symbol || payload.symbol || '').trim().toUpperCase(),
+    direction: String(order.side || payload.side || 'BUY').trim().toUpperCase(),
+    timeframe: String(payload.timeframe || payload.interval || ''),
+    entryPrice: order.limitPrice ?? order.marketPrice ?? payload.limitPrice ?? payload.marketPrice,
+    stopLoss: order.stopLoss ?? payload.stopLoss,
+    takeProfit: order.takeProfit ?? payload.takeProfit,
+    quantity: order.quantity ?? payload.quantity ?? payload.qty,
+    entryTime: result?.createdAt || payload.barTime || payload.time || payload.timestamp || new Date().toISOString(),
+    marketRegime: brain.marketRegime ?? payload.marketRegime ?? 'UNKNOWN',
+    sector: brain.sector ?? payload.sector ?? 'OTHER',
+    brainScore: evaluation.score ?? brain.brainScore ?? payload.score,
+    marketScore: brain.marketScore ?? payload.marketScore,
+    sectorScore: brain.sectorScore ?? payload.sectorScore,
+    decisionReasons: evaluation.reasons || result?.accountSafety?.reasons || [],
+    status: 'OPEN',
+  };
+}
+
+async function forwardAndRecordSignal(request, env, ctx) {
+  const requestCopy = request.clone();
+  let payload = null;
+  try {
+    payload = await requestCopy.json();
+  } catch {
+    return routerWorker.fetch(request, env, ctx);
+  }
+
+  const response = await routerWorker.fetch(request, env, ctx);
+  let result = null;
+  try {
+    result = await response.clone().json();
+  } catch {
+    return response;
+  }
+
+  if (result?.submitted === true) {
+    try {
+      const signalId = await signalFingerprint(payload);
+      const trade = await coordinator(env).upsertTrade(automaticTrade(payload, result, signalId));
+      const enriched = { ...result, tradeHistoryRecorded: true, tradeId: trade.id };
+      return secureJson(enriched, response.status, Object.fromEntries(response.headers));
+    } catch (error) {
+      console.error(JSON.stringify({
+        event: 'TRADE_HISTORY_AUTO_RECORD_FAILED',
+        error: error instanceof Error ? error.message : 'Unknown trade history error',
+        symbol: payload?.symbol || null,
+        createdAt: new Date().toISOString(),
+      }));
+      const enriched = {
+        ...result,
+        tradeHistoryRecorded: false,
+        tradeHistoryError: error instanceof Error ? error.message : 'Trade history recording failed',
+      };
+      return secureJson(enriched, response.status, Object.fromEntries(response.headers));
+    }
+  }
+
+  return response;
+}
+
 async function handleTrades(request, env) {
   const origin = allowedOrigin(request, env);
   const headers = cors(origin);
@@ -123,6 +207,7 @@ export default {
       if (path === '/api/trades') return await handleTrades(request, env);
       if (path === '/api/trades/close') return await handleTradeClose(request, env);
       if (path === '/api/trades/analytics') return await handleTradeAnalytics(request, env);
+      if (path === TRADINGVIEW_SIGNAL_PATH && request.method === 'POST') return await forwardAndRecordSignal(request, env, ctx);
       return routerWorker.fetch(request, env, ctx);
     } catch (error) {
       return secureJson({ ok: false, error: error instanceof Error ? error.message : 'Trade history request failed' }, 400);
