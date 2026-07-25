@@ -42,6 +42,50 @@ function pickArray(value) {
   return [];
 }
 
+function maskAccountIdentifier(value) {
+  const normalized = String(value || '').trim();
+  if (!normalized) return null;
+  return `••••${normalized.slice(-4)}`;
+}
+
+function redactAccountIdentifiers(value, depth = 0) {
+  if (depth > 12 || value == null) return value;
+  if (Array.isArray(value)) return value.map((item) => redactAccountIdentifiers(item, depth + 1));
+  if (typeof value !== 'object') return value;
+
+  const redacted = {};
+  for (const [key, item] of Object.entries(value)) {
+    const normalizedKey = key.replace(/[^a-z0-9]/gi, '').toLowerCase();
+    if (normalizedKey === 'accountid' || normalizedKey === 'webullaccountid') {
+      redacted[key] = maskAccountIdentifier(item);
+    } else {
+      redacted[key] = redactAccountIdentifiers(item, depth + 1);
+    }
+  }
+  return redacted;
+}
+
+async function sanitizeJsonResponse(response) {
+  const contentType = response.headers.get('content-type') || '';
+  if (!contentType.toLowerCase().includes('application/json')) return response;
+
+  let payload;
+  try {
+    payload = await response.clone().json();
+  } catch {
+    return response;
+  }
+
+  const headers = new Headers(response.headers);
+  headers.set('cache-control', 'no-store');
+  headers.set('x-content-type-options', 'nosniff');
+  return Response.json(redactAccountIdentifiers(payload), {
+    status: response.status,
+    statusText: response.statusText,
+    headers,
+  });
+}
+
 function normalizeAccountSnapshot(snapshot) {
   if (!snapshot) return { enabled: false, connected: false, readOnly: true, positions: [] };
   const rawBalance = snapshot.balance || {};
@@ -71,7 +115,7 @@ function normalizeAccountSnapshot(snapshot) {
     enabled: true,
     connected: true,
     readOnly: true,
-    accountIdMasked: snapshot.accountId ? `••••${String(snapshot.accountId).slice(-4)}` : null,
+    accountIdMasked: maskAccountIdentifier(snapshot.accountId),
     fetchedAt: snapshot.fetchedAt,
     equity: firstFinite(usd.net_liquidation_value, balance.total_net_liquidation_value, balance.net_liquidation_value, balance.total_asset, balance.equity),
     cash: firstFinite(usd.cash_balance, balance.total_cash_balance, balance.cash_balance),
@@ -175,7 +219,8 @@ export default {
     if (LEARNING_PAGE_PATHS.has(url.pathname)) return learningHtmlResponse();
     if (url.pathname === '/api/moe-ai/dashboard') return dashboardData(request, env, ctx);
     const effectiveRequest = await withSandboxSubmission(request, env);
-    return routerWorker.fetch(effectiveRequest, env, ctx);
+    const response = await routerWorker.fetch(effectiveRequest, env, ctx);
+    return sanitizeJsonResponse(response);
   },
 
   async scheduled(controller, env, ctx) {
