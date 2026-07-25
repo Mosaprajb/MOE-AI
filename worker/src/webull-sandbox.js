@@ -206,8 +206,26 @@ export async function handleWebullSandboxOrder(request, env = {}) {
     if (env.WEBULL_LIVE_TRADING === 'true' || env.WEBULL_ENVIRONMENT === 'production') return Response.json({ ok: false, blocked: true, error: 'Production trading is intentionally disabled' }, { status: 423 });
     const submissionRequested = payload.submitSandbox === true;
     const submissionEnabled = env.WEBULL_SANDBOX_ENABLED === 'true' && env.WEBULL_SANDBOX_ORDER_SUBMISSION === 'true';
+    const automatedSubmission = String(signal.source || '').toUpperCase().startsWith('MOERAND_AUTO_');
+    const automationArmed = env.WEBULL_AUTOMATION_ARMED === 'true';
     let submission = null;
     if (submissionRequested) {
+      if (automatedSubmission && !automationArmed) {
+        return Response.json({
+          ok: false,
+          accepted: plan.evaluation.accepted,
+          submitted: false,
+          blocked: true,
+          automationArmed: false,
+          order,
+          plan,
+          brain: { version: MOE_AI_BRAIN_VERSION, ...brain },
+          decision,
+          portfolio,
+          accountSafety,
+          message: 'Automatic Webull Sandbox submission is disarmed. Set WEBULL_AUTOMATION_ARMED=true only after the manual protected-order test succeeds.',
+        }, { status: 423 });
+      }
       if (!submissionEnabled) throw new Error('Sandbox submission requested but server submission is disabled');
       if (!accountId) throw new Error('WEBULL_ACCOUNT_ID or payload.accountId is required');
       if (!plan.evaluation.accepted) {
