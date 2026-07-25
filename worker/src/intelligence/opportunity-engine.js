@@ -3,6 +3,17 @@ function number(value, fallback = 0) {
   return Number.isFinite(parsed) ? parsed : fallback;
 }
 
+function resultFor(opportunity, metadata = {}) {
+  return {
+    ...opportunity,
+    accepted: metadata.accepted === true,
+    replaced: metadata.replaced === true,
+    reason: metadata.reason || null,
+    previous: metadata.previous ? { ...metadata.previous } : null,
+    active: metadata.active ? { ...metadata.active } : null,
+  };
+}
+
 export class OpportunityEngine {
   constructor() {
     this.active = new Map();
@@ -13,8 +24,6 @@ export class OpportunityEngine {
     if (!symbol) throw new Error('Opportunity requires symbol');
 
     const expiresAt = number(candidate.expiresAt, now + 30 * 60 * 1000);
-    if (expiresAt <= now) return { accepted: false, replaced: false, reason: 'Candidate expired', active: this.get(symbol, now) };
-
     const normalized = {
       ...candidate,
       symbol,
@@ -23,20 +32,46 @@ export class OpportunityEngine {
       expiresAt,
     };
 
+    if (expiresAt <= now) {
+      return resultFor(normalized, {
+        accepted: false,
+        replaced: false,
+        reason: 'Candidate expired',
+        active: this.get(symbol, now),
+      });
+    }
+
     const current = this.get(symbol, now);
     if (!current) {
       this.active.set(symbol, normalized);
-      return { accepted: true, replaced: false, reason: 'First valid opportunity', active: { ...normalized } };
+      return resultFor(normalized, {
+        accepted: true,
+        replaced: false,
+        reason: 'First valid opportunity',
+        active: normalized,
+      });
     }
 
     const confidenceDelta = normalized.confidence - number(current.confidence);
     const minImprovement = number(candidate.minimumImprovement, 3);
     if (confidenceDelta < minImprovement) {
-      return { accepted: false, replaced: false, reason: 'Existing opportunity is equal or stronger', active: current };
+      return resultFor(normalized, {
+        accepted: false,
+        replaced: false,
+        reason: 'Existing opportunity is equal or stronger',
+        previous: current,
+        active: current,
+      });
     }
 
     this.active.set(symbol, normalized);
-    return { accepted: true, replaced: true, reason: 'Stronger opportunity replaced previous setup', previous: current, active: { ...normalized } };
+    return resultFor(normalized, {
+      accepted: true,
+      replaced: true,
+      reason: 'Stronger opportunity replaced previous setup',
+      previous: current,
+      active: normalized,
+    });
   }
 
   get(symbol, now = Date.now()) {
