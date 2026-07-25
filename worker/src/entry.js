@@ -1,4 +1,4 @@
-import routerWorker, { AlertCoordinator } from './router.js';
+import routerWorker, { AlertCoordinator } from './trade-router.js';
 import { runAutoScanner } from './auto-scanner.js';
 import { buildDashboardSnapshot, htmlResponse } from './moe-dashboard.js';
 import { getWebullAccountSnapshot } from './webull-client.js';
