@@ -22,6 +22,15 @@ function isoDate(value, fallback = new Date().toISOString()) {
   return Number.isNaN(date.getTime()) ? fallback : date.toISOString();
 }
 
+function safeObject(value, fallback = null) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return fallback;
+  try {
+    return JSON.parse(JSON.stringify(value));
+  } catch {
+    return fallback;
+  }
+}
+
 function tradeId(value = {}) {
   if (value.id) return text(value.id);
   const seed = `${value.signalId || ''}:${value.symbol || ''}:${value.entryTime || Date.now()}`;
@@ -50,6 +59,7 @@ export function normalizeTrade(input = {}, previous = null) {
   const holdingMinutes = exitTime ? Math.max(0, Math.round((new Date(exitTime) - new Date(entryTime)) / 60000)) : null;
   const currentPrice = nullableFinite(input.currentPrice ?? input.lastPrice, previous?.currentPrice ?? null);
   const unrealizedPnl = currentPrice == null ? previous?.unrealizedPnl ?? null : Number(((currentPrice - entryPrice) * quantity * multiplier).toFixed(2));
+  const replay = safeObject(input.decisionReplay ?? input.decision ?? previous?.decisionReplay, previous?.decisionReplay ?? null);
 
   return {
     id: tradeId({ ...previous, ...input, entryTime }),
@@ -57,7 +67,7 @@ export function normalizeTrade(input = {}, previous = null) {
     symbol: text(input.symbol ?? previous?.symbol).toUpperCase(),
     direction,
     timeframe: text(input.timeframe ?? previous?.timeframe),
-    marketRegime: text(input.marketRegime ?? previous?.marketRegime, 'UNKNOWN'),
+    marketRegime: text(input.marketRegime ?? replay?.marketRegime ?? previous?.marketRegime, 'UNKNOWN'),
     sector: text(input.sector ?? previous?.sector, 'OTHER'),
     entryPrice,
     stopLoss: finite(input.stopLoss ?? previous?.stopLoss),
@@ -82,7 +92,12 @@ export function normalizeTrade(input = {}, previous = null) {
     brainScore: finite(input.brainScore ?? previous?.brainScore),
     marketScore: finite(input.marketScore ?? previous?.marketScore),
     sectorScore: finite(input.sectorScore ?? previous?.sectorScore),
-    decisionReasons: Array.isArray(input.decisionReasons) ? input.decisionReasons.map(String).slice(0, 20) : previous?.decisionReasons || [],
+    decisionConfidence: nullableFinite(input.decisionConfidence ?? replay?.confidence, previous?.decisionConfidence ?? null),
+    decisionGrade: text(input.decisionGrade ?? replay?.grade ?? previous?.decisionGrade),
+    decisionStatus: text(input.decisionStatus ?? replay?.status ?? previous?.decisionStatus),
+    decisionEngineVersion: text(input.decisionEngineVersion ?? replay?.version ?? previous?.decisionEngineVersion),
+    decisionReasons: Array.isArray(input.decisionReasons) ? input.decisionReasons.map(String).slice(0, 30) : previous?.decisionReasons || [],
+    decisionReplay: replay,
     status: status === 'CLOSED' || exitPrice != null ? 'CLOSED' : 'OPEN',
     createdAt: previous?.createdAt || isoDate(input.createdAt),
     updatedAt: new Date().toISOString(),
@@ -129,6 +144,33 @@ export async function closeTrade(storage, id, input = {}) {
   return trade;
 }
 
+export async function getTradeDecision(storage, id) {
+  const trades = await readTrades(storage);
+  const trade = trades.find((item) => item.id === id || item.signalId === id);
+  if (!trade) throw new Error('Trade not found');
+  return {
+    tradeId: trade.id,
+    signalId: trade.signalId,
+    symbol: trade.symbol,
+    direction: trade.direction,
+    timeframe: trade.timeframe,
+    entryTime: trade.entryTime,
+    confidence: trade.decisionConfidence,
+    grade: trade.decisionGrade,
+    status: trade.decisionStatus,
+    engineVersion: trade.decisionEngineVersion,
+    reasons: trade.decisionReasons,
+    replay: trade.decisionReplay,
+    outcome: {
+      tradeStatus: trade.status,
+      exitReason: trade.exitReason,
+      realizedPnl: trade.realizedPnl,
+      realizedPnlPercent: trade.realizedPnlPercent,
+      holdingMinutes: trade.holdingMinutes,
+    },
+  };
+}
+
 export async function reconcileTradesWithPositions(storage, positions = [], options = {}) {
   const now = new Date().toISOString();
   const requiredMissingChecks = Math.max(1, finite(options.requiredMissingChecks, 2));
@@ -150,51 +192,26 @@ export async function reconcileTradesWithPositions(storage, positions = [], opti
     const position = positionBySymbol.get(trade.symbol);
 
     if (position) {
-      trades[index] = normalizeTrade({
-        id: trade.id,
-        currentPrice: position.lastPrice ?? position.averagePrice ?? trade.currentPrice,
-        brokerPositionSeen: true,
-        brokerSyncStatus: 'OPEN_CONFIRMED',
-        lastBrokerSyncAt: now,
-        missingPositionChecks: 0,
-      }, trade);
+      trades[index] = normalizeTrade({ id: trade.id, currentPrice: position.lastPrice ?? position.averagePrice ?? trade.currentPrice, brokerPositionSeen: true, brokerSyncStatus: 'OPEN_CONFIRMED', lastBrokerSyncAt: now, missingPositionChecks: 0 }, trade);
       updated += 1;
       continue;
     }
 
     if (!trade.brokerPositionSeen) {
-      trades[index] = normalizeTrade({
-        id: trade.id,
-        brokerSyncStatus: 'AWAITING_POSITION',
-        lastBrokerSyncAt: now,
-      }, trade);
+      trades[index] = normalizeTrade({ id: trade.id, brokerSyncStatus: 'AWAITING_POSITION', lastBrokerSyncAt: now }, trade);
       updated += 1;
       continue;
     }
 
     const missingPositionChecks = finite(trade.missingPositionChecks) + 1;
     if (missingPositionChecks < requiredMissingChecks) {
-      trades[index] = normalizeTrade({
-        id: trade.id,
-        brokerSyncStatus: 'POSITION_MISSING',
-        lastBrokerSyncAt: now,
-        missingPositionChecks,
-      }, trade);
+      trades[index] = normalizeTrade({ id: trade.id, brokerSyncStatus: 'POSITION_MISSING', lastBrokerSyncAt: now, missingPositionChecks }, trade);
       updated += 1;
       continue;
     }
 
     const exitPrice = nullableFinite(trade.currentPrice, trade.entryPrice);
-    trades[index] = normalizeTrade({
-      id: trade.id,
-      exitPrice,
-      exitTime: now,
-      exitReason: 'WEBULL_POSITION_CLOSED',
-      status: 'CLOSED',
-      brokerSyncStatus: 'CLOSED_CONFIRMED',
-      lastBrokerSyncAt: now,
-      missingPositionChecks,
-    }, trade);
+    trades[index] = normalizeTrade({ id: trade.id, exitPrice, exitTime: now, exitReason: 'WEBULL_POSITION_CLOSED', status: 'CLOSED', brokerSyncStatus: 'CLOSED_CONFIRMED', lastBrokerSyncAt: now, missingPositionChecks }, trade);
     updated += 1;
     closed += 1;
   }
@@ -228,6 +245,8 @@ export async function tradeAnalytics(storage) {
     maxDrawdown = Math.max(maxDrawdown, peak - equity);
     return { at: trade.exitTime || trade.updatedAt, tradeId: trade.id, symbol: trade.symbol, pnl: trade.realizedPnl, equity: Number(equity.toFixed(2)) };
   });
+  const decisions = trades.filter((trade) => Number.isFinite(trade.decisionConfidence));
+  const averageDecisionConfidence = decisions.length ? decisions.reduce((sum, trade) => sum + trade.decisionConfidence, 0) / decisions.length : 0;
 
   return {
     generatedAt: new Date().toISOString(),
@@ -243,6 +262,8 @@ export async function tradeAnalytics(storage) {
     expectancy: closed.length ? Number((netProfit / closed.length).toFixed(2)) : 0,
     netProfit: Number(netProfit.toFixed(2)),
     maxDrawdown: Number(maxDrawdown.toFixed(2)),
+    decisionsRecorded: decisions.length,
+    averageDecisionConfidence: Number(averageDecisionConfidence.toFixed(2)),
     equityCurve,
   };
 }
