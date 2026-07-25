@@ -1,6 +1,6 @@
 import routerWorker, { AlertCoordinator } from './trade-router.js';
 import { runAutoScanner } from './auto-scanner.js';
-import { buildDashboardSnapshot, htmlResponse } from './moe-dashboard.js';
+import { buildDashboardSnapshot, htmlResponse } from './moe-dashboard-v2.js';
 import { getWebullAccountSnapshot } from './webull-client.js';
 
 export { AlertCoordinator };
@@ -97,23 +97,33 @@ async function withSandboxSubmission(request, env) {
   return new Request(request.url, { method: request.method, headers, body: JSON.stringify({ ...payload, submitSandbox: true }) });
 }
 
+async function internalGet(path, incomingUrl, env, ctx) {
+  const url = new URL(path, incomingUrl.origin);
+  const headers = new Headers();
+  headers.set('origin', env.APP_ORIGIN || 'http://localhost:3000');
+  return routerWorker.fetch(new Request(url.toString(), { method: 'GET', headers }), env, ctx);
+}
+
 async function dashboardData(request, env, ctx) {
   if (request.method !== 'GET') return Response.json({ ok: false, error: 'Method not allowed' }, { status: 405 });
 
   const incomingUrl = new URL(request.url);
-  const decisionsUrl = new URL('/api/tradingview/decisions', incomingUrl.origin);
-  decisionsUrl.searchParams.set('limit', '100');
-  const headers = new Headers();
-  headers.set('origin', env.APP_ORIGIN || 'http://localhost:3000');
-  const internalRequest = new Request(decisionsUrl.toString(), { method: 'GET', headers });
-  const response = await routerWorker.fetch(internalRequest, env, ctx);
-  if (!response.ok) {
-    const error = await response.json().catch(() => ({ error: 'Dashboard storage lookup failed' }));
-    return Response.json({ ok: false, ...error }, { status: response.status, headers: { 'cache-control': 'no-store', 'x-content-type-options': 'nosniff' } });
+  const [decisionsResponse, tradesResponse, analyticsResponse] = await Promise.all([
+    internalGet('/api/tradingview/decisions?limit=100', incomingUrl, env, ctx),
+    internalGet('/api/trades?limit=500', incomingUrl, env, ctx),
+    internalGet('/api/trades/analytics', incomingUrl, env, ctx),
+  ]);
+
+  if (!decisionsResponse.ok) {
+    const error = await decisionsResponse.json().catch(() => ({ error: 'Dashboard storage lookup failed' }));
+    return Response.json({ ok: false, ...error }, { status: decisionsResponse.status, headers: { 'cache-control': 'no-store', 'x-content-type-options': 'nosniff' } });
   }
 
-  const payload = await response.json();
-  const snapshot = buildDashboardSnapshot(payload.decisions || []);
+  const decisionsPayload = await decisionsResponse.json();
+  const tradesPayload = tradesResponse.ok ? await tradesResponse.json() : { trades: [], error: `Trade history HTTP ${tradesResponse.status}` };
+  const analyticsPayload = analyticsResponse.ok ? await analyticsResponse.json() : { analytics: {}, error: `Trade analytics HTTP ${analyticsResponse.status}` };
+  const snapshot = buildDashboardSnapshot(decisionsPayload.decisions || []);
+
   let account = { enabled: env.WEBULL_READ_ONLY_SYNC === 'true', connected: false, readOnly: true, positions: [] };
   let accountError = null;
   if (env.WEBULL_READ_ONLY_SYNC === 'true' && env.WEBULL_ACCOUNT_ID) {
@@ -128,7 +138,10 @@ async function dashboardData(request, env, ctx) {
   return Response.json({
     ok: true,
     ...snapshot,
-    storage: payload.storage || 'DURABLE_OBJECT',
+    trades: tradesPayload.trades || [],
+    tradeAnalytics: analyticsPayload.analytics || {},
+    tradeHistoryError: tradesPayload.error || analyticsPayload.error || null,
+    storage: decisionsPayload.storage || 'DURABLE_OBJECT',
     brainVersion: '2.0.0',
     environment: env.WEBULL_ENVIRONMENT || 'sandbox',
     liveTrading: env.WEBULL_LIVE_TRADING === 'true',
