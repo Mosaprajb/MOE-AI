@@ -8,3 +8,4 @@ export * from './execution-service.js';
 export * from './paper-trading-runtime.js';
 export * from './portfolio-manager.js';
 export * from './backtesting-engine.js';
+export * from './dashboard-service.js';
