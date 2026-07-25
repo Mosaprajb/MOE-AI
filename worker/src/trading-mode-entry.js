@@ -3,6 +3,7 @@ import { htmlResponse as dashboardHtmlResponse } from './unified-dashboard.js';
 import { getTradingMode, TRADING_MODES, updateTradingMode } from './trading-mode-service.js';
 import { getLiveTradingReadiness, handleWebullLiveOrder } from './webull-live.js';
 import { handleLiveCertification } from './live-certification.js';
+import { AUTO_SCANNER_SYMBOLS, activeTradingWindow, scannerProfiles } from './auto-scanner.js';
 
 const TRADING_MODE_PATH = '/api/trading/mode';
 const LIVE_READINESS_PATH = '/api/trading/live/readiness';
@@ -12,6 +13,8 @@ const ALL_TRADES_PATH = '/api/trades/all';
 const SIGNAL_PATH = '/api/tradingview/signal';
 const DASHBOARD_PAGE_PATHS = new Set(['/', '/moe-ai', '/moe-ai/', '/dashboard', '/dashboard/']);
 const TRADE_LEDGER_PATHS = new Set(['/trades', '/trades/']);
+const BOT_STATUS_KEY = 'bot-status:v2';
+const BOT_HISTORY_KEY = 'bot-status-history:v2';
 
 export class AlertCoordinator extends BaseAlertCoordinator {
   async getTradingMode() { return getTradingMode(this.ctx.storage, this.env); }
@@ -20,22 +23,58 @@ export class AlertCoordinator extends BaseAlertCoordinator {
     const trades = await this.ctx.storage.get('trade-history:v1');
     return Array.isArray(trades) ? trades.slice(0, 2000) : [];
   }
+  async recordBotStatus(record = {}) {
+    const normalized = { ...record, recordedAt: new Date().toISOString() };
+    const history = await this.ctx.storage.get(BOT_HISTORY_KEY);
+    const next = [normalized, ...(Array.isArray(history) ? history : [])].slice(0, 100);
+    await this.ctx.storage.put({ [BOT_STATUS_KEY]: normalized, [BOT_HISTORY_KEY]: next });
+    return normalized;
+  }
   async scannerStatus() {
     const subscriptions = (await this.ctx.storage.get('subscriptions')) || {};
     const active = Object.values(subscriptions).filter((item) => item?.enabled);
-    const symbols = [...new Set(active.flatMap((item) => Array.isArray(item.symbols) ? item.symbols : []))].sort();
-    const timeframes = [...new Set(active.map((item) => Number(item.timeframe)).filter(Number.isFinite))].sort((a, b) => a - b);
+    const notificationSymbols = [...new Set(active.flatMap((item) => Array.isArray(item.symbols) ? item.symbols : []))].sort();
+    const notificationTimeframes = [...new Set(active.map((item) => Number(item.timeframe)).filter(Number.isFinite))].sort((a, b) => a - b);
     const checks = active.map((item) => Number(item.lastCheckedAt || 0)).filter((value) => value > 0);
     const activity = active.flatMap((item) => Array.isArray(item.activity) ? item.activity : []);
+    const bot = await this.ctx.storage.get(BOT_STATUS_KEY) || null;
+    const history = await this.ctx.storage.get(BOT_HISTORY_KEY) || [];
+    const window = activeTradingWindow(new Date(), this.env);
+    const lastHeartbeat = bot?.completedAt || bot?.recordedAt || null;
+    const heartbeatAgeSeconds = lastHeartbeat ? Math.max(0, Math.floor((Date.now() - Date.parse(lastHeartbeat)) / 1000)) : null;
+    const scannerEnabled = String(this.env.AUTO_SCANNER_ENABLED || '').toLowerCase() === 'true';
+    const automationArmed = String(this.env.WEBULL_AUTOMATION_ARMED || '').toLowerCase() === 'true';
+    const sandbox = this.env.WEBULL_ENVIRONMENT === 'sandbox' && this.env.WEBULL_LIVE_TRADING !== 'true';
     return {
-      enabled: String(this.env.AUTO_SCANNER_ENABLED || '').toLowerCase() === 'true' || active.length > 0,
+      state: !scannerEnabled ? 'DISABLED' : !sandbox ? 'SAFETY_BLOCKED' : heartbeatAgeSeconds != null && heartbeatAgeSeconds <= 180 ? 'ONLINE' : 'WAITING_FOR_HEARTBEAT',
+      enabled: scannerEnabled,
+      automationArmed,
+      sandboxSafetyLock: sandbox,
+      liveTrading: this.env.WEBULL_LIVE_TRADING === 'true',
+      environment: this.env.WEBULL_ENVIRONMENT || 'sandbox',
+      universeSize: AUTO_SCANNER_SYMBOLS.length,
+      symbols: AUTO_SCANNER_SYMBOLS,
+      configuredProfiles: scannerProfiles(this.env).map((item) => `${item.primaryMinutes >= 60 ? `${item.primaryMinutes / 60}h` : `${item.primaryMinutes}m`} -> ${item.higherMinutes >= 60 ? `${item.higherMinutes / 60}h` : `${item.higherMinutes}m`}`),
+      tradingHoursMode: String(this.env.AUTO_SCANNER_TRADING_HOURS || 'CORE').toUpperCase(),
+      activeSession: window,
+      lastHeartbeat,
+      heartbeatAgeSeconds,
+      lastRun: bot,
+      recentRuns: Array.isArray(history) ? history.slice(0, 20) : [],
       activeSubscriptions: active.length,
-      symbolCount: symbols.length,
-      symbols,
-      timeframes: timeframes.map((value) => value >= 60 ? `${value / 60}h` : `${value}m`),
-      lastCheckedAt: checks.length ? new Date(Math.max(...checks)).toISOString() : null,
-      activityCount: activity.length,
-      recentActivity: activity.sort((a, b) => Number(b?.at || 0) - Number(a?.at || 0)).slice(0, 25),
+      notificationSymbolCount: notificationSymbols.length,
+      notificationSymbols,
+      notificationTimeframes: notificationTimeframes.map((value) => value >= 60 ? `${value / 60}h` : `${value}m`),
+      lastNotificationScanAt: checks.length ? new Date(Math.max(...checks)).toISOString() : null,
+      notificationActivityCount: activity.length,
+      recentNotificationActivity: activity.sort((a, b) => Number(b?.at || 0) - Number(a?.at || 0)).slice(0, 25),
+      limits: {
+        maximumOpenPositions: Number(this.env.MOE_MAX_OPEN_POSITIONS || 4),
+        maximumDailyTrades: Number(this.env.MOE_MAX_DAILY_TRADES || 4),
+        maximumSubmissionsPerRun: Number(this.env.AUTO_SCANNER_MAX_SUBMISSIONS_PER_RUN || 1),
+        maximumQuantityPerOrder: Number(this.env.WEBULL_MAX_QUANTITY || 1),
+        maximumNotionalPerOrder: Number(this.env.WEBULL_MAX_NOTIONAL || 1000),
+      },
     };
   }
 }
