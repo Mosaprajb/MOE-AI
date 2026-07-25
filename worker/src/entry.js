@@ -1,6 +1,7 @@
-import routerWorker, { AlertCoordinator } from './trade-router.js';
+import routerWorker, { AlertCoordinator } from './learning-router.js';
 import { runAutoScanner } from './auto-scanner.js';
 import { buildDashboardSnapshot, htmlResponse } from './moe-dashboard-v2.js';
+import { learningHtmlResponse } from './learning-dashboard.js';
 import { getWebullAccountSnapshot } from './webull-client.js';
 
 export { AlertCoordinator };
@@ -16,6 +17,13 @@ const DASHBOARD_PAGE_PATHS = new Set([
   '/moe-ai/',
   '/dashboard',
   '/dashboard/',
+]);
+
+const LEARNING_PAGE_PATHS = new Set([
+  '/learning',
+  '/learning/',
+  '/moe-ai/learning',
+  '/moe-ai/learning/',
 ]);
 
 function firstFinite(...values) {
@@ -108,10 +116,12 @@ async function dashboardData(request, env, ctx) {
   if (request.method !== 'GET') return Response.json({ ok: false, error: 'Method not allowed' }, { status: 405 });
 
   const incomingUrl = new URL(request.url);
-  const [decisionsResponse, tradesResponse, analyticsResponse] = await Promise.all([
+  const [decisionsResponse, tradesResponse, analyticsResponse, learningResponse, learningSettingsResponse] = await Promise.all([
     internalGet('/api/tradingview/decisions?limit=100', incomingUrl, env, ctx),
     internalGet('/api/trades?limit=500', incomingUrl, env, ctx),
     internalGet('/api/trades/analytics', incomingUrl, env, ctx),
+    internalGet('/api/learning/report', incomingUrl, env, ctx),
+    internalGet('/api/learning/settings', incomingUrl, env, ctx),
   ]);
 
   if (!decisionsResponse.ok) {
@@ -122,6 +132,8 @@ async function dashboardData(request, env, ctx) {
   const decisionsPayload = await decisionsResponse.json();
   const tradesPayload = tradesResponse.ok ? await tradesResponse.json() : { trades: [], error: `Trade history HTTP ${tradesResponse.status}` };
   const analyticsPayload = analyticsResponse.ok ? await analyticsResponse.json() : { analytics: {}, error: `Trade analytics HTTP ${analyticsResponse.status}` };
+  const learningPayload = learningResponse.ok ? await learningResponse.json() : { report: null, error: `Learning report HTTP ${learningResponse.status}` };
+  const learningSettingsPayload = learningSettingsResponse.ok ? await learningSettingsResponse.json() : { settings: null, error: `Learning settings HTTP ${learningSettingsResponse.status}` };
   const snapshot = buildDashboardSnapshot(decisionsPayload.decisions || []);
 
   let account = { enabled: env.WEBULL_READ_ONLY_SYNC === 'true', connected: false, readOnly: true, positions: [] };
@@ -141,8 +153,11 @@ async function dashboardData(request, env, ctx) {
     trades: tradesPayload.trades || [],
     tradeAnalytics: analyticsPayload.analytics || {},
     tradeHistoryError: tradesPayload.error || analyticsPayload.error || null,
+    learning: learningPayload.report || null,
+    learningSettings: learningSettingsPayload.settings || null,
+    learningError: learningPayload.error || learningSettingsPayload.error || null,
     storage: decisionsPayload.storage || 'DURABLE_OBJECT',
-    brainVersion: '2.0.0',
+    brainVersion: '2.1.0',
     environment: env.WEBULL_ENVIRONMENT || 'sandbox',
     liveTrading: env.WEBULL_LIVE_TRADING === 'true',
     account,
@@ -154,6 +169,7 @@ export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
     if (DASHBOARD_PAGE_PATHS.has(url.pathname)) return htmlResponse();
+    if (LEARNING_PAGE_PATHS.has(url.pathname)) return learningHtmlResponse();
     if (url.pathname === '/api/moe-ai/dashboard') return dashboardData(request, env, ctx);
     const effectiveRequest = await withSandboxSubmission(request, env);
     return routerWorker.fetch(effectiveRequest, env, ctx);
