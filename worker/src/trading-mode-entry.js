@@ -1,11 +1,13 @@
 import entryWorker, { AlertCoordinator as BaseAlertCoordinator } from './entry.js';
-import { htmlResponse as dashboardHtmlResponse } from './moe-dashboard-v3.js';
-import { tradeLedgerResponse } from './trade-ledger-page.js';
+import { htmlResponse as dashboardHtmlResponse } from './unified-dashboard.js';
 import { getTradingMode, TRADING_MODES, updateTradingMode } from './trading-mode-service.js';
 import { getLiveTradingReadiness, handleWebullLiveOrder } from './webull-live.js';
+import { handleLiveCertification } from './live-certification.js';
 
 const TRADING_MODE_PATH = '/api/trading/mode';
 const LIVE_READINESS_PATH = '/api/trading/live/readiness';
+const LIVE_CERTIFICATION_PATH = '/api/trading/live/certify';
+const SCANNER_STATUS_PATH = '/api/scanner/status';
 const ALL_TRADES_PATH = '/api/trades/all';
 const SIGNAL_PATH = '/api/tradingview/signal';
 const DASHBOARD_PAGE_PATHS = new Set(['/', '/moe-ai', '/moe-ai/', '/dashboard', '/dashboard/']);
@@ -17,6 +19,24 @@ export class AlertCoordinator extends BaseAlertCoordinator {
   async listAllTrades() {
     const trades = await this.ctx.storage.get('trade-history:v1');
     return Array.isArray(trades) ? trades.slice(0, 2000) : [];
+  }
+  async scannerStatus() {
+    const subscriptions = (await this.ctx.storage.get('subscriptions')) || {};
+    const active = Object.values(subscriptions).filter((item) => item?.enabled);
+    const symbols = [...new Set(active.flatMap((item) => Array.isArray(item.symbols) ? item.symbols : []))].sort();
+    const timeframes = [...new Set(active.map((item) => Number(item.timeframe)).filter(Number.isFinite))].sort((a, b) => a - b);
+    const checks = active.map((item) => Number(item.lastCheckedAt || 0)).filter((value) => value > 0);
+    const activity = active.flatMap((item) => Array.isArray(item.activity) ? item.activity : []);
+    return {
+      enabled: String(this.env.AUTO_SCANNER_ENABLED || '').toLowerCase() === 'true' || active.length > 0,
+      activeSubscriptions: active.length,
+      symbolCount: symbols.length,
+      symbols,
+      timeframes: timeframes.map((value) => value >= 60 ? `${value / 60}h` : `${value}m`),
+      lastCheckedAt: checks.length ? new Date(Math.max(...checks)).toISOString() : null,
+      activityCount: activity.length,
+      recentActivity: activity.sort((a, b) => Number(b?.at || 0) - Number(a?.at || 0)).slice(0, 25),
+    };
   }
 }
 
@@ -32,7 +52,7 @@ function allowedOrigin(request, env) {
 function cors(origin) {
   return origin ? {
     'access-control-allow-origin': origin,
-    'access-control-allow-methods': 'GET, PUT, OPTIONS',
+    'access-control-allow-methods': 'GET, PUT, POST, OPTIONS',
     'access-control-allow-headers': 'content-type,x-moe-webhook-secret',
     vary: 'Origin',
   } : {};
@@ -79,6 +99,15 @@ async function handleLiveReadiness(request, env) {
   return secureJson({ ok: true, readiness: getLiveTradingReadiness(env), tradingMode: await coordinator(env).getTradingMode() }, 200, headers);
 }
 
+async function handleScannerStatus(request, env) {
+  const origin = allowedOrigin(request, env);
+  const headers = cors(origin || null);
+  if (request.method === 'OPTIONS') return new Response(null, { status: 204, headers });
+  if (origin === false) return secureJson({ ok: false, error: 'Origin not allowed' }, 403, headers);
+  if (request.method !== 'GET') return secureJson({ ok: false, error: 'Method not allowed' }, 405, headers);
+  return secureJson({ ok: true, scanner: await coordinator(env).scannerStatus(), storage: 'DURABLE_OBJECT' }, 200, headers);
+}
+
 async function handleAllTrades(request, env) {
   const origin = allowedOrigin(request, env);
   const headers = cors(origin || null);
@@ -108,9 +137,11 @@ export default {
   async fetch(request, env, ctx) {
     const path = new URL(request.url).pathname;
     if (DASHBOARD_PAGE_PATHS.has(path)) return dashboardHtmlResponse();
-    if (TRADE_LEDGER_PATHS.has(path)) return tradeLedgerResponse();
+    if (TRADE_LEDGER_PATHS.has(path)) return Response.redirect(new URL('/#trades', request.url).toString(), 302);
     if (path === TRADING_MODE_PATH) return handleTradingMode(request, env);
     if (path === LIVE_READINESS_PATH) return handleLiveReadiness(request, env);
+    if (path === LIVE_CERTIFICATION_PATH) return handleLiveCertification(request, env);
+    if (path === SCANNER_STATUS_PATH) return handleScannerStatus(request, env);
     if (path === ALL_TRADES_PATH) return handleAllTrades(request, env);
     if (path === '/api/webull/bootstrap') return secureJson({ ok: false, blocked: true, error: 'Remote token bootstrap is disabled. Configure broker credentials only as Cloudflare secrets.' }, 423);
     const enforcedRequest = await enforceTradingMode(request, env);
