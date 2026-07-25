@@ -6,3 +6,5 @@ export * from './moerand-runtime.js';
 export * from './opportunity-alert-service.js';
 export * from './execution-service.js';
 export * from './paper-trading-runtime.js';
+export * from './portfolio-manager.js';
+export * from './backtesting-engine.js';
