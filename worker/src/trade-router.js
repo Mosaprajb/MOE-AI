@@ -1,6 +1,6 @@
 import routerWorker, { AlertCoordinator as BaseAlertCoordinator } from './router.js';
 import { getWebullPositions } from './webull-client.js';
-import { closeTrade, listTrades, reconcileTradesWithPositions, tradeAnalytics, upsertTrade } from './trade-history.js';
+import { closeTrade, getTradeDecision, listTrades, reconcileTradesWithPositions, tradeAnalytics, upsertTrade } from './trade-history.js';
 
 const TRADINGVIEW_SIGNAL_PATH = '/api/tradingview/signal';
 
@@ -15,6 +15,10 @@ export class AlertCoordinator extends BaseAlertCoordinator {
 
   async closeTrade(id, payload = {}) {
     return closeTrade(this.ctx.storage, id, payload);
+  }
+
+  async getTradeDecision(id) {
+    return getTradeDecision(this.ctx.storage, id);
   }
 
   async reconcileTrades(positions = [], options = {}) {
@@ -90,6 +94,13 @@ function automaticTrade(payload, result, signalId) {
   const order = result?.order || {};
   const evaluation = result?.plan?.evaluation || {};
   const brain = result?.brain || result?.plan?.brain || {};
+  const decision = result?.decision || null;
+  const decisionReasons = [
+    ...(Array.isArray(decision?.hardBlocks) ? decision.hardBlocks : []),
+    ...(Array.isArray(evaluation.reasons) ? evaluation.reasons : []),
+    ...(Array.isArray(result?.accountSafety?.reasons) ? result.accountSafety.reasons : []),
+  ];
+
   return {
     signalId,
     symbol: String(order.symbol || payload.symbol || '').trim().toUpperCase(),
@@ -100,12 +111,34 @@ function automaticTrade(payload, result, signalId) {
     takeProfit: order.takeProfit ?? payload.takeProfit,
     quantity: order.quantity ?? payload.quantity ?? payload.qty,
     entryTime: result?.createdAt || payload.barTime || payload.time || payload.timestamp || new Date().toISOString(),
-    marketRegime: brain.marketRegime ?? payload.marketRegime ?? 'UNKNOWN',
+    marketRegime: decision?.marketRegime ?? brain.marketRegime ?? payload.marketRegime ?? 'UNKNOWN',
     sector: brain.sector ?? payload.sector ?? 'OTHER',
     brainScore: evaluation.score ?? brain.brainScore ?? payload.score,
     marketScore: brain.marketScore ?? payload.marketScore,
     sectorScore: brain.sectorScore ?? payload.sectorScore,
-    decisionReasons: evaluation.reasons || result?.accountSafety?.reasons || [],
+    decisionConfidence: decision?.confidence,
+    decisionGrade: decision?.grade,
+    decisionStatus: decision?.status,
+    decisionEngineVersion: decision?.version,
+    decisionReasons: [...new Set(decisionReasons.map(String))],
+    decisionReplay: decision ? {
+      ...decision,
+      signal: {
+        signalId,
+        symbol: String(order.symbol || payload.symbol || '').trim().toUpperCase(),
+        side: String(order.side || payload.side || '').trim().toUpperCase(),
+        timeframe: String(payload.timeframe || payload.interval || ''),
+      },
+      plan: result?.plan || null,
+      brain: result?.brain || null,
+      portfolio: result?.portfolio || null,
+      accountSafety: result?.accountSafety || null,
+      execution: {
+        mode: result?.mode || null,
+        submitted: result?.submitted === true,
+        createdAt: result?.createdAt || new Date().toISOString(),
+      },
+    } : null,
     status: 'OPEN',
   };
 }
@@ -172,7 +205,12 @@ async function forwardAndRecordSignal(request, env, ctx) {
     try {
       const signalId = await signalFingerprint(payload);
       const trade = await coordinator(env).upsertTrade(automaticTrade(payload, result, signalId));
-      const enriched = { ...result, tradeHistoryRecorded: true, tradeId: trade.id };
+      const enriched = {
+        ...result,
+        tradeHistoryRecorded: true,
+        decisionReplayRecorded: Boolean(trade.decisionReplay),
+        tradeId: trade.id,
+      };
       return secureJson(enriched, response.status, Object.fromEntries(response.headers));
     } catch (error) {
       console.error(JSON.stringify({
@@ -184,6 +222,7 @@ async function forwardAndRecordSignal(request, env, ctx) {
       const enriched = {
         ...result,
         tradeHistoryRecorded: false,
+        decisionReplayRecorded: false,
         tradeHistoryError: error instanceof Error ? error.message : 'Trade history recording failed',
       };
       return secureJson(enriched, response.status, Object.fromEntries(response.headers));
@@ -218,6 +257,21 @@ async function handleTrades(request, env) {
   }
 
   return secureJson({ ok: false, error: 'Method not allowed' }, 405, headers);
+}
+
+async function handleTradeDecision(request, env) {
+  const origin = allowedOrigin(request, env);
+  const headers = cors(origin);
+  if (request.method === 'OPTIONS') return new Response(null, { status: 204, headers });
+  if (!origin) return secureJson({ ok: false, error: 'Origin not allowed' }, 403, headers);
+  if (request.method !== 'GET') return secureJson({ ok: false, error: 'Method not allowed' }, 405, headers);
+
+  const path = new URL(request.url).pathname;
+  const id = decodeURIComponent(path.slice('/api/trades/'.length, -'/decision'.length)).trim();
+  if (!id) return secureJson({ ok: false, error: 'Trade id is required' }, 400, headers);
+
+  const decision = await coordinator(env).getTradeDecision(id);
+  return secureJson({ ok: true, decision, storage: 'DURABLE_OBJECT' }, 200, headers);
 }
 
 async function handleTradeClose(request, env) {
@@ -264,13 +318,16 @@ export default {
     const path = new URL(request.url).pathname;
     try {
       if (path === '/api/trades') return await handleTrades(request, env);
+      if (/^\/api\/trades\/[^/]+\/decision$/.test(path)) return await handleTradeDecision(request, env);
       if (path === '/api/trades/close') return await handleTradeClose(request, env);
       if (path === '/api/trades/analytics') return await handleTradeAnalytics(request, env);
       if (path === '/api/trades/reconcile') return await handleTradeReconcile(request, env);
       if (path === TRADINGVIEW_SIGNAL_PATH && request.method === 'POST') return await forwardAndRecordSignal(request, env, ctx);
       return routerWorker.fetch(request, env, ctx);
     } catch (error) {
-      return secureJson({ ok: false, error: error instanceof Error ? error.message : 'Trade history request failed' }, 400);
+      const message = error instanceof Error ? error.message : 'Trade history request failed';
+      const status = message === 'Trade not found' ? 404 : 400;
+      return secureJson({ ok: false, error: message }, status);
     }
   },
 
