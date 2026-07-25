@@ -1,6 +1,7 @@
 import { buildTradePlan } from './trade-engine.js';
 import { evaluatePortfolioRisk } from './portfolio-manager.js';
 import { evaluateBrainCandidate, MOE_AI_BRAIN_VERSION } from './moe-ai-brain.js';
+import { evaluateDecision } from './decision-engine.js';
 import { getWebullAccountSnapshot, placeWebullSandboxOrder } from './webull-client.js';
 
 const ALLOWED_SIDES = new Set(['BUY', 'SELL']);
@@ -132,6 +133,14 @@ function brainWindow(signal, context = {}) {
   };
 }
 
+function applyDecisionEnforcement(plan, decision) {
+  if (!decision.enforce || decision.accepted) return;
+  plan.evaluation.accepted = false;
+  for (const reason of decision.hardBlocks) {
+    if (!plan.evaluation.reasons.includes(reason)) plan.evaluation.reasons.push(reason);
+  }
+}
+
 export async function handleWebullSandboxOrder(request, env = {}) {
   if (request.method !== 'POST') return Response.json({ ok: false, error: 'Method not allowed' }, { status: 405 });
   try {
@@ -152,6 +161,7 @@ export async function handleWebullSandboxOrder(request, env = {}) {
     }
     const context = {
       ...(payload.context || {}),
+      marketRegime: payload.marketRegime ?? payload.context?.marketRegime,
       marketPrice: payload.marketPrice ?? payload.context?.marketPrice,
       accountEquity: portfolioInput.accountEquity,
       riskPercent: payload.riskPercent ?? payload.context?.riskPercent,
@@ -189,6 +199,10 @@ export async function handleWebullSandboxOrder(request, env = {}) {
       plan.evaluation.accepted = false;
       plan.evaluation.reasons.push(...accountSafety.reasons.filter((reason) => !plan.evaluation.reasons.includes(reason)));
     }
+
+    const decision = evaluateDecision({ signal, context, plan, brain, portfolio, accountSafety }, env);
+    applyDecisionEnforcement(plan, decision);
+
     if (env.WEBULL_LIVE_TRADING === 'true' || env.WEBULL_ENVIRONMENT === 'production') return Response.json({ ok: false, blocked: true, error: 'Production trading is intentionally disabled' }, { status: 423 });
     const submissionRequested = payload.submitSandbox === true;
     const submissionEnabled = env.WEBULL_SANDBOX_ENABLED === 'true' && env.WEBULL_SANDBOX_ORDER_SUBMISSION === 'true';
@@ -205,9 +219,12 @@ export async function handleWebullSandboxOrder(request, env = {}) {
           order,
           plan,
           brain: { version: MOE_AI_BRAIN_VERSION, ...brain },
+          decision,
           portfolio,
           accountSafety,
-          message: 'Sandbox order was not submitted because the trade failed MOE AI or safety rules.',
+          message: decision.enforce && !decision.accepted
+            ? 'Sandbox order was blocked by the explainable MOE Decision Engine.'
+            : 'Sandbox order was not submitted because the trade failed MOE AI or safety rules.',
         }, { status: 422 });
       }
       submission = await placeWebullSandboxOrder(accountId, order, env);
@@ -222,12 +239,13 @@ export async function handleWebullSandboxOrder(request, env = {}) {
       order,
       plan,
       brain: { version: MOE_AI_BRAIN_VERSION, ...brain },
+      decision,
       portfolio,
       accountSafety,
       submission,
       accountSync: { enabled: env.WEBULL_READ_ONLY_SYNC === 'true', used: Boolean(accountSnapshot), accountId: accountSnapshot ? accountId : null, fetchedAt: accountSnapshot?.fetchedAt || null },
-      decisionPipeline: ['SIGNAL_VALIDATION', 'MOE_AI_BRAIN', 'WEBULL_ACCOUNT_SYNC', 'TRADE_ENGINE', 'POSITION_SIZING', 'PORTFOLIO_MANAGER', 'MARGIN_ACCOUNT_SAFETY', submitted ? 'SANDBOX_SUBMISSION' : 'ORDER_PREVIEW'],
-      message: submitted ? 'Trade passed MOE AI Brain and all safety layers and was submitted to Webull Sandbox.' : plan.evaluation.accepted ? 'Trade accepted by MOE AI Brain and all safety layers for preview but not submitted.' : 'Trade rejected by MOE decision pipeline.',
+      decisionPipeline: ['SIGNAL_VALIDATION', 'MOE_AI_BRAIN', 'WEBULL_ACCOUNT_SYNC', 'TRADE_ENGINE', 'POSITION_SIZING', 'PORTFOLIO_MANAGER', 'MARGIN_ACCOUNT_SAFETY', 'EXPLAINABLE_DECISION_ENGINE', submitted ? 'SANDBOX_SUBMISSION' : 'ORDER_PREVIEW'],
+      message: submitted ? 'Trade passed MOE AI Brain, the explainable decision engine, and all safety layers and was submitted to Webull Sandbox.' : plan.evaluation.accepted ? 'Trade accepted by the complete MOE decision pipeline for preview but not submitted.' : 'Trade rejected by the MOE decision pipeline.',
       createdAt: new Date().toISOString(),
     }, { status: plan.evaluation.accepted ? 200 : 422 });
   } catch (error) {
