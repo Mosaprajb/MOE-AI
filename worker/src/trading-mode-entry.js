@@ -1,8 +1,16 @@
 import entryWorker, { AlertCoordinator as BaseAlertCoordinator } from './entry.js';
+import { htmlResponse as dashboardHtmlResponse } from './moe-dashboard-v3.js';
 import { getTradingMode, TRADING_MODES, updateTradingMode } from './trading-mode-service.js';
 
 const TRADING_MODE_PATH = '/api/trading/mode';
 const SIGNAL_PATH = '/api/tradingview/signal';
+const DASHBOARD_PAGE_PATHS = new Set([
+  '/',
+  '/moe-ai',
+  '/moe-ai/',
+  '/dashboard',
+  '/dashboard/',
+]);
 
 export class AlertCoordinator extends BaseAlertCoordinator {
   async getTradingMode() {
@@ -122,6 +130,7 @@ async function enforceTradingMode(request, env) {
 export default {
   async fetch(request, env, ctx) {
     const path = new URL(request.url).pathname;
+    if (DASHBOARD_PAGE_PATHS.has(path)) return dashboardHtmlResponse();
     if (path === TRADING_MODE_PATH) return handleTradingMode(request, env);
 
     const enforcedRequest = await enforceTradingMode(request, env);
