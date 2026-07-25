@@ -11,3 +11,4 @@ export * from './backtesting-engine.js';
 export * from './dashboard-service.js';
 export * from './notification-center.js';
 export * from './realtime-stream-service.js';
+export * from './broker-adapter.js';
