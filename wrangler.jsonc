@@ -1,7 +1,7 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "moerand-alerts",
-  "main": "worker/src/entry.js",
+  "main": "worker/src/trading-mode-entry.js",
   "compatibility_date": "2026-07-22",
   "observability": {
     "enabled": true
@@ -28,6 +28,9 @@
     "APP_URL": "https://mosaprajb.github.io/MOE-AI/",
     "VAPID_PUBLIC_KEY": "BP7XvNvwNZqLog4ldUcwEmMaXieeKD37sBddfWk5BbsC0mXRl09dS-kw-C__JnSUDGYaTDVKcKYJURIlac9T98c",
     "VAPID_SUBJECT": "https://mosaprajb.github.io/MOE-AI/",
+    "MOE_TRADING_MODE_DEFAULT": "SANDBOX",
+    "MOE_LIVE_MODE_UNLOCKED": "false",
+    "MOE_LIVE_EXECUTION_IMPLEMENTED": "false",
     "WEBULL_ENVIRONMENT": "sandbox",
     "WEBULL_SANDBOX_ENABLED": "true",
     "WEBULL_SANDBOX_ORDER_SUBMISSION": "true",
@@ -36,6 +39,7 @@
     "WEBULL_PROTECTED_ORDERS": "true",
     "WEBULL_READ_ONLY_SYNC": "true",
     "WEBULL_LIVE_TRADING": "false",
+    "WEBULL_LIVE_ORDER_SUBMISSION": "false",
     "WEBULL_MAX_QUANTITY": "1",
     "WEBULL_MAX_NOTIONAL": "100",
     "AUTO_SCANNER_ENABLED": "false",
