@@ -44,9 +44,10 @@ export function buildExecutionOrder(opportunity = {}, tradePlan = null) {
 }
 
 export class OpportunityExecutionService {
-  constructor({ storage, broker, mode = 'paper', autoExecute = false } = {}) {
+  constructor({ storage, broker, riskManager, mode = 'paper', autoExecute = false } = {}) {
     this.storage = storage;
     this.broker = broker;
+    this.riskManager = riskManager;
     this.mode = String(mode || 'paper').toLowerCase();
     this.autoExecute = autoExecute === true;
     this.memory = new Map();
@@ -93,6 +94,22 @@ export class OpportunityExecutionService {
     const previous = await this.read(stateKey);
     if (previous?.clientOrderId === order.clientOrderId && previous.status !== 'cancelled') {
       return { executed: false, reason: 'DUPLICATE_EXECUTION', order, previous };
+    }
+
+    if (this.riskManager?.evaluateOrder) {
+      const riskDecision = await this.riskManager.evaluateOrder(order);
+      if (!riskDecision?.accepted) {
+        const rejected = {
+          ...order,
+          mode: this.mode,
+          status: 'rejected_by_risk',
+          riskDecision,
+          rejectedAt: Date.now(),
+        };
+        await this.write(stateKey, rejected);
+        await eventBus.emit('execution:rejected-by-risk', rejected);
+        return { executed: false, reason: riskDecision?.reason || 'RISK_REJECTED', order: rejected };
+      }
     }
 
     if (replaced) await this.cancelPrevious(order.symbol, order);
