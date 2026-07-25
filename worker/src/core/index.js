@@ -14,3 +14,4 @@ export * from './realtime-stream-service.js';
 export * from './broker-adapter.js';
 export * from './performance-analytics.js';
 export * from './strategy-optimization-engine.js';
+export * from './multi-symbol-scanner.js';
