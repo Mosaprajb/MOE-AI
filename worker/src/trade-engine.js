@@ -5,6 +5,10 @@ function number(value, fallback = 0) {
   return Number.isFinite(parsed) ? parsed : fallback;
 }
 
+function direction(side) {
+  return String(side || 'BUY').toUpperCase() === 'SELL' ? 'SELL' : 'BUY';
+}
+
 export function calculatePositionSize({
   accountEquity,
   riskPercent,
@@ -42,14 +46,31 @@ export function calculatePositionSize({
 }
 
 export function evaluateTrade(signal, context = {}, env = {}) {
+  const side = direction(signal.side);
   const entry = number(signal.limitPrice || context.marketPrice);
   const stop = number(signal.stopLoss);
   const target = number(signal.takeProfit);
+  const lowerZone = number(signal.lowerZone, context.smartZone?.lower);
+  const upperZone = number(signal.upperZone, context.smartZone?.upper);
   const reasons = [];
   const breakdown = {};
 
   if (entry <= 0 || stop <= 0 || target <= 0) {
     throw new Error('Confidence evaluation requires entry, stopLoss and takeProfit');
+  }
+
+  if (side === 'BUY' && !(stop < entry && target > entry)) {
+    reasons.push('Buy setup requires stop below entry and target above entry');
+  }
+  if (side === 'SELL' && !(stop > entry && target < entry)) {
+    reasons.push('Sell setup requires stop above entry and target below entry');
+  }
+  if (lowerZone > 0 && upperZone > 0) {
+    if (lowerZone >= upperZone) reasons.push('Smart zone lower boundary must be below upper boundary');
+    if (entry < lowerZone || entry > upperZone) reasons.push('Entry price is outside the smart zone');
+  }
+  if (context.smartZone && context.smartZone.valid === false) {
+    reasons.push(context.smartZone.invalidReason || 'Smart zone is invalid');
   }
 
   const risk = Math.abs(entry - stop);
@@ -65,13 +86,13 @@ export function evaluateTrade(signal, context = {}, env = {}) {
 
   const score = Object.values(breakdown).reduce((sum, value) => sum + value, 0);
   const minimumScore = number(env.MOE_MIN_CONFIDENCE_SCORE, 70);
-  const minimumRR = number(env.MOE_MIN_RISK_REWARD, 2);
+  const minimumRR = number(env.MOE_MIN_RISK_REWARD, env.MOE_ZONE_MIN_RR || 1.5);
 
   if (rr < minimumRR) reasons.push(`Risk/reward ${rr.toFixed(2)} is below ${minimumRR}`);
   if (score < minimumScore) reasons.push(`Confidence ${score} is below ${minimumScore}`);
   if (context.newsBlocked === true) reasons.push('Trade blocked by news filter');
   if (context.duplicateSignal === true) reasons.push('Duplicate signal');
-  if (context.signalExpired === true) reasons.push('Signal expired');
+  if (context.signalExpired === true) reasons.push(context.rejectionReason || 'Signal expired');
   if (context.spreadPercent != null && number(context.spreadPercent) > number(env.MOE_MAX_SPREAD_PERCENT, 0.5)) {
     reasons.push('Spread exceeds allowed maximum');
   }
@@ -81,6 +102,8 @@ export function evaluateTrade(signal, context = {}, env = {}) {
     score,
     minimumScore,
     riskReward: Number(rr.toFixed(2)),
+    risk: Number(risk.toFixed(4)),
+    reward: Number(reward.toFixed(4)),
     breakdown,
     reasons,
   };
@@ -103,21 +126,26 @@ export function buildTradePlan(signal, context = {}, env = {}) {
     evaluation.reasons.push('Calculated position size is zero');
   }
 
-  const tp1 = signal.takeProfit;
-  const breakEvenOffsetPercent = number(env.MOE_BREAK_EVEN_OFFSET_PERCENT, 0.1);
-  const securedStop = signal.side === 'BUY'
-    ? entryPrice * (1 + breakEvenOffsetPercent / 100)
-    : entryPrice * (1 - breakEvenOffsetPercent / 100);
-
+  const zone = context.smartZone || null;
   return {
     evaluation,
     sizing,
+    order: {
+      side: direction(signal.side),
+      type: 'LIMIT',
+      entryPrice,
+      lowerZone: number(signal.lowerZone, zone?.lower),
+      upperZone: number(signal.upperZone, zone?.upper),
+      stopLoss: number(signal.stopLoss),
+      takeProfit: number(signal.takeProfit),
+      quantity: sizing.quantity,
+      expiresAt: number(signal.expiresAt, zone?.expiresAt),
+    },
     management: {
-      tp1,
-      tp1Action: 'CLOSE_PARTIAL_AND_MOVE_STOP',
-      tp1ClosePercent: number(env.MOE_TP1_CLOSE_PERCENT, 50),
-      securedStop: Number(securedStop.toFixed(4)),
-      trailingStopAfterTp1: true,
+      takeProfitAction: 'CLOSE_FULL_POSITION',
+      stopLossAction: 'CLOSE_FULL_POSITION',
+      trailingStopEnabled: false,
+      breakEvenEnabled: false,
       liveManagementEnabled: false,
     },
   };
