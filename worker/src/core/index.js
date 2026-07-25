@@ -16,3 +16,4 @@ export * from './performance-analytics.js';
 export * from './strategy-optimization-engine.js';
 export * from './multi-symbol-scanner.js';
 export * from './market-session-engine.js';
+export * from './ai-confidence-engine.js';
