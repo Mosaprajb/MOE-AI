@@ -88,6 +88,17 @@ async function createSignature({ path, query, body, appKey, appSecret, host, tim
   return toBase64(await crypto.subtle.sign('HMAC', cryptoKey, encoder.encode(encodeURIComponent(signingString))));
 }
 
+async function compactOrderIds(signalId) {
+  const digest = await crypto.subtle.digest('SHA-256', encoder.encode(String(signalId || crypto.randomUUID())));
+  const hex = [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, '0')).join('').toUpperCase();
+  return {
+    combo: `C${hex.slice(0, 31)}`,
+    entry: `E${hex.slice(0, 31)}`,
+    takeProfit: `T${hex.slice(0, 31)}`,
+    stopLoss: `S${hex.slice(0, 31)}`,
+  };
+}
+
 export async function webullRequest(method, path, { query = {}, body = null, requiresAccessToken = true } = {}, env = {}) {
   if (!path.startsWith('/')) throw new Error('Webull path must start with /');
   const appKey = requireSecret(env, 'WEBULL_APP_KEY');
@@ -134,26 +145,66 @@ export async function placeWebullSandboxOrder(accountId, order, env = {}) {
   if (env.WEBULL_ENVIRONMENT === 'production') throw new Error('Sandbox order submission cannot use production environment');
   if (env.WEBULL_SANDBOX_ORDER_SUBMISSION !== 'true') throw new Error('Sandbox order submission is disabled');
   if (!accountId) throw new Error('account_id is required');
-  const newOrder = {
-    client_order_id: order.signalId,
-    combo_type: 'NORMAL',
+  if (order.side !== 'BUY') throw new Error('Protected sandbox submission currently supports BUY entries only');
+  if (!order.stopLoss || !order.takeProfit) throw new Error('Protected order requires stopLoss and takeProfit');
+
+  const ids = await compactOrderIds(order.signalId);
+  const common = {
     instrument_type: 'EQUITY',
     entrust_type: 'QTY',
     support_trading_session: order.session,
     symbol: order.symbol,
     market: 'US',
-    side: order.side,
-    order_type: order.orderType,
     time_in_force: 'DAY',
     quantity: String(order.quantity),
+  };
+  const entry = {
+    ...common,
+    client_order_id: ids.entry,
+    combo_type: 'MASTER',
+    side: 'BUY',
+    order_type: order.orderType,
     ...(order.limitPrice ? { limit_price: String(order.limitPrice) } : {}),
   };
-  return webullRequest('POST', '/openapi/trade/order/place', { body: { account_id: accountId, new_orders: [newOrder] } }, env);
+  const takeProfit = {
+    ...common,
+    client_order_id: ids.takeProfit,
+    combo_type: 'STOP_PROFIT',
+    side: 'SELL',
+    order_type: 'LIMIT',
+    limit_price: String(order.takeProfit),
+  };
+  const stopLoss = {
+    ...common,
+    client_order_id: ids.stopLoss,
+    combo_type: 'STOP_LOSS',
+    side: 'SELL',
+    order_type: 'STOP_LOSS',
+    stop_price: String(order.stopLoss),
+  };
+  const response = await webullRequest('POST', '/openapi/trade/order/place', {
+    body: {
+      account_id: accountId,
+      client_combo_order_id: ids.combo,
+      new_orders: [entry, takeProfit, stopLoss],
+    },
+  }, env);
+  return { protected: true, clientOrderIds: ids, response };
 }
 
 export function getWebullAccounts(env) { return webullGet('/openapi/account/list', {}, env); }
 export function getWebullBalance(accountId, env) { if (!accountId) throw new Error('account_id is required'); return webullGet('/openapi/assets/balance', { account_id: accountId }, env); }
 export function getWebullPositions(accountId, env) { if (!accountId) throw new Error('account_id is required'); return webullGet('/openapi/assets/positions', { account_id: accountId }, env); }
+export function getWebullOrderDetail(accountId, clientOrderId, env) {
+  if (!accountId) throw new Error('account_id is required');
+  if (!clientOrderId) throw new Error('client_order_id is required');
+  return webullGet('/openapi/trade/order/detail', { account_id: accountId, client_order_id: clientOrderId }, env);
+}
+export function getWebullOpenOrders(accountId, pageSize = 20, env) {
+  if (!accountId) throw new Error('account_id is required');
+  const normalizedPageSize = Math.max(1, Math.min(100, Number(pageSize) || 20));
+  return webullGet('/openapi/trade/order/open', { account_id: accountId, page_size: normalizedPageSize }, env);
+}
 export async function getWebullAccountSnapshot(accountId, env) {
   const [balance, positions] = await Promise.all([getWebullBalance(accountId, env), getWebullPositions(accountId, env)]);
   return { accountId, balance, positions, fetchedAt: new Date().toISOString(), readOnly: true };
