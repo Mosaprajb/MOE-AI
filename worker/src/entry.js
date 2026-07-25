@@ -8,7 +8,6 @@ export { AlertCoordinator };
 
 const AUTO_SUBMIT_PATHS = new Set([
   '/api/tradingview/signal',
-  '/api/tradingview/webull-preview',
 ]);
 
 const DASHBOARD_PAGE_PATHS = new Set([
@@ -100,6 +99,10 @@ async function withSandboxSubmission(request, env) {
   if (!contentType.toLowerCase().includes('application/json')) return request;
   let payload;
   try { payload = await request.clone().json(); } catch { return request; }
+
+  // An explicit dry-run request must never be upgraded into a sandbox order.
+  if (payload.submitSandbox === false) return request;
+
   const headers = new Headers(request.headers);
   headers.set('content-type', 'application/json');
   return new Request(request.url, { method: request.method, headers, body: JSON.stringify({ ...payload, submitSandbox: true }) });
