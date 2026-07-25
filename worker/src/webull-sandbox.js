@@ -94,6 +94,24 @@ function evaluateAccountSafety(snapshot, signal, referencePrice, quantity, env =
   return { accepted: reasons.length === 0, reasons, metrics: { dayBuyingPower, overnightBuyingPower, cashBalance, netLiquidation, maintenanceMargin, estimatedNotional, marginCallCount: marginCalls.length } };
 }
 
+function buildAccountSyncState(env, accountId, accountSnapshot, warning = null) {
+  const enabled = env.WEBULL_READ_ONLY_SYNC === 'true';
+  let status = 'DISABLED';
+  if (enabled && !accountId) status = 'MISSING_ACCOUNT';
+  else if (warning) status = 'WARNING';
+  else if (accountSnapshot) status = 'SYNCED';
+  else if (enabled) status = 'SKIPPED';
+
+  return {
+    enabled,
+    status,
+    used: Boolean(accountSnapshot),
+    accountId: accountSnapshot ? accountId : null,
+    fetchedAt: accountSnapshot?.fetchedAt || null,
+    warning,
+  };
+}
+
 export function normalizeWebullSignal(input = {}) {
   const symbol = String(input.symbol || '').trim().toUpperCase();
   const side = String(input.side || '').trim().toUpperCase();
@@ -148,17 +166,26 @@ export async function handleWebullSandboxOrder(request, env = {}) {
     if (!env.MOE_WEBHOOK_SECRET || suppliedSecret !== env.MOE_WEBHOOK_SECRET) return Response.json({ ok: false, error: 'Unauthorized' }, { status: 401 });
     const payload = await request.json();
     const signal = normalizeWebullSignal(payload);
+    const submissionRequested = payload.submitSandbox === true;
     const accountId = String(payload.accountId || env.WEBULL_ACCOUNT_ID || '').trim();
     let accountSnapshot = null;
+    let accountSyncWarning = null;
     let portfolioInput = {
       ...(payload.portfolio || {}),
       accountEquity: payload.portfolio?.accountEquity ?? payload.accountEquity ?? payload.context?.accountEquity,
       signalSector: payload.portfolio?.signalSector ?? payload.sector,
     };
     if (env.WEBULL_READ_ONLY_SYNC === 'true' && accountId) {
-      accountSnapshot = await getWebullAccountSnapshot(accountId, env);
-      portfolioInput = normalizeWebullPortfolio(accountSnapshot, portfolioInput);
+      try {
+        accountSnapshot = await getWebullAccountSnapshot(accountId, env);
+        portfolioInput = normalizeWebullPortfolio(accountSnapshot, portfolioInput);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : 'Webull account sync failed';
+        if (submissionRequested) throw new Error(`Webull account safety sync failed: ${message}`);
+        accountSyncWarning = message;
+      }
     }
+    const accountSync = buildAccountSyncState(env, accountId, accountSnapshot, accountSyncWarning);
     const context = {
       ...(payload.context || {}),
       marketRegime: payload.marketRegime ?? payload.context?.marketRegime,
@@ -204,7 +231,6 @@ export async function handleWebullSandboxOrder(request, env = {}) {
     applyDecisionEnforcement(plan, decision);
 
     if (env.WEBULL_LIVE_TRADING === 'true' || env.WEBULL_ENVIRONMENT === 'production') return Response.json({ ok: false, blocked: true, error: 'Production trading is intentionally disabled' }, { status: 423 });
-    const submissionRequested = payload.submitSandbox === true;
     const submissionEnabled = env.WEBULL_SANDBOX_ENABLED === 'true' && env.WEBULL_SANDBOX_ORDER_SUBMISSION === 'true';
     const automatedSubmission = String(signal.source || '').toUpperCase().startsWith('MOERAND_AUTO_');
     const automationArmed = env.WEBULL_AUTOMATION_ARMED === 'true';
@@ -223,6 +249,7 @@ export async function handleWebullSandboxOrder(request, env = {}) {
           decision,
           portfolio,
           accountSafety,
+          accountSync,
           message: 'Automatic Webull Sandbox submission is disarmed. Set WEBULL_AUTOMATION_ARMED=true only after the manual protected-order test succeeds.',
         }, { status: 423 });
       }
@@ -240,6 +267,7 @@ export async function handleWebullSandboxOrder(request, env = {}) {
           decision,
           portfolio,
           accountSafety,
+          accountSync,
           message: decision.enforce && !decision.accepted
             ? 'Sandbox order was blocked by the explainable MOE Decision Engine.'
             : 'Sandbox order was not submitted because the trade failed MOE AI or safety rules.',
@@ -261,9 +289,15 @@ export async function handleWebullSandboxOrder(request, env = {}) {
       portfolio,
       accountSafety,
       submission,
-      accountSync: { enabled: env.WEBULL_READ_ONLY_SYNC === 'true', used: Boolean(accountSnapshot), accountId: accountSnapshot ? accountId : null, fetchedAt: accountSnapshot?.fetchedAt || null },
+      accountSync,
       decisionPipeline: ['SIGNAL_VALIDATION', 'MOE_AI_BRAIN', 'WEBULL_ACCOUNT_SYNC', 'TRADE_ENGINE', 'POSITION_SIZING', 'PORTFOLIO_MANAGER', 'MARGIN_ACCOUNT_SAFETY', 'EXPLAINABLE_DECISION_ENGINE', submitted ? 'SANDBOX_SUBMISSION' : 'ORDER_PREVIEW'],
-      message: submitted ? 'Trade passed MOE AI Brain, the explainable decision engine, and all safety layers and was submitted to Webull Sandbox.' : plan.evaluation.accepted ? 'Trade accepted by the complete MOE decision pipeline for preview but not submitted.' : 'Trade rejected by the MOE decision pipeline.',
+      message: submitted
+        ? 'Trade passed MOE AI Brain, the explainable decision engine, and all safety layers and was submitted to Webull Sandbox.'
+        : accountSyncWarning
+          ? 'Dry run completed without submitting an order. Webull account sync was unavailable, so fallback context was used.'
+          : plan.evaluation.accepted
+            ? 'Trade accepted by the complete MOE decision pipeline for preview but not submitted.'
+            : 'Trade rejected by the MOE decision pipeline.',
       createdAt: new Date().toISOString(),
     }, { status: plan.evaluation.accepted ? 200 : 422 });
   } catch (error) {
