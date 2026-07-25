@@ -6,6 +6,7 @@ import { getLiveTradingReadiness, handleWebullLiveOrder } from './webull-live.js
 
 const TRADING_MODE_PATH = '/api/trading/mode';
 const LIVE_READINESS_PATH = '/api/trading/live/readiness';
+const ALL_TRADES_PATH = '/api/trades/all';
 const SIGNAL_PATH = '/api/tradingview/signal';
 const DASHBOARD_PAGE_PATHS = new Set(['/', '/moe-ai', '/moe-ai/', '/dashboard', '/dashboard/']);
 const TRADE_LEDGER_PATHS = new Set(['/trades', '/trades/']);
@@ -13,6 +14,10 @@ const TRADE_LEDGER_PATHS = new Set(['/trades', '/trades/']);
 export class AlertCoordinator extends BaseAlertCoordinator {
   async getTradingMode() { return getTradingMode(this.ctx.storage, this.env); }
   async updateTradingMode(patch = {}) { return updateTradingMode(this.ctx.storage, patch, this.env); }
+  async listAllTrades() {
+    const trades = await this.ctx.storage.get('trade-history:v1');
+    return Array.isArray(trades) ? trades.slice(0, 2000) : [];
+  }
 }
 
 function coordinator(env) { return env.ALERT_COORDINATOR.getByName('global'); }
@@ -71,8 +76,17 @@ async function handleLiveReadiness(request, env) {
   if (request.method === 'OPTIONS') return new Response(null, { status: 204, headers });
   if (origin === false) return secureJson({ ok: false, error: 'Origin not allowed' }, 403, headers);
   if (request.method !== 'GET') return secureJson({ ok: false, error: 'Method not allowed' }, 405, headers);
-  const mode = await coordinator(env).getTradingMode();
-  return secureJson({ ok: true, readiness: getLiveTradingReadiness(env), tradingMode: mode }, 200, headers);
+  return secureJson({ ok: true, readiness: getLiveTradingReadiness(env), tradingMode: await coordinator(env).getTradingMode() }, 200, headers);
+}
+
+async function handleAllTrades(request, env) {
+  const origin = allowedOrigin(request, env);
+  const headers = cors(origin || null);
+  if (request.method === 'OPTIONS') return new Response(null, { status: 204, headers });
+  if (origin === false) return secureJson({ ok: false, error: 'Origin not allowed' }, 403, headers);
+  if (request.method !== 'GET') return secureJson({ ok: false, error: 'Method not allowed' }, 405, headers);
+  const trades = await coordinator(env).listAllTrades();
+  return secureJson({ ok: true, count: trades.length, trades, storage: 'DURABLE_OBJECT' }, 200, headers);
 }
 
 async function enforceTradingMode(request, env) {
@@ -97,6 +111,8 @@ export default {
     if (TRADE_LEDGER_PATHS.has(path)) return tradeLedgerResponse();
     if (path === TRADING_MODE_PATH) return handleTradingMode(request, env);
     if (path === LIVE_READINESS_PATH) return handleLiveReadiness(request, env);
+    if (path === ALL_TRADES_PATH) return handleAllTrades(request, env);
+    if (path === '/api/webull/bootstrap') return secureJson({ ok: false, blocked: true, error: 'Remote token bootstrap is disabled. Configure broker credentials only as Cloudflare secrets.' }, 423);
     const enforcedRequest = await enforceTradingMode(request, env);
     if (enforcedRequest instanceof Response) return enforcedRequest;
     return entryWorker.fetch(enforcedRequest, env, ctx);
