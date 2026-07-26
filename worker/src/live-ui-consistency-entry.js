@@ -24,6 +24,7 @@ async function enhanceDashboard(response) {
   const patch = `<script id="liveUiConsistencyPatch">
   (function(){
     const text=value=>String(value??'').trim();
+    let previousLiveState=null;
     const gates=()=>Array.from(document.querySelectorAll('#liveGateList .gate-item'));
     const gateByLabel=label=>gates().find(row=>text(row.querySelector('strong')?.textContent)===label);
     const paintGate=(label,passed,description,badgeText)=>{
@@ -60,6 +61,7 @@ async function enhanceDashboard(response) {
         const scannerNote=document.getElementById('scannerNote');
         const activate=document.getElementById('activateLiveFully');
         const back=document.getElementById('returnToSandbox');
+        const warning=document.getElementById('liveActionWarning');
 
         if(liveActive){
           if(system){system.textContent=liveArmed?'LIVE ARMED':'LIVE MANUAL';system.className='negative';}
@@ -70,8 +72,15 @@ async function enhanceDashboard(response) {
           if(scannerNote)scannerNote.textContent='البيئة: production · سياسة التنفيذ: LONG ONLY · حالة Live: '+(liveArmed?'ARMED':'MANUAL');
           if(activate){activate.disabled=true;activate.textContent='Live مفعّل';}
           if(back)back.disabled=false;
+          if(warning)warning.style.display='none';
         }else{
           if(activate){activate.disabled=false;activate.textContent='تفعيل Live بالكامل';}
+          if(warning){warning.style.display='block';warning.textContent='Live مقفل حاليًا. التفعيل يتطلب PIN وبوابات Production المكتملة، ويوقف Sandbox تلقائيًا.';}
+        }
+
+        if(previousLiveState!==liveActive){
+          previousLiveState=liveActive;
+          if(typeof window.refreshPortfolioRisk==='function')setTimeout(()=>window.refreshPortfolioRisk(),250);
         }
       }catch{}
     };
