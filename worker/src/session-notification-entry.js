@@ -13,6 +13,7 @@ const UNREGISTER_PATH = '/api/trading/session-notifications/unregister';
 const STATUS_PATH = '/api/trading/session-notifications/status';
 const TEST_PATH = '/api/trading/session-notifications/test';
 const SERVICE_WORKER_PATH = '/session-notification-sw.js';
+const MANIFEST_PATH = '/manifest.webmanifest';
 
 function secureJson(payload, status = 200) {
   return Response.json(payload, {
@@ -54,6 +55,28 @@ self.addEventListener('notificationclick',event=>{
   });
 }
 
+function manifestResponse() {
+  return new Response(JSON.stringify({
+    name: 'MOERAND AI',
+    short_name: 'MOERAND',
+    start_url: '/',
+    scope: '/',
+    display: 'standalone',
+    background_color: '#06121f',
+    theme_color: '#06121f',
+    orientation: 'portrait-primary',
+    icons: [
+      { src: '/icon-192.svg', sizes: '192x192', type: 'image/svg+xml', purpose: 'any maskable' },
+    ],
+  }), {
+    headers: {
+      'content-type': 'application/manifest+json; charset=utf-8',
+      'cache-control': 'public, max-age=3600',
+      'x-content-type-options': 'nosniff',
+    },
+  });
+}
+
 async function requestPayload(request) {
   try { return await request.json(); }
   catch { throw new Error('Invalid JSON payload'); }
@@ -66,6 +89,12 @@ async function enhanceDashboard(response) {
   if (html.includes('moerandSessionNotificationControls')) {
     return new Response(html, { status: response.status, statusText: response.statusText, headers: secureHeaders(response) });
   }
+
+  const appMeta = `<link rel="manifest" href="/manifest.webmanifest">
+  <meta name="theme-color" content="#06121f">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="MOERAND">`;
 
   const style = `<style id="moerandSessionNotificationStyles">
   .session-notification-controls{display:grid;grid-template-columns:1fr auto auto;gap:9px;align-items:center;margin-top:10px;padding:10px;border:1px solid rgba(54,89,124,.46);border-radius:10px;background:rgba(5,18,31,.66)}
@@ -80,20 +109,35 @@ async function enhanceDashboard(response) {
     const byId=id=>document.getElementById(id);
     const notify=(message,type)=>{const toast=byId('controlToast');if(!toast){window.alert(message);return;}toast.textContent=message;toast.className='control-toast show '+(type||'success');setTimeout(()=>toast.className='control-toast',7000);};
     const base64ToBytes=value=>{const padding='='.repeat((4-value.length%4)%4);const base64=(value+padding).replace(/-/g,'+').replace(/_/g,'/');return Uint8Array.from(atob(base64),char=>char.charCodeAt(0));};
-    function mount(){if(byId('sessionNotificationControls'))return byId('sessionNotificationControls');const panel=byId('sessionPolicyPanel');if(!panel)return null;const controls=document.createElement('div');controls.id='sessionNotificationControls';controls.className='session-notification-controls';controls.innerHTML='<div class="session-notification-copy"><strong id="sessionNotificationTitle">تنبيهات الجلسات غير مفعّلة</strong><span id="sessionNotificationStatus">فعّلها لتصلك إشعارات الافتتاح والانتهاء على هذا الجهاز.</span></div><button type="button" id="sessionNotificationToggle" class="session-notification-button">تفعيل التنبيهات</button><button type="button" id="sessionNotificationTest" class="session-notification-button test" disabled>اختبار التنبيه</button>';panel.appendChild(controls);byId('sessionNotificationToggle').onclick=toggle;byId('sessionNotificationTest').onclick=test;return controls;}
-    async function registration(){if(!('serviceWorker' in navigator)||!('PushManager' in window)||!('Notification' in window))throw new Error('هذا المتصفح لا يدعم إشعارات Push. على iPhone ثبّت الموقع على الشاشة الرئيسية وافتحه كتطبيق.');return navigator.serviceWorker.register('/session-notification-sw.js',{scope:'/'}).then(()=>navigator.serviceWorker.ready);}
+    const isIOS=()=>/iphone|ipad|ipod/i.test(navigator.userAgent)||(navigator.platform==='MacIntel'&&navigator.maxTouchPoints>1);
+    const isStandalone=()=>window.matchMedia('(display-mode: standalone)').matches||window.navigator.standalone===true;
+    function environmentIssue(){
+      if(!window.isSecureContext)return 'التنبيهات تتطلب فتح الموقع عبر HTTPS مباشرة.';
+      if(!('serviceWorker' in navigator)||!('PushManager' in window)||!('Notification' in window))return 'هذا المتصفح لا يدعم إشعارات Push.';
+      if(isIOS()&&!isStandalone())return 'على iPhone: أضف MOERAND إلى الشاشة الرئيسية، ثم افتحه من الأيقونة وليس داخل Safari.';
+      return '';
+    }
+    function mount(){if(byId('sessionNotificationControls'))return byId('sessionNotificationControls');const panel=byId('sessionPolicyPanel');if(!panel)return null;const controls=document.createElement('div');controls.id='sessionNotificationControls';controls.className='session-notification-controls';controls.innerHTML='<div class="session-notification-copy"><strong id="sessionNotificationTitle">تنبيهات الجلسات غير مفعّلة</strong><span id="sessionNotificationStatus">فعّلها لتصلك إشعارات الافتتاح والانتهاء على هذا الجهاز.</span></div><button type="button" id="sessionNotificationToggle" class="session-notification-button" data-enabled="false">تفعيل التنبيهات</button><button type="button" id="sessionNotificationTest" class="session-notification-button test" disabled>اختبار التنبيه</button>';panel.appendChild(controls);byId('sessionNotificationToggle').onclick=toggle;byId('sessionNotificationTest').onclick=test;return controls;}
+    async function registration(){const issue=environmentIssue();if(issue)throw new Error(issue);const registered=await navigator.serviceWorker.register('/session-notification-sw.js',{scope:'/'});await navigator.serviceWorker.ready;return registered;}
     async function currentSubscription(){const reg=await registration();return reg.pushManager.getSubscription();}
-    function render(enabled,permission){mount();const toggle=byId('sessionNotificationToggle'),testButton=byId('sessionNotificationTest'),title=byId('sessionNotificationTitle'),status=byId('sessionNotificationStatus');toggle.className='session-notification-button '+(enabled?'off':'');toggle.textContent=enabled?'إيقاف التنبيهات':'تفعيل التنبيهات';testButton.disabled=!enabled||busy;title.textContent=enabled?'تنبيهات الجلسات مفعّلة':'تنبيهات الجلسات غير مفعّلة';status.textContent=enabled?'سيصلك تنبيه عند افتتاح وانتهاء كل جلسة على هذا الجهاز.':permission==='denied'?'الإشعارات محظورة من إعدادات المتصفح أو الجهاز.':'فعّلها لتصلك إشعارات الافتتاح والانتهاء على هذا الجهاز.';}
-    async function refresh(){mount();try{const subscription=await currentSubscription();if(!subscription){render(false,Notification.permission);return;}const response=await fetch('/api/trading/session-notifications/status',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({endpoint:subscription.endpoint})});const payload=await response.json();render(response.ok&&payload.status?.enabled===true,Notification.permission);}catch{render(false,Notification.permission);}}
-    async function enable(){const permission=await Notification.requestPermission();if(permission!=='granted')throw new Error('لم يتم منح إذن الإشعارات. فعّل الإشعارات من إعدادات المتصفح أو الجهاز.');const configResponse=await fetch('/api/trading/session-notifications/config',{cache:'no-store'});const config=await configResponse.json();if(!configResponse.ok||!config.publicKey)throw new Error(config.error||'مفتاح الإشعارات العام غير متاح.');const reg=await registration();let subscription=await reg.pushManager.getSubscription();if(!subscription)subscription=await reg.pushManager.subscribe({userVisibleOnly:true,applicationServerKey:base64ToBytes(config.publicKey)});const response=await fetch('/api/trading/session-notifications/register',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({subscription:subscription.toJSON()})});const payload=await response.json();if(!response.ok||!payload.ok)throw new Error(payload.error||'تعذر تفعيل التنبيهات.');}
+    function render(enabled,permission,message){mount();const toggle=byId('sessionNotificationToggle'),testButton=byId('sessionNotificationTest'),title=byId('sessionNotificationTitle'),status=byId('sessionNotificationStatus');toggle.dataset.enabled=enabled?'true':'false';toggle.className='session-notification-button '+(enabled?'off':'');toggle.textContent=enabled?'إيقاف التنبيهات':'تفعيل التنبيهات';testButton.disabled=!enabled||busy;title.textContent=enabled?'تنبيهات الجلسات مفعّلة':'تنبيهات الجلسات غير مفعّلة';status.textContent=message|| (enabled?'سيصلك تنبيه عند افتتاح وانتهاء كل جلسة على هذا الجهاز.':permission==='denied'?'الإشعارات محظورة من إعدادات المتصفح أو الجهاز.':'فعّلها لتصلك إشعارات الافتتاح والانتهاء على هذا الجهاز.');}
+    async function refresh(){mount();const issue=environmentIssue();if(issue){render(false,Notification.permission,issue);return;}try{const subscription=await currentSubscription();if(!subscription){render(false,Notification.permission);return;}const response=await fetch('/api/trading/session-notifications/status',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({endpoint:subscription.endpoint})});const payload=await response.json();render(response.ok&&payload.status?.enabled===true,Notification.permission);}catch(error){render(false,Notification.permission,error.message||String(error));}}
+    async function enable(){
+      const issue=environmentIssue();if(issue)throw new Error(issue);
+      const permission=await Notification.requestPermission();
+      if(permission!=='granted')throw new Error('لم يتم منح إذن الإشعارات. فعّل الإشعارات من إعدادات المتصفح أو الجهاز.');
+      const configResponse=await fetch('/api/trading/session-notifications/config',{cache:'no-store'});const config=await configResponse.json();if(!configResponse.ok||!config.publicKey)throw new Error(config.error||'مفتاح الإشعارات العام غير متاح.');
+      const reg=await registration();let subscription=await reg.pushManager.getSubscription();if(!subscription)subscription=await reg.pushManager.subscribe({userVisibleOnly:true,applicationServerKey:base64ToBytes(config.publicKey)});
+      const response=await fetch('/api/trading/session-notifications/register',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({subscription:subscription.toJSON()})});const payload=await response.json();if(!response.ok||!payload.ok)throw new Error(payload.error||'تعذر تفعيل التنبيهات.');
+    }
     async function disable(){const subscription=await currentSubscription();if(!subscription){render(false,Notification.permission);return;}const response=await fetch('/api/trading/session-notifications/unregister',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({endpoint:subscription.endpoint})});const payload=await response.json();if(!response.ok||!payload.ok)throw new Error(payload.error||'تعذر إيقاف التنبيهات.');await subscription.unsubscribe();}
-    async function toggle(){if(busy)return;busy=true;const button=byId('sessionNotificationToggle');if(button)button.disabled=true;try{const subscription=await currentSubscription();let enabled=false;if(subscription){const response=await fetch('/api/trading/session-notifications/status',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({endpoint:subscription.endpoint})});const payload=await response.json();enabled=response.ok&&payload.status?.enabled===true;}if(enabled){await disable();notify('تم إيقاف تنبيهات الجلسات على هذا الجهاز.','success');}else{await enable();notify('تم تفعيل تنبيهات الجلسات على هذا الجهاز.','success');}await refresh();}catch(error){notify(error.message||String(error),'error');}finally{busy=false;if(button)button.disabled=false;}}
+    async function toggle(){if(busy)return;busy=true;const button=byId('sessionNotificationToggle');const enabled=button?.dataset.enabled==='true';if(button)button.disabled=true;try{if(enabled){await disable();notify('تم إيقاف تنبيهات الجلسات على هذا الجهاز.','success');}else{await enable();notify('تم تفعيل تنبيهات الجلسات على هذا الجهاز.','success');}await refresh();}catch(error){notify(error.message||String(error),'error');await refresh();}finally{busy=false;if(button)button.disabled=false;}}
     async function test(){if(busy)return;busy=true;const button=byId('sessionNotificationTest');if(button)button.disabled=true;try{const subscription=await currentSubscription();if(!subscription)throw new Error('فعّل التنبيهات أولًا.');const response=await fetch('/api/trading/session-notifications/test',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({endpoint:subscription.endpoint})});const payload=await response.json();if(!response.ok||!payload.ok)throw new Error(payload.error||'تعذر إرسال اختبار التنبيه.');notify('تم إرسال اختبار التنبيه إلى هذا الجهاز.','success');}catch(error){notify(error.message||String(error),'error');}finally{busy=false;await refresh();}}
     const start=()=>{mount();refresh();setInterval(refresh,30000);};if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',start);else start();setTimeout(start,900);
   })();
   </script>`;
 
-  const enhanced = html.replace('</head>', `${style}</head>`).replace('</body>', `${script}</body>`);
+  const enhanced = html.replace('</head>', `${appMeta}${style}</head>`).replace('</body>', `${script}</body>`);
   return new Response(enhanced, { status: response.status, statusText: response.statusText, headers: secureHeaders(response) });
 }
 
@@ -110,6 +154,7 @@ export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
     if (url.pathname === SERVICE_WORKER_PATH && request.method === 'GET') return serviceWorkerResponse();
+    if (url.pathname === MANIFEST_PATH && request.method === 'GET') return manifestResponse();
     if (url.pathname === CONFIG_PATH && request.method === 'GET') return secureJson({ ok: true, publicKey: env.VAPID_PUBLIC_KEY || '' });
 
     if ([REGISTER_PATH, UNREGISTER_PATH, STATUS_PATH, TEST_PATH].includes(url.pathname)) {
