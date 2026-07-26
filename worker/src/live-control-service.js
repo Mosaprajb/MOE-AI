@@ -74,7 +74,7 @@ async function verifyPin(storage, pin, env = {}) {
   const security = await securityState(storage);
   const lockedUntil = security.lockedUntil ? Date.parse(security.lockedUntil) : 0;
   if (lockedUntil > Date.now()) {
-    throw new Error(`PIN control is temporarily locked until ${security.lockedUntil}.`);
+    throw new Error(`PIN controls are temporarily locked until ${security.lockedUntil}.`);
   }
 
   const valid = await secureEqual(pin, configured);
@@ -82,18 +82,24 @@ async function verifyPin(storage, pin, env = {}) {
     const maximumAttempts = integer(env.MOE_LIVE_PIN_MAX_ATTEMPTS, 5, 3, 20);
     const lockoutMinutes = integer(env.MOE_LIVE_PIN_LOCKOUT_MINUTES, 15, 1, 1440);
     const failedAttempts = Number(security.failedAttempts || 0) + 1;
+    const lockoutTriggered = failedAttempts >= maximumAttempts;
+    const remainingAttempts = Math.max(0, maximumAttempts - failedAttempts);
     const next = {
-      failedAttempts: failedAttempts >= maximumAttempts ? 0 : failedAttempts,
+      failedAttempts: lockoutTriggered ? 0 : failedAttempts,
       lastFailureAt: new Date().toISOString(),
-      lockedUntil: failedAttempts >= maximumAttempts
+      lockedUntil: lockoutTriggered
         ? new Date(Date.now() + lockoutMinutes * 60_000).toISOString()
         : null,
     };
     await storage.put(SECURITY_KEY, next);
-    throw new Error(failedAttempts >= maximumAttempts ? 'Too many invalid PIN attempts. Control is temporarily locked.' : 'Invalid PIN.');
+    if (lockoutTriggered) {
+      throw new Error(`Incorrect PIN. Too many failed attempts; PIN controls are locked for ${lockoutMinutes} minutes.`);
+    }
+    throw new Error(`Incorrect PIN. ${remainingAttempts} attempt${remainingAttempts === 1 ? '' : 's'} remaining before temporary lockout.`);
   }
 
   await storage.put(SECURITY_KEY, { failedAttempts: 0, lockedUntil: null, lastFailureAt: null });
+  return true;
 }
 
 export async function getLiveControlState(storage, env = {}) {
@@ -129,7 +135,9 @@ export async function updateLiveControlState(storage, patch = {}, env = {}) {
     lastAction: action,
   };
 
-  if (action === 'ENABLE_SANDBOX_AUTOMATION') {
+  if (action === 'TEST_PIN') {
+    next = { ...next, lastAction: 'PIN_VERIFIED' };
+  } else if (action === 'ENABLE_SANDBOX_AUTOMATION') {
     next = { ...next, sandboxAutomationEnabled: true };
   } else if (action === 'DISABLE_SANDBOX_AUTOMATION') {
     next = { ...next, sandboxAutomationEnabled: false };
