@@ -3,11 +3,15 @@ import { AUTO_SCANNER_SYMBOLS, activeTradingWindow } from './auto-scanner.js';
 import { enhanceSmartMoneyDashboard } from './smart-money/dashboard-overlay.js';
 import { runSmartMoneyObservation } from './smart-money/observation-service.js';
 import { buildActivePositionIntelligence } from './trading-intelligence/active-position.js';
+import { buildPortfolioRiskIntelligence } from './trading-intelligence/portfolio-risk.js';
+import { enhancePortfolioRiskDashboard } from './trading-intelligence/portfolio-risk-overlay.js';
+import { getWebullAccountSnapshot } from './webull-client.js';
 
 const OBSERVATION_STATUS_KEY = 'smart-money-observation:v1';
 const OBSERVATION_HISTORY_KEY = 'smart-money-observation-history:v1';
 const DASHBOARD_PATHS = new Set(['/', '/moe-ai', '/moe-ai/', '/dashboard', '/dashboard/']);
 const ACTIVE_POSITION_PATH = '/api/trading-intelligence/active-position';
+const PORTFOLIO_RISK_PATH = '/api/trading-intelligence/portfolio-risk';
 
 function observationEnabled(env = {}) {
   return String(env.SMART_MONEY_OBSERVATION_ENABLED || '').toLowerCase() === 'true';
@@ -62,6 +66,39 @@ export class AlertCoordinator extends TradingAlertCoordinator {
       this.latestLifecycleReport(),
     ]);
     return buildActivePositionIntelligence({ trades, lifecycleReport, now: Date.now() });
+  }
+
+  async portfolioRiskIntelligence() {
+    const [trades, reservations, lifecycleReport] = await Promise.all([
+      this.listAllTrades(),
+      this.listOrderReservations({ limit: 500 }),
+      this.latestLifecycleReport(),
+    ]);
+    let accountSnapshot = null;
+    let accountError = null;
+    const sandbox = String(this.env.WEBULL_ENVIRONMENT || 'sandbox').toLowerCase() === 'sandbox'
+      && String(this.env.WEBULL_LIVE_TRADING || '').toLowerCase() !== 'true';
+    const accountId = String(this.env.WEBULL_ACCOUNT_ID || '').trim();
+    if (sandbox && accountId) {
+      try {
+        accountSnapshot = await getWebullAccountSnapshot(accountId, this.env);
+      } catch (error) {
+        accountError = error instanceof Error ? error.message : 'Webull sandbox account snapshot failed';
+      }
+    } else if (!accountId) {
+      accountError = 'WEBULL_ACCOUNT_ID_MISSING';
+    } else {
+      accountError = 'SANDBOX_READ_ONLY_ACCOUNT_SNAPSHOT_LOCKED';
+    }
+    return buildPortfolioRiskIntelligence({
+      trades,
+      reservations,
+      lifecycleReport,
+      accountSnapshot,
+      accountError,
+      env: this.env,
+      now: Date.now(),
+    });
   }
 
   async scannerStatus() {
@@ -123,8 +160,23 @@ export default {
         }, 500);
       }
     }
+    if (path === PORTFOLIO_RISK_PATH) {
+      if (request.method !== 'GET') return secureJson({ ok: false, error: 'Method not allowed' }, 405);
+      try {
+        const portfolioRisk = await coordinator(env).portfolioRiskIntelligence();
+        return secureJson({ ok: true, portfolioRisk, storage: 'DURABLE_OBJECT' });
+      } catch (error) {
+        return secureJson({
+          ok: false,
+          error: error instanceof Error ? error.message : 'Portfolio risk intelligence failed',
+          portfolioRisk: buildPortfolioRiskIntelligence(),
+        }, 500);
+      }
+    }
     const response = await tradingModeWorker.fetch(request, env, ctx);
-    return DASHBOARD_PATHS.has(path) ? enhanceSmartMoneyDashboard(response) : response;
+    if (!DASHBOARD_PATHS.has(path)) return response;
+    const smartMoneyDashboard = await enhanceSmartMoneyDashboard(response);
+    return enhancePortfolioRiskDashboard(smartMoneyDashboard);
   },
 
   scheduled(controller, env, ctx) {
