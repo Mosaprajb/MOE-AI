@@ -103,5 +103,11 @@ jobs:
       - name: Test portfolio risk dashboard overlay
         run: node --test --test-concurrency=1 worker/test/portfolio-risk-overlay.test.mjs
 
+      - name: Test conflict summary and activity feed
+        run: node --test --test-concurrency=1 worker/test/conflict-activity.test.mjs
+
+      - name: Test conflict and activity dashboard overlay
+        run: node --test --test-concurrency=1 worker/test/conflict-activity-overlay.test.mjs
+
       - name: Run complete Worker safety suite
         run: npm run test:worker
