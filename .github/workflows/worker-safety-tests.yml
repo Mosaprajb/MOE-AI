@@ -49,6 +49,9 @@ jobs:
       - name: Test market-data metrics and rejection gates
         run: node --test --test-concurrency=1 worker/test/liquidity-sweep-market-metrics.test.mjs
 
+      - name: Test session-normalized relative volume
+        run: node --test --test-concurrency=1 worker/test/session-rvol.test.mjs
+
       - name: Test liquidity pool mapping
         run: node --test --test-concurrency=1 worker/test/liquidity-sweep-liquidity-map.test.mjs
 
