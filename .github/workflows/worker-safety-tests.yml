@@ -38,23 +38,17 @@ jobs:
         with:
           node-version: '22'
 
-      - name: Test liquidity foundation
+      - name: Test duplicate-order reservations
+        run: node --test worker/test/order-reservation.test.mjs
+
+      - name: Test liquidity contracts and state machine
         run: node --test worker/test/liquidity-sweep-foundation.test.mjs
 
-      - name: Test exchange session detection
-        run: node --test --test-name-pattern="identifies exchange sessions correctly" worker/test/liquidity-sweep-market-data.test.mjs
+      - name: Test market-data normalization and liquidity mapping
+        run: node --test worker/test/liquidity-sweep-market-data.test.mjs
 
-      - name: Test completed-bar normalization
-        run: node --test --test-name-pattern="normalizes only completed bars" worker/test/liquidity-sweep-market-data.test.mjs
+      - name: Test sweep detection and breakout classification
+        run: node --test worker/test/liquidity-sweep-classifier.test.mjs
 
-      - name: Test delayed and spread rejection
-        run: node --test --test-name-pattern="rejects delayed and abnormally wide-spread" worker/test/liquidity-sweep-market-data.test.mjs
-
-      - name: Test deterministic volatility metrics
-        run: node --test --test-name-pattern="calculates ATR, relative volume" worker/test/liquidity-sweep-market-data.test.mjs
-
-      - name: Test liquidity pool mapping
-        run: node --test --test-name-pattern="maps meaningful buy-side and sell-side" worker/test/liquidity-sweep-market-data.test.mjs
-
-      - name: Run complete Worker safety suite
+      - name: Run complete Worker safety suite sequentially
         run: npm run test:worker
