@@ -45,42 +45,16 @@ jobs:
         run: node --test --test-concurrency=1 worker/test/liquidity-sweep-foundation.test.mjs
 
       - name: Test market-data metrics and rejection gates
-        continue-on-error: true
         run: node --test --test-concurrency=1 worker/test/liquidity-sweep-market-metrics.test.mjs
 
       - name: Test liquidity pool mapping
-        continue-on-error: true
         run: node --test --test-concurrency=1 worker/test/liquidity-sweep-liquidity-map.test.mjs
 
       - name: Test sweep detection and breakout classification
-        continue-on-error: true
         run: node --test --test-concurrency=1 worker/test/liquidity-sweep-classifier.test.mjs
 
       - name: Test confirmation trade planning and scoring
-        continue-on-error: true
         run: node --test --test-concurrency=1 worker/test/liquidity-sweep-engine.test.mjs
 
-      - name: Run all Worker tests in isolated processes
-        id: complete-suite
-        continue-on-error: true
-        shell: bash
-        run: |
-          set +e
-          npm run test:worker > worker-test-report.txt 2>&1
-          status=$?
-          echo "exit_code=$status" >> "$GITHUB_OUTPUT"
-          exit 0
-
-      - name: Upload Worker test report
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: worker-test-report
-          path: worker-test-report.txt
-          if-no-files-found: error
-          retention-days: 3
-
-      - name: Enforce complete Worker suite
-        if: always()
-        shell: bash
-        run: test "${{ steps.complete-suite.outputs.exit_code }}" = "0"
+      - name: Run complete Worker safety suite
+        run: npm run test:worker
