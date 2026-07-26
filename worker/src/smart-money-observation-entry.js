@@ -2,13 +2,25 @@ import tradingModeWorker, { AlertCoordinator as TradingAlertCoordinator } from '
 import { AUTO_SCANNER_SYMBOLS, activeTradingWindow } from './auto-scanner.js';
 import { enhanceSmartMoneyDashboard } from './smart-money/dashboard-overlay.js';
 import { runSmartMoneyObservation } from './smart-money/observation-service.js';
+import { buildActivePositionIntelligence } from './trading-intelligence/active-position.js';
 
 const OBSERVATION_STATUS_KEY = 'smart-money-observation:v1';
 const OBSERVATION_HISTORY_KEY = 'smart-money-observation-history:v1';
 const DASHBOARD_PATHS = new Set(['/', '/moe-ai', '/moe-ai/', '/dashboard', '/dashboard/']);
+const ACTIVE_POSITION_PATH = '/api/trading-intelligence/active-position';
 
 function observationEnabled(env = {}) {
   return String(env.SMART_MONEY_OBSERVATION_ENABLED || '').toLowerCase() === 'true';
+}
+
+function secureJson(data, status = 200) {
+  return Response.json(data, {
+    status,
+    headers: {
+      'cache-control': 'no-store',
+      'x-content-type-options': 'nosniff',
+    },
+  });
 }
 
 export class AlertCoordinator extends TradingAlertCoordinator {
@@ -42,6 +54,14 @@ export class AlertCoordinator extends TradingAlertCoordinator {
       automaticSubmissionAllowed: false,
       liveExecutionAllowed: false,
     };
+  }
+
+  async activePositionIntelligence() {
+    const [trades, lifecycleReport] = await Promise.all([
+      this.listAllTrades(),
+      this.latestLifecycleReport(),
+    ]);
+    return buildActivePositionIntelligence({ trades, lifecycleReport, now: Date.now() });
   }
 
   async scannerStatus() {
@@ -89,8 +109,21 @@ async function runObservationSidecar(controller, env) {
 
 export default {
   async fetch(request, env, ctx) {
-    const response = await tradingModeWorker.fetch(request, env, ctx);
     const path = new URL(request.url).pathname;
+    if (path === ACTIVE_POSITION_PATH) {
+      if (request.method !== 'GET') return secureJson({ ok: false, error: 'Method not allowed' }, 405);
+      try {
+        const activePosition = await coordinator(env).activePositionIntelligence();
+        return secureJson({ ok: true, activePosition, storage: 'DURABLE_OBJECT' });
+      } catch (error) {
+        return secureJson({
+          ok: false,
+          error: error instanceof Error ? error.message : 'Active position intelligence failed',
+          activePosition: buildActivePositionIntelligence(),
+        }, 500);
+      }
+    }
+    const response = await tradingModeWorker.fetch(request, env, ctx);
     return DASHBOARD_PATHS.has(path) ? enhanceSmartMoneyDashboard(response) : response;
   },
 
