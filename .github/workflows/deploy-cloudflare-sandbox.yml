@@ -1,0 +1,63 @@
+name: Deploy Cloudflare Sandbox
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'worker/src/**'
+      - 'wrangler.jsonc'
+      - 'package.json'
+      - 'package-lock.json'
+      - '.github/workflows/deploy-cloudflare-sandbox.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cloudflare-sandbox-deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy-sandbox:
+    name: Validate and deploy MOERAND Sandbox
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: sandbox
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Validate long-only safety configuration
+        run: |
+          node --test --test-concurrency=1 worker/test/long-only-direction-policy.test.mjs
+          node --test --test-concurrency=1 worker/test/final-safety-configuration.test.mjs
+
+      - name: Run complete Worker suite
+        run: npm run test:worker
+
+      - name: Deploy Cloudflare Worker Sandbox
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          command: deploy
+
+      - name: Record deployment safety posture
+        run: |
+          echo 'MOERAND deployment completed with:'
+          echo 'MOE_TRADING_MODE_DEFAULT=SANDBOX'
+          echo 'MOE_DIRECTION_POLICY=LONG_ONLY'
+          echo 'WEBULL_LIVE_TRADING=false'
+          echo 'WEBULL_LIVE_ORDER_SUBMISSION=false'
+          echo 'WEBULL_LIVE_KILL_SWITCH=true'
