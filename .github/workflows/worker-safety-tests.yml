@@ -44,25 +44,8 @@ jobs:
       - name: Test liquidity contracts and state machine
         run: node --test --test-concurrency=1 worker/test/liquidity-sweep-foundation.test.mjs
 
-      - name: Capture market-data metrics test
-        id: market-metrics
-        continue-on-error: true
-        shell: bash
-        run: |
-          set +e
-          node --test --test-concurrency=1 worker/test/liquidity-sweep-market-metrics.test.mjs > market-metrics-report.txt 2>&1
-          status=$?
-          echo "exit_code=$status" >> "$GITHUB_OUTPUT"
-          exit 0
-
-      - name: Upload market metrics report
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: market-metrics-report
-          path: market-metrics-report.txt
-          if-no-files-found: error
-          retention-days: 3
+      - name: Test market-data metrics and rejection gates
+        run: node --test --test-concurrency=1 worker/test/liquidity-sweep-market-metrics.test.mjs
 
       - name: Test liquidity pool mapping
         run: node --test --test-concurrency=1 worker/test/liquidity-sweep-liquidity-map.test.mjs
@@ -74,9 +57,4 @@ jobs:
         run: node --test --test-concurrency=1 worker/test/liquidity-sweep-engine.test.mjs
 
       - name: Run complete Worker safety suite
-        continue-on-error: true
         run: npm run test:worker
-
-      - name: Enforce market metrics result
-        if: always()
-        run: test "${{ steps.market-metrics.outputs.exit_code }}" = "0"
