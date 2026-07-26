@@ -100,7 +100,11 @@ function coordinator(env) { return env.ALERT_COORDINATOR.getByName('global'); }
 function allowedOrigin(request, env) {
   const origin = request.headers.get('origin');
   if (!origin) return null;
-  if (origin === env.APP_ORIGIN || origin === 'http://localhost:3000') return origin;
+  const requestOrigin = new URL(request.url).origin;
+  const appOrigin = String(env.APP_ORIGIN || '').replace(/\/$/, '');
+  let appUrlOrigin = '';
+  try { appUrlOrigin = env.APP_URL ? new URL(env.APP_URL).origin : ''; } catch { appUrlOrigin = ''; }
+  if (origin === requestOrigin || origin === appOrigin || origin === appUrlOrigin || origin === 'http://localhost:3000') return origin;
   return false;
 }
 function cors(origin) {
