@@ -1,4 +1,4 @@
-import { evaluateSmartMoneyScannerBatch } from './scanner-adapter.js';
+import { evaluateInstitutionalFlowScannerBatch } from '../institutional-flow/scanner-adapter.js';
 
 const SUPPORTED_TIMEFRAMES = Object.freeze({
   '1m': { minutes: 1, alpaca: '1Min', lookbackDays: 3 },
@@ -52,7 +52,7 @@ export function smartMoneyObservationDue(now, timeframe = '5m') {
 
 async function fetchObservationBars({ env, now, window, symbols, timeframe, fetchImpl }) {
   const config = timeframeConfig(timeframe);
-  const output = Object.fromEntries(symbols.map((symbol) => [symbol, { bars: [], timeframe: config.name, source: 'AUTO_SCANNER_SM_OBSERVATION' }]));
+  const output = Object.fromEntries(symbols.map((symbol) => [symbol, { bars: [], timeframe: config.name, source: 'INSTITUTIONAL_FLOW_OBSERVATION' }]));
   const start = new Date(now - config.lookbackDays * 86_400_000).toISOString();
   const end = new Date(now).toISOString();
 
@@ -78,7 +78,7 @@ async function fetchObservationBars({ env, now, window, symbols, timeframe, fetc
           'APCA-API-SECRET-KEY': env.ALPACA_SECRET_KEY,
         },
       });
-      if (!response.ok) throw new Error(`Smart Money observation market data failed: ${response.status}`);
+      if (!response.ok) throw new Error(`Institutional Flow observation market data failed: ${response.status}`);
       const payload = await response.json();
       for (const [symbol, bars] of Object.entries(payload.bars || {})) {
         if (!output[symbol]) continue;
@@ -96,15 +96,23 @@ function compactOpportunity(item) {
   return Object.freeze({
     symbol: item.symbol,
     timeframe: candidate.timeframe || null,
-    setupFamily: item.setupFamily,
+    setupFamily: candidate.imbalanceType || item.stages?.IMBALANCE?.classification || 'INSTITUTIONAL_FLOW',
     direction: item.direction,
-    setupScore: Number(item.setupScore || 0),
-    candidateState: candidate.state || null,
+    setupScore: Number(item.pipelineScore || 0),
+    candidateState: candidate.status || (item.pipelinePassed ? 'OBSERVATION_CANDIDATE' : 'PIPELINE_REJECTED'),
     entry: candidate.entry ?? null,
     stopLoss: candidate.stopLoss ?? null,
     takeProfit: candidate.takeProfit ?? null,
     rewardRisk: candidate.rewardRisk ?? null,
-    failedConditions: Array.isArray(item.failedConditions) ? item.failedConditions.slice(0, 8) : [],
+    currentStage: item.currentStage || null,
+    failedStage: item.failedStage || null,
+    reason: item.reason || null,
+    dataMode: item.dataMode || 'INSUFFICIENT_DATA',
+    pipelinePassed: item.pipelinePassed === true,
+    stages: item.stages || {},
+    failedConditions: item.failedStage
+      ? (item.stages?.[item.failedStage]?.failedConditions || []).slice(0, 8)
+      : [],
     observationOnly: true,
     executionAllowed: false,
   });
@@ -116,13 +124,14 @@ export async function runSmartMoneyObservation({
   window = {},
   universe = [],
   fetchImpl = fetch,
-  evaluator = evaluateSmartMoneyScannerBatch,
+  evaluator = evaluateInstitutionalFlowScannerBatch,
 } = {}) {
   const now = Number(scheduledTime) || Date.now();
   const timeframe = timeframeConfig(env.SMART_MONEY_OBSERVATION_TIMEFRAME).name;
   const symbols = symbolList(universe, env);
   const base = {
     enabled: env.SMART_MONEY_OBSERVATION_ENABLED === 'true',
+    engine: 'INSTITUTIONAL_FLOW_PIPELINE',
     evaluatedAt: new Date(now).toISOString(),
     timeframe,
     session: window.label || 'UNKNOWN',
@@ -148,7 +157,7 @@ export async function runSmartMoneyObservation({
   const batch = await evaluator({ symbols, marketDataBySymbol, timeframe, now, limit: symbols.length });
   const topLimit = integer(env.SMART_MONEY_OBSERVATION_TOP_RESULTS, 10, 1, 25);
   const topOpportunities = batch.observations
-    .filter((item) => Number(item.setupScore || 0) > 0)
+    .filter((item) => Number(item.pipelineScore || 0) > 0)
     .slice(0, topLimit)
     .map(compactOpportunity);
 
@@ -158,6 +167,9 @@ export async function runSmartMoneyObservation({
     requestedSymbols: symbols.length,
     evaluatedSymbols: batch.observations.length,
     rejectedSymbols: batch.rejected.length,
+    completedCandidates: Number(batch.completedCandidates || 0),
+    stageDistribution: batch.stageDistribution || {},
+    stageOrder: batch.stageOrder || [],
     topOpportunities,
     rejected: batch.rejected.slice(0, 20),
   });
