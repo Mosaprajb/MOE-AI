@@ -131,19 +131,32 @@ function relativeVolumeGauge(definition, item) {
   const quality = item.diagnostics?.dataQuality;
   const rvol = Number(quality?.relativeVolume);
   if (!Number.isFinite(rvol)) return unavailable(definition, item, 'Relative volume could not be calculated from completed candles.');
+  const details = quality?.relativeVolumeDetails || {};
+  const method = quality?.relativeVolumeMethod || details.method || 'UNKNOWN';
+  const sessionNormalized = method === 'SESSION_TIME_NORMALIZED' && details.fallbackUsed !== true;
   const score = clamp(rvol * 50);
   const supports = rvol >= 1;
+  const confidenceBase = Math.min(100, Math.round(Math.abs(rvol - 1) * 50 + 50));
+  const sampleConfidence = sessionNormalized
+    ? Math.min(100, Math.round((Number(details.sampleCount || 0) / Math.max(1, Number(details.maximumSessions || details.sampleCount || 1))) * 100))
+    : 45;
+  const confidence = Math.round(confidenceBase * 0.7 + sampleConfidence * 0.3);
+  const summary = sessionNormalized
+    ? `Session-normalized RVOL is ${rvol.toFixed(2)}× for the same ${details.session || 'market'} time slot across ${details.sampleCount || 0} prior sessions.`
+    : `Relative volume is ${rvol.toFixed(2)}× using the completed-candle fallback because same-session-time history is insufficient.`;
   return stageGauge({ ...definition, scored: true }, {
     score,
-    confidence: Math.min(100, Math.round(Math.abs(rvol - 1) * 50 + 50)),
+    confidence,
     direction: supports ? item.direction : 'NEUTRAL',
     passed: supports,
     status: supports ? 'PASSED' : 'VALIDATING',
     failedConditions: supports ? [] : ['RELATIVE_VOLUME_BELOW_BASELINE'],
   }, item, {
     status: supports ? 'CONFIRMED' : 'DEVELOPING',
-    summary: `Relative volume is ${rvol.toFixed(2)}× the recent completed-candle baseline.`,
-    metadata: { relativeVolume: rvol, method: quality.relativeVolumeMethod || null },
+    summary,
+    confirmationReasons: sessionNormalized ? ['SESSION_SLOT_BASELINE_AVAILABLE'] : [],
+    penalties: sessionNormalized ? [] : [details.fallbackReason || 'SESSION_RVOL_FALLBACK_ACTIVE'],
+    metadata: { relativeVolume: rvol, method, ...details },
   });
 }
 
