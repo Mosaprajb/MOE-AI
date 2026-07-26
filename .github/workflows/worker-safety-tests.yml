@@ -88,5 +88,8 @@ jobs:
       - name: Test active position intelligence
         run: node --test --test-concurrency=1 worker/test/active-position-intelligence.test.mjs
 
+      - name: Test SMT divergence intelligence
+        run: node --test --test-concurrency=1 worker/test/smt-divergence.test.mjs
+
       - name: Run complete Worker safety suite
         run: npm run test:worker
