@@ -116,6 +116,7 @@ jobs:
         env:
           CHROME_BIN: /usr/bin/google-chrome
           VISUAL_QA_OUTPUT: artifacts/dashboard-visual-qa
+          NODE_OPTIONS: --require=./worker/test/visual-cleanup-shim.cjs
         run: |
           set -o pipefail
           mkdir -p artifacts/dashboard-visual-qa
