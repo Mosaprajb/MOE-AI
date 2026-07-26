@@ -5,6 +5,8 @@ import { runSmartMoneyObservation } from './smart-money/observation-service.js';
 import { buildActivePositionIntelligence } from './trading-intelligence/active-position.js';
 import { buildPortfolioRiskIntelligence } from './trading-intelligence/portfolio-risk.js';
 import { enhancePortfolioRiskDashboard } from './trading-intelligence/portfolio-risk-overlay.js';
+import { buildTradingCommandCenter } from './trading-intelligence/conflict-activity.js';
+import { enhanceConflictActivityDashboard } from './trading-intelligence/conflict-activity-overlay.js';
 import { getWebullAccountSnapshot } from './webull-client.js';
 
 const OBSERVATION_STATUS_KEY = 'smart-money-observation:v1';
@@ -12,6 +14,7 @@ const OBSERVATION_HISTORY_KEY = 'smart-money-observation-history:v1';
 const DASHBOARD_PATHS = new Set(['/', '/moe-ai', '/moe-ai/', '/dashboard', '/dashboard/']);
 const ACTIVE_POSITION_PATH = '/api/trading-intelligence/active-position';
 const PORTFOLIO_RISK_PATH = '/api/trading-intelligence/portfolio-risk';
+const COMMAND_CENTER_PATH = '/api/trading-intelligence/command-center';
 
 function observationEnabled(env = {}) {
   return String(env.SMART_MONEY_OBSERVATION_ENABLED || '').toLowerCase() === 'true';
@@ -101,6 +104,20 @@ export class AlertCoordinator extends TradingAlertCoordinator {
     });
   }
 
+  async tradingCommandCenter(selectedSymbol = '') {
+    const [observationStatus, portfolioRisk, activePosition] = await Promise.all([
+      this.smartMoneyObservationStatus(),
+      this.portfolioRiskIntelligence(),
+      this.activePositionIntelligence(),
+    ]);
+    return buildTradingCommandCenter({
+      observationStatus,
+      selectedSymbol,
+      portfolioRisk,
+      activePosition,
+    });
+  }
+
   async scannerStatus() {
     const [scanner, smartMoneyObservation] = await Promise.all([
       super.scannerStatus(),
@@ -146,7 +163,8 @@ async function runObservationSidecar(controller, env) {
 
 export default {
   async fetch(request, env, ctx) {
-    const path = new URL(request.url).pathname;
+    const url = new URL(request.url);
+    const path = url.pathname;
     if (path === ACTIVE_POSITION_PATH) {
       if (request.method !== 'GET') return secureJson({ ok: false, error: 'Method not allowed' }, 405);
       try {
@@ -173,10 +191,24 @@ export default {
         }, 500);
       }
     }
+    if (path === COMMAND_CENTER_PATH) {
+      if (request.method !== 'GET') return secureJson({ ok: false, error: 'Method not allowed' }, 405);
+      try {
+        const commandCenter = await coordinator(env).tradingCommandCenter(url.searchParams.get('symbol') || '');
+        return secureJson({ ok: true, commandCenter, storage: 'DURABLE_OBJECT' });
+      } catch (error) {
+        return secureJson({
+          ok: false,
+          error: error instanceof Error ? error.message : 'Trading command center failed',
+          commandCenter: buildTradingCommandCenter(),
+        }, 500);
+      }
+    }
     const response = await tradingModeWorker.fetch(request, env, ctx);
     if (!DASHBOARD_PATHS.has(path)) return response;
     const smartMoneyDashboard = await enhanceSmartMoneyDashboard(response);
-    return enhancePortfolioRiskDashboard(smartMoneyDashboard);
+    const portfolioRiskDashboard = await enhancePortfolioRiskDashboard(smartMoneyDashboard);
+    return enhanceConflictActivityDashboard(portfolioRiskDashboard);
   },
 
   scheduled(controller, env, ctx) {
