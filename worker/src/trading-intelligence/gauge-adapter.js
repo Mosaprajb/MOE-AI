@@ -51,12 +51,12 @@ function stageGauge(definition, stage, item, options = {}) {
     weight: definition.officialWeight,
     mandatory: definition.mandatory,
     blocksExecution: definition.mandatory && status !== 'CONFIRMED',
-    timeframe: item.timeframe || null,
+    timeframe: options.timeframe || item.timeframe || null,
     lastUpdatedAt: item.evaluatedAt || null,
     summary: options.summary || stage?.reason || stage?.classification || item.reason || 'No detailed explanation is available.',
-    confirmationReasons: Array.isArray(stage?.confirmationReasons) ? stage.confirmationReasons.slice(0, 8) : [],
-    penalties: Array.isArray(stage?.penalties) ? stage.penalties.slice(0, 8) : [],
-    blockers: failedConditions,
+    confirmationReasons: Array.isArray(options.confirmationReasons) ? options.confirmationReasons.slice(0, 8) : Array.isArray(stage?.confirmationReasons) ? stage.confirmationReasons.slice(0, 8) : [],
+    penalties: Array.isArray(options.penalties) ? options.penalties.slice(0, 8) : Array.isArray(stage?.penalties) ? stage.penalties.slice(0, 8) : [],
+    blockers: options.blockers || failedConditions,
     metadata: options.metadata || stage || {},
   });
 }
@@ -86,6 +86,87 @@ function unavailable(definition, item, summary) {
   });
 }
 
+function higherTimeframeGauge(definition, item) {
+  const htf = item.diagnostics?.higherTimeframe;
+  if (!htf) return unavailable(definition, item, 'Higher-timeframe context is unavailable for this scanner result.');
+  const biasDirection = direction(htf.bias);
+  const status = htf.countertrend ? 'CONFLICTING' : htf.aligned ? 'CONFIRMED' : 'VALIDATING';
+  return stageGauge(definition, {
+    score: htf.score,
+    confidence: htf.score,
+    direction: htf.bias,
+    passed: htf.aligned,
+    status: htf.countertrend ? 'REJECTED' : htf.aligned ? 'PASSED' : 'VALIDATING',
+    failedConditions: htf.penalties || [],
+  }, item, {
+    status,
+    timeframe: htf.timeframe || item.contextTimeframe,
+    summary: `${htf.bias || 'NEUTRAL'} higher-timeframe bias · ${htf.structure || 'NEUTRAL'} structure.`,
+    confirmationReasons: htf.evidence || [],
+    penalties: htf.penalties || [],
+    metadata: htf,
+  });
+}
+
+function regimeGauge(definition, item) {
+  const htf = item.diagnostics?.higherTimeframe;
+  const regime = item.diagnostics?.marketRegime || htf?.marketRegime;
+  if (!regime) return unavailable(definition, item, 'Market regime is unavailable for this scanner result.');
+  const unsafe = ['ILLIQUID_OR_UNSAFE'].includes(regime);
+  const score = unsafe ? 0 : clamp(htf?.score ?? 50);
+  return stageGauge(definition, {
+    score,
+    confidence: score,
+    direction: htf?.bias || 'NEUTRAL',
+    passed: !unsafe,
+    status: unsafe ? 'REJECTED' : 'PASSED',
+    failedConditions: unsafe ? ['UNSAFE_MARKET_REGIME'] : [],
+  }, item, {
+    status: unsafe ? 'BLOCKED' : 'CONFIRMED',
+    summary: `Current regime: ${String(regime).replaceAll('_', ' ')}.`,
+    metadata: { regime, atrPercent: htf?.atrPercent ?? null, realizedVolatilityPercent: htf?.realizedVolatilityPercent ?? null },
+  });
+}
+
+function relativeVolumeGauge(definition, item) {
+  const quality = item.diagnostics?.dataQuality;
+  const rvol = Number(quality?.relativeVolume);
+  if (!Number.isFinite(rvol)) return unavailable(definition, item, 'Relative volume could not be calculated from completed candles.');
+  const score = clamp(rvol * 50);
+  const supports = rvol >= 1;
+  return stageGauge({ ...definition, scored: true }, {
+    score,
+    confidence: Math.min(100, Math.round(Math.abs(rvol - 1) * 50 + 50)),
+    direction: supports ? item.direction : 'NEUTRAL',
+    passed: supports,
+    status: supports ? 'PASSED' : 'VALIDATING',
+    failedConditions: supports ? [] : ['RELATIVE_VOLUME_BELOW_BASELINE'],
+  }, item, {
+    status: supports ? 'CONFIRMED' : 'DEVELOPING',
+    summary: `Relative volume is ${rvol.toFixed(2)}× the recent completed-candle baseline.`,
+    metadata: { relativeVolume: rvol, method: quality.relativeVolumeMethod || null },
+  });
+}
+
+function dataQualityGauge(definition, item) {
+  const quality = item.diagnostics?.dataQuality;
+  if (!quality) return unavailable(definition, item, item.diagnostics?.marketDataError || 'Market-data quality details are unavailable.');
+  const score = clamp(quality.score);
+  const accepted = quality.accepted === true;
+  return stageGauge(definition, {
+    score,
+    confidence: score,
+    direction: 'NEUTRAL',
+    passed: accepted,
+    status: accepted ? 'PASSED' : 'REJECTED',
+    failedConditions: accepted ? [] : ['MARKET_DATA_REJECTED'],
+  }, item, {
+    status: accepted ? 'CONFIRMED' : 'BLOCKED',
+    summary: `${quality.source || 'Unknown source'} · ${quality.dataDelaySeconds ?? '—'}s delay · ${quality.completedBars ?? 0} completed bars.`,
+    metadata: { ...quality, absorptionMode: item.dataMode || 'INSUFFICIENT_DATA' },
+  });
+}
+
 export function buildTradingIntelligenceSnapshot(item = {}) {
   const stages = item.stages || {};
   const byId = Object.fromEntries(TRADING_GAUGE_REGISTRY.map((definition) => [definition.id, definition]));
@@ -97,24 +178,21 @@ export function buildTradingIntelligenceSnapshot(item = {}) {
   const smartMoneyScore = clamp(item.diagnostics?.smartMoneyScore);
   const liquidityScore = clamp(item.diagnostics?.liquiditySweepScore ?? stopRun?.score);
   const dataMode = item.dataMode || absorption?.absorptionMode || 'INSUFFICIENT_DATA';
-  const dataAvailable = dataMode !== 'INSUFFICIENT_DATA';
 
   const gauges = [
-    unavailable(byId['higher-timeframe-bias'], item, 'Higher-timeframe score is not yet exposed by the compact scanner contract.'),
-    unavailable(byId['market-regime'], item, 'Market regime exists in the engine but is not yet exposed by the compact scanner contract.'),
-    unavailable(byId['relative-volume'], item, 'A dedicated RVOL engine has not been implemented yet.'),
+    higherTimeframeGauge(byId['higher-timeframe-bias'], item),
+    regimeGauge(byId['market-regime'], item),
+    relativeVolumeGauge(byId['relative-volume'], item),
     stageGauge(byId['liquidity-sweep'], { ...stopRun, score: liquidityScore }, item, { summary: item.diagnostics?.liquiditySweepReason || stopRun?.classification || 'Liquidity sweep evaluation.' }),
     stageGauge(byId['stop-run'], stopRun, item),
-    stageGauge(byId['smart-money'], { score: smartMoneyScore, direction: item.direction, passed: smartMoneyScore != null && smartMoneyScore > 0, status: smartMoneyScore != null ? 'PASSED' : 'BLOCKED' }, item, { summary: item.diagnostics?.smartMoneyReason || 'Smart Money confluence evaluation.' }),
+    stageGauge(byId['smart-money'], { score: smartMoneyScore, direction: item.direction, passed: smartMoneyScore != null && smartMoneyScore > 0, status: smartMoneyScore != null ? 'PASSED' : 'BLOCKED' }, item, { summary: item.diagnostics?.smartMoneyReason || 'Smart Money confluence evaluation.', metadata: item.diagnostics?.smartMoneyContext || {} }),
     unavailable(byId['smt-divergence'], item, 'SMT Divergence engine has not been implemented yet.'),
     stageGauge(byId.absorption, absorption, item, { summary: `${absorption?.classification || 'Absorption unavailable'} · ${dataMode}` }),
     stageGauge(byId['market-imbalance'], imbalance, item),
     stageGauge(byId['market-structure'], structure, item),
     stageGauge(byId['risk-quality'], risk, item),
     stageGauge(byId['setup-confidence'], { score: item.pipelineScore, direction: item.direction, passed: item.pipelinePassed, status: item.pipelinePassed ? 'PASSED' : 'REJECTED', failedConditions: item.failedStage ? [item.reason || `${item.failedStage}_FAILED`] : [] }, item, { status: item.pipelinePassed ? 'CONFIRMED' : 'WAITING_FOR_CONFIRMATION', summary: item.pipelinePassed ? 'All Institutional Flow stages passed in observation mode.' : `Waiting on ${item.failedStage || 'required conditions'}.` }),
-    dataAvailable
-      ? stageGauge(byId['data-quality'], { score: dataMode === 'TRUE_ORDER_FLOW' ? 100 : 65, direction: 'NEUTRAL', passed: true, status: 'PASSED' }, item, { summary: dataMode === 'TRUE_ORDER_FLOW' ? 'True trade-level order-flow data is available.' : 'OHLCV proxy mode is active; true aggressor data is unavailable.' })
-      : unavailable(byId['data-quality'], item, 'Required data is insufficient for a reliable order-flow classification.'),
+    dataQualityGauge(byId['data-quality'], item),
     unavailable(byId['execution-quality'], item, 'Execution quality is intentionally unavailable because this scanner is observation-only and disconnected from order submission.'),
   ].sort((left, right) => (byId[left.id]?.priority || 999) - (byId[right.id]?.priority || 999));
 
