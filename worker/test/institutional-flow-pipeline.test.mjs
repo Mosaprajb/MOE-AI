@@ -35,7 +35,7 @@ function liquidityCandidate() {
 
 function snapshot() {
   return {
-    latest: { open: 99.8, high: 100.5, low: 99.45, close: 100.4 },
+    latest: { open: 100.1, high: 100.5, low: 99.45, close: 100.4 },
     atr: 0.7,
     tickSize: 0.01,
     relativeVolume: 2.1,
