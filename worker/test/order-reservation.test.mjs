@@ -29,6 +29,7 @@ class MemoryStorage {
   }
 }
 
+const testNow = Date.now();
 const baseSignal = {
   signalId: 'signal-1',
   accountId: 'sandbox-account-a',
@@ -37,7 +38,7 @@ const baseSignal = {
   runtimeMode: 'SANDBOX',
   requestedCapitalMode: 'CASH',
   source: 'MOERAND_AUTO_TEST',
-  now: Date.parse('2026-07-26T14:00:00.000Z'),
+  now: testNow,
 };
 
 const env = {
@@ -98,7 +99,7 @@ test('releases a failed pipeline reservation so a later retry may proceed', asyn
   const storage = new MemoryStorage();
   const first = await reserveOrderSubmission(storage, baseSignal, env);
   const released = await releaseOrderReservation(storage, first.reservation.id, 'ORDER_REJECTED');
-  const retry = await reserveOrderSubmission(storage, { ...baseSignal, signalId: 'signal-retry' }, env);
+  const retry = await reserveOrderSubmission(storage, { ...baseSignal, signalId: 'signal-retry', now: Date.now() }, env);
 
   assert.equal(released.updated, true);
   assert.equal(released.reservation.status, 'RELEASED');
