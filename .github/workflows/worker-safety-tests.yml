@@ -1,0 +1,42 @@
+name: Worker Safety Tests
+
+on:
+  pull_request:
+    paths:
+      - 'worker/src/**'
+      - 'worker/test/**'
+      - 'package.json'
+      - '.github/workflows/worker-safety-tests.yml'
+  push:
+    branches:
+      - main
+    paths:
+      - 'worker/src/**'
+      - 'worker/test/**'
+      - 'package.json'
+      - '.github/workflows/worker-safety-tests.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: worker-safety-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  duplicate-protection:
+    name: Duplicate protection and reservations
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Run Worker safety tests
+        run: npm run test:worker
