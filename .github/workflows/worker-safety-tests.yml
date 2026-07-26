@@ -73,5 +73,8 @@ jobs:
       - name: Test Smart Money observation sidecar
         run: node --test --test-concurrency=1 worker/test/smart-money-observation-service.test.mjs
 
+      - name: Test Smart Money dashboard overlay
+        run: node --test --test-concurrency=1 worker/test/smart-money-dashboard-overlay.test.mjs
+
       - name: Run complete Worker safety suite
         run: npm run test:worker
