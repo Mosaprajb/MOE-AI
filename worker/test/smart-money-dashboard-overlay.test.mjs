@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { enhanceSmartMoneyDashboard } from '../src/smart-money/dashboard-overlay.js';
 
-test('dashboard overlay adds institutional flow UI without changing response status', async () => {
+test('dashboard overlay adds circular trading intelligence UI without changing response status', async () => {
   const original = new Response('<!doctype html><html><head><title>MOE</title></head><body><section id="scanner"></section></body></html>', {
     status: 200,
     headers: { 'content-type': 'text/html; charset=utf-8', 'content-length': '100' },
@@ -12,8 +12,11 @@ test('dashboard overlay adds institutional flow UI without changing response sta
   assert.equal(enhanced.status, 200);
   assert.match(html, /smartMoneyObservationStyles/);
   assert.match(html, /smartMoneyObservationScript/);
-  assert.match(html, /INSTITUTIONAL FLOW PIPELINE/);
-  assert.match(html, /Stop Run → Absorption → Imbalance → Structure → Risk/);
+  assert.match(html, /CIRCULAR TRADING INTELLIGENCE/);
+  assert.match(html, /Institutional Flow Command Center/);
+  assert.match(html, /Trade Readiness/);
+  assert.match(html, /ti-gauge/);
+  assert.match(html, /prefers-reduced-motion/);
   assert.match(html, /OBSERVATION ONLY/);
   assert.match(html, /stageDistribution/);
   assert.match(html, /FAILED STAGE/);
