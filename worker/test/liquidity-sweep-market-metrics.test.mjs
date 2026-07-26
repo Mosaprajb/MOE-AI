@@ -72,52 +72,45 @@ function assertApproximatelyEqual(actual, expected, tolerance = 1e-8) {
   assert.ok(Math.abs(actual - expected) <= tolerance, `Expected ${actual} to be within ${tolerance} of ${expected}`);
 }
 
-test('identifies exchange sessions correctly', () => {
+test('validates market sessions, normalization, safety rejection, and metrics sequentially', () => {
   assert.equal(marketSessionAt(Date.parse('2026-07-24T12:00:00.000Z')), 'PREMARKET');
   assert.equal(marketSessionAt(Date.parse('2026-07-24T15:00:00.000Z')), 'REGULAR');
   assert.equal(marketSessionAt(Date.parse('2026-07-24T21:00:00.000Z')), 'AFTER_HOURS');
-});
 
-test('normalizes only completed bars and calculates volatility metrics', () => {
-  const bars = syntheticBars();
-  bars.push({ ...bars.at(-1), t: bars.at(-1).t + 5 * MINUTE, complete: false });
-  const snapshot = normalizeMarketData({
-    bars,
+  const completedBars = syntheticBars();
+  const barsWithIncomplete = [...completedBars, { ...completedBars.at(-1), t: completedBars.at(-1).t + 5 * MINUTE, complete: false }];
+  const normalized = normalizeMarketData({
+    bars: barsWithIncomplete,
     timeframe: '5m',
-    now: bars.at(-2).t + 5 * MINUTE + 30_000,
+    now: completedBars.at(-1).t + 5 * MINUTE + 30_000,
     source: 'TEST',
     bid: 100.45,
     ask: 100.47,
     config,
   });
-  assert.equal(snapshot.quality.accepted, true);
-  assert.equal(snapshot.quality.excludedIncompleteBars, 1);
-  assert.ok(snapshot.atr > 0);
-  assert.ok(snapshot.relativeVolume > 0);
-  assert.ok(snapshot.realizedVolatilityPercent >= 0);
-  assert.equal(snapshot.tickSize, 0.01);
-  assert.ok(snapshot.spread.spreadPercent > 0);
-});
+  assert.equal(normalized.quality.accepted, true);
+  assert.equal(normalized.quality.excludedIncompleteBars, 1);
+  assert.ok(normalized.atr > 0);
+  assert.ok(normalized.relativeVolume > 0);
+  assert.ok(normalized.realizedVolatilityPercent >= 0);
+  assert.equal(normalized.tickSize, 0.01);
+  assert.ok(normalized.spread.spreadPercent > 0);
 
-test('rejects delayed and abnormally wide-spread market data', () => {
-  const bars = syntheticBars();
   assert.throws(() => normalizeMarketData({
-    bars,
+    bars: syntheticBars(),
     timeframe: '5m',
-    now: bars.at(-1).t + 5 * MINUTE + 20 * MINUTE,
+    now: completedBars.at(-1).t + 5 * MINUTE + 20 * MINUTE,
     config,
   }), /delayed/);
   assert.throws(() => normalizeMarketData({
-    bars,
+    bars: syntheticBars(),
     timeframe: '5m',
-    now: bars.at(-1).t + 5 * MINUTE + 30_000,
+    now: completedBars.at(-1).t + 5 * MINUTE + 30_000,
     bid: 99,
     ask: 101,
     config,
   }), /Spread/);
-});
 
-test('calculates ATR deterministically from known true ranges', () => {
   const candles = [
     { high: 10, low: 9, close: 9.5 },
     { high: 11, low: 9.5, close: 10.5 },
@@ -125,19 +118,10 @@ test('calculates ATR deterministically from known true ranges', () => {
     { high: 11.5, low: 10.5, close: 11.25 },
   ];
   assert.equal(calculateAtr(candles, 3), 1.5);
-});
 
-test('calculates relative volume deterministically', () => {
   const snapshot = metricSnapshot();
   assertApproximatelyEqual(calculateRelativeVolume(snapshot.candles, 5), snapshot.relativeVolume, 1e-4);
-});
-
-test('calculates realized volatility deterministically', () => {
-  const snapshot = metricSnapshot();
   assertApproximatelyEqual(calculateRealizedVolatility(snapshot.candles, 5), snapshot.realizedVolatilityPercent, 1e-4);
-});
-
-test('infers equity tick sizes conservatively', () => {
   assert.equal(inferTickSize(100), 0.01);
   assert.equal(inferTickSize(0.5), 0.0001);
 });
