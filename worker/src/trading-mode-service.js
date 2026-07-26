@@ -1,5 +1,5 @@
 const STORAGE_KEY = 'moe-trading-mode';
-const VERSION = 1;
+const VERSION = 2;
 
 export const TRADING_MODES = Object.freeze({
   DRY_RUN: 'DRY_RUN',
@@ -50,10 +50,19 @@ function capabilities(env = {}) {
   return Object.values(TRADING_MODES).map((mode) => capability(mode, env));
 }
 
+function runtimeLiveActive(env = {}) {
+  return enabled(env.MOE_LIVE_MODE_UNLOCKED)
+    && enabled(env.WEBULL_LIVE_TRADING)
+    && enabled(env.WEBULL_LIVE_ORDER_SUBMISSION)
+    && !enabled(env.WEBULL_LIVE_KILL_SWITCH);
+}
+
 export async function getTradingMode(storage, env = {}) {
   const stored = await storage.get(STORAGE_KEY);
   const fallback = normalizeMode(env.MOE_TRADING_MODE_DEFAULT, TRADING_MODES.SANDBOX);
-  const selectedMode = normalizeMode(stored?.selectedMode, fallback);
+  const forcedLive = runtimeLiveActive(env);
+  const storedSelectedMode = normalizeMode(stored?.selectedMode, fallback);
+  const selectedMode = forcedLive ? TRADING_MODES.LIVE : storedSelectedMode;
   const modes = capabilities(env);
   const selectedCapability = modes.find((item) => item.id === selectedMode);
   const effectiveMode = selectedCapability?.available ? selectedMode : TRADING_MODES.DRY_RUN;
@@ -61,10 +70,14 @@ export async function getTradingMode(storage, env = {}) {
   return {
     version: VERSION,
     selectedMode,
+    storedSelectedMode,
+    runtimeForcedLive: forcedLive,
     effectiveMode,
     locked: selectedMode !== effectiveMode,
     modes,
-    automationArmed: enabled(env.WEBULL_AUTOMATION_ARMED),
+    automationArmed: effectiveMode === TRADING_MODES.LIVE
+      ? enabled(env.WEBULL_LIVE_AUTOMATION_ARMED)
+      : enabled(env.WEBULL_AUTOMATION_ARMED),
     liveTradingEnabled: enabled(env.WEBULL_LIVE_TRADING),
     updatedAt: stored?.updatedAt || null,
     updatedBy: stored?.updatedBy || null,
