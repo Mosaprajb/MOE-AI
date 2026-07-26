@@ -56,13 +56,7 @@ function staticLiveCapability(env = {}) {
     && checks.executionAdapterApproved
     && checks.protectedOrders;
   const activationConfigured = checks.liveMasterConfigured && checks.liveSubmissionConfigured;
-  return {
-    ready: buildReady && activationConfigured,
-    buildReady,
-    activationConfigured,
-    missingSecrets,
-    checks,
-  };
+  return { ready: buildReady && activationConfigured, buildReady, activationConfigured, missingSecrets, checks };
 }
 
 async function securityState(storage) {
@@ -74,11 +68,9 @@ async function verifyPin(storage, pin, env = {}) {
   if (!enabled(env.MOE_LIVE_PIN_CONTROL_ENABLED)) throw new Error('PIN control is disabled in configuration.');
   const configured = String(env.MOE_LIVE_CONTROL_PIN || '');
   if (!configured) throw new Error('MOE_LIVE_CONTROL_PIN is not configured.');
-
   const security = await securityState(storage);
   const lockedUntil = security.lockedUntil ? Date.parse(security.lockedUntil) : 0;
   if (lockedUntil > Date.now()) throw new Error(`PIN controls are temporarily locked until ${security.lockedUntil}.`);
-
   const valid = await secureEqual(pin, configured);
   if (!valid) {
     const maximumAttempts = integer(env.MOE_LIVE_PIN_MAX_ATTEMPTS, 5, 3, 20);
@@ -94,9 +86,12 @@ async function verifyPin(storage, pin, env = {}) {
     if (lockoutTriggered) throw new Error(`Incorrect PIN. Too many failed attempts; PIN controls are locked for ${lockoutMinutes} minutes.`);
     throw new Error(`Incorrect PIN. ${remainingAttempts} attempt${remainingAttempts === 1 ? '' : 's'} remaining before temporary lockout.`);
   }
-
   await storage.put(SECURITY_KEY, { failedAttempts: 0, lockedUntil: null, lastFailureAt: null });
   return true;
+}
+
+export async function verifyLiveControlPin(storage, pin, env = {}) {
+  return verifyPin(storage, pin, env);
 }
 
 export async function getLiveControlState(storage, env = {}) {
@@ -135,13 +130,10 @@ export async function updateLiveControlState(storage, patch = {}, env = {}) {
     lastAction: action,
   };
 
-  if (action === 'TEST_PIN') {
-    next = { ...next, lastAction: 'PIN_VERIFIED' };
-  } else if (action === 'ENABLE_SANDBOX_AUTOMATION') {
-    next = { ...next, sandboxAutomationEnabled: true };
-  } else if (action === 'DISABLE_SANDBOX_AUTOMATION') {
-    next = { ...next, sandboxAutomationEnabled: false };
-  } else if (action === 'UNLOCK_LIVE_CONTROLS') {
+  if (action === 'TEST_PIN') next = { ...next, lastAction: 'PIN_VERIFIED' };
+  else if (action === 'ENABLE_SANDBOX_AUTOMATION') next = { ...next, sandboxAutomationEnabled: true };
+  else if (action === 'DISABLE_SANDBOX_AUTOMATION') next = { ...next, sandboxAutomationEnabled: false };
+  else if (action === 'UNLOCK_LIVE_CONTROLS') {
     if (String(patch.confirmation || '') !== 'UNLOCK_LIVE_CONTROLS') throw new Error('Live control unlock requires the exact confirmation UNLOCK_LIVE_CONTROLS.');
     next = { ...next, liveControlsUnlocked: true, liveAutomationArmed: false, killSwitch: true };
   } else if (action === 'CLEAR_LIVE_KILL_SWITCH') {
@@ -154,15 +146,10 @@ export async function updateLiveControlState(storage, patch = {}, env = {}) {
     if (!next.liveControlsUnlocked || next.killSwitch) throw new Error('Live controls must be unlocked and the kill switch must be cleared first.');
     if (String(patch.confirmation || '') !== 'ARM_LIVE_AUTOMATION') throw new Error('Arming live automation requires the exact confirmation ARM_LIVE_AUTOMATION.');
     next = { ...next, liveAutomationArmed: true };
-  } else if (action === 'DISARM_LIVE_AUTOMATION') {
-    next = { ...next, liveAutomationArmed: false, killSwitch: true };
-  } else if (action === 'LOCK_LIVE_CONTROLS') {
-    next = { ...next, liveControlsUnlocked: false, liveAutomationArmed: false, killSwitch: true };
-  } else if (action === 'LOCK_ALL') {
-    next = { ...next, sandboxAutomationEnabled: false, liveControlsUnlocked: false, liveAutomationArmed: false, killSwitch: true };
-  } else {
-    throw new Error('Unsupported live-control action.');
-  }
+  } else if (action === 'DISARM_LIVE_AUTOMATION') next = { ...next, liveAutomationArmed: false, killSwitch: true };
+  else if (action === 'LOCK_LIVE_CONTROLS') next = { ...next, liveControlsUnlocked: false, liveAutomationArmed: false, killSwitch: true };
+  else if (action === 'LOCK_ALL') next = { ...next, sandboxAutomationEnabled: false, liveControlsUnlocked: false, liveAutomationArmed: false, killSwitch: true };
+  else throw new Error('Unsupported live-control action.');
 
   await storage.put(CONTROL_KEY, next);
   return getLiveControlState(storage, env);
