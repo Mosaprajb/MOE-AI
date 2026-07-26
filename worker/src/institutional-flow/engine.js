@@ -21,6 +21,11 @@ function text(value, fallback = '') {
   return normalized || fallback;
 }
 
+function finite(value, fallback = null) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : fallback;
+}
+
 function firstFailed(stages) {
   return INSTITUTIONAL_FLOW_STAGE_ORDER.find((name) => stages[name]?.passed !== true) || null;
 }
@@ -34,6 +39,43 @@ function overallScore(stages) {
     ['RISK_ENGINE', 0.2],
   ];
   return Math.round(weighted.reduce((sum, [name, weight]) => sum + Number(stages[name]?.score || stages[name]?.rewardRisk * 20 || 0) * weight, 0));
+}
+
+function compactHigherTimeframe(value) {
+  if (!value) return null;
+  return freeze({
+    timeframe: value.timeframe || null,
+    direction: value.direction || null,
+    bias: value.bias || 'NEUTRAL',
+    aligned: value.aligned === true,
+    countertrend: value.countertrend === true,
+    structure: value.structure || 'NEUTRAL',
+    marketRegime: value.marketRegime || null,
+    score: finite(value.score),
+    rangeLocation: finite(value.rangeLocation),
+    atrPercent: finite(value.atrPercent),
+    realizedVolatilityPercent: finite(value.realizedVolatilityPercent),
+    evidence: Array.isArray(value.evidence) ? value.evidence.slice(0, 10) : [],
+    penalties: Array.isArray(value.penalties) ? value.penalties.slice(0, 10) : [],
+  });
+}
+
+function compactDataQuality(snapshot) {
+  return freeze({
+    accepted: snapshot.quality?.accepted === true,
+    score: finite(snapshot.quality?.score),
+    source: snapshot.source || null,
+    session: snapshot.session || null,
+    normalizedAt: snapshot.normalizedAt || null,
+    dataDelaySeconds: finite(snapshot.quality?.dataDelaySeconds),
+    missingBars: finite(snapshot.quality?.missingBars, 0),
+    zeroVolumeBars: finite(snapshot.quality?.zeroVolumeBars, 0),
+    excludedIncompleteBars: finite(snapshot.quality?.excludedIncompleteBars, 0),
+    completedBars: finite(snapshot.quality?.completedBars, 0),
+    spreadPercent: finite(snapshot.spread?.spreadPercent),
+    relativeVolume: finite(snapshot.relativeVolume),
+    relativeVolumeMethod: snapshot.relativeVolumeMethod || null,
+  });
 }
 
 export async function evaluateInstitutionalFlowPipeline({
@@ -73,6 +115,10 @@ export async function evaluateInstitutionalFlowPipeline({
       failedStage: 'STOP_RUN',
       error: error instanceof Error ? error.message : 'Unknown market-data error',
       stages: {},
+      diagnostics: {
+        dataQuality: null,
+        marketDataError: error instanceof Error ? error.message : 'Unknown market-data error',
+      },
       observationOnly: true,
       mode: 'PAPER_TRADING',
       executionAllowed: false,
@@ -126,6 +172,9 @@ export async function evaluateInstitutionalFlowPipeline({
   });
   const failedStage = firstFailed(stages);
   const pipelinePassed = failedStage == null;
+  const smartDetails = smartMoneyResult?.details || {};
+  const higherTimeframe = compactHigherTimeframe(liquiditySweepResult?.higherTimeframe || null);
+  const dataQuality = compactDataQuality(snapshot);
 
   return freeze({
     eventType: 'INSTITUTIONAL_FLOW_SETUP',
@@ -160,8 +209,17 @@ export async function evaluateInstitutionalFlowPipeline({
     diagnostics: {
       liquiditySweepDecision: liquiditySweepResult.tradeDecision,
       liquiditySweepReason: liquiditySweepResult.reason || null,
+      liquiditySweepScore: finite(liquiditySweepResult.liquiditySweepScore, finite(stopRun.score, 0)),
       smartMoneyReason: smartMoneyResult.reason || null,
-      smartMoneyScore: smartMoneyResult.setupScore || 0,
+      smartMoneyScore: finite(smartMoneyResult.setupScore, 0),
+      higherTimeframe,
+      marketRegime: higherTimeframe?.marketRegime || null,
+      dataQuality,
+      smartMoneyContext: {
+        currentBias: smartDetails.structure?.currentBias || null,
+        confluenceDirection: smartDetails.confluence?.direction || null,
+        confluenceScore: finite(smartDetails.confluence?.totalScore),
+      },
     },
     observationOnly: true,
     mode: 'PAPER_TRADING',
