@@ -14,9 +14,15 @@ function round(value, digits = 6) {
   return Number(Number(value).toFixed(digits));
 }
 
+function mean(values = []) {
+  const finite = values.map(Number).filter(Number.isFinite);
+  return finite.length ? finite.reduce((sum, value) => sum + value, 0) / finite.length : null;
+}
+
 export function buildOrderFlowSnapshot({ trades = [], quotes = [], now = Date.now(), tickSize = 0.01, startPrice = null, endPrice = null, repeatedAttempts = null, config = null } = {}) {
   const validatedConfig = config || createOrderFlowConfig();
-  const normalized = normalizeOrderFlowData({ trades, quotes, now, tickSize, config: validatedConfig });
+  const evaluatedAt = Number(now);
+  const normalized = normalizeOrderFlowData({ trades, quotes, now: evaluatedAt, tickSize, config: validatedConfig });
   const classified = classifyAggressorSide({ normalized, config: validatedConfig });
   const volumeAtPrice = buildVolumeAtPrice({ classified, tickSize: normalized.tickSize, config: validatedConfig });
   const priceProgress = Number.isFinite(Number(startPrice)) && Number.isFinite(Number(endPrice))
@@ -29,6 +35,11 @@ export function buildOrderFlowSnapshot({ trades = [], quotes = [], now = Date.no
   const attempts = Number.isFinite(Number(repeatedAttempts))
     ? Number(repeatedAttempts)
     : volumeAtPrice.levels.filter((level) => level.tradeCount >= 2).length;
+  const latestQuote = normalized.quotes.at(-1) || null;
+  const quoteAgeMs = latestQuote ? Math.max(0, evaluatedAt - Number(latestQuote.timestamp)) : null;
+  const reportDelays = normalized.trades.map((trade) => Number(trade.reportDelayMs)).filter(Number.isFinite);
+  const averageTradeReportDelayMs = mean(reportDelays);
+  const maximumTradeReportDelayMs = reportDelays.length ? Math.max(...reportDelays) : null;
 
   return freeze({
     dataMode: classified.classificationAccepted ? 'TRUE_ORDER_FLOW' : 'INSUFFICIENT_DATA',
@@ -48,6 +59,20 @@ export function buildOrderFlowSnapshot({ trades = [], quotes = [], now = Date.no
     bullishStackedLevels: volumeAtPrice.bullishStackedLevels,
     bearishStackedLevels: volumeAtPrice.bearishStackedLevels,
     volumeAtPrice,
+    quality: freeze({
+      classifiedVolumeShare: round(classified.classifiedVolumeShare),
+      classificationConfidence: round(averageConfidence),
+      tradeIntensity: totalTrades,
+      quoteCount: normalized.quotes.length,
+      tradeCount: normalized.trades.length,
+      rejectedQuoteCount: normalized.rejectedQuotes.length,
+      rejectedTradeCount: normalized.rejectedTrades.length,
+      latestQuoteAgeMs: quoteAgeMs == null ? null : round(quoteAgeMs, 3),
+      latestSpreadPercent: latestQuote ? round(latestQuote.spreadPercent, 6) : null,
+      averageTradeReportDelayMs: averageTradeReportDelayMs == null ? null : round(averageTradeReportDelayMs, 3),
+      maximumTradeReportDelayMs: maximumTradeReportDelayMs == null ? null : round(maximumTradeReportDelayMs, 3),
+      evaluatedAt,
+    }),
     rejectedTrades: normalized.rejectedTrades,
     rejectedQuotes: normalized.rejectedQuotes,
     executionAllowed: false,
