@@ -28,7 +28,7 @@ jobs:
   worker-safety:
     name: Worker safety and liquidity engine
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 12
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -44,8 +44,41 @@ jobs:
       - name: Test liquidity contracts and state machine
         run: node --test worker/test/liquidity-sweep-foundation.test.mjs
 
-      - name: Test market-data normalization and liquidity mapping
-        run: node --test worker/test/liquidity-sweep-market-data.test.mjs
+      - name: Test exchange sessions
+        run: node --test --test-name-pattern="identifies exchange sessions correctly" worker/test/liquidity-sweep-market-data.test.mjs
+
+      - name: Test completed-bar normalization
+        run: node --test --test-name-pattern="normalizes only completed bars and calculates volatility metrics" worker/test/liquidity-sweep-market-data.test.mjs
+
+      - name: Test delayed and wide-spread rejection
+        run: node --test --test-name-pattern="rejects delayed and abnormally wide-spread market data" worker/test/liquidity-sweep-market-data.test.mjs
+
+      - name: Test ATR
+        run: node --test --test-name-pattern="calculates ATR deterministically" worker/test/liquidity-sweep-market-data.test.mjs
+
+      - name: Test relative volume
+        run: node --test --test-name-pattern="calculates relative volume deterministically" worker/test/liquidity-sweep-market-data.test.mjs
+
+      - name: Test realized volatility
+        run: node --test --test-name-pattern="calculates realized volatility deterministically" worker/test/liquidity-sweep-market-data.test.mjs
+
+      - name: Test tick size
+        run: node --test --test-name-pattern="infers equity tick sizes conservatively" worker/test/liquidity-sweep-market-data.test.mjs
+
+      - name: Test liquidity pool existence
+        run: node --test --test-name-pattern="liquidity mapping returns at least one meaningful pool" worker/test/liquidity-sweep-market-data.test.mjs
+
+      - name: Test buy-side liquidity
+        run: node --test --test-name-pattern="liquidity mapping returns buy-side pools" worker/test/liquidity-sweep-market-data.test.mjs
+
+      - name: Test sell-side liquidity
+        run: node --test --test-name-pattern="liquidity mapping returns sell-side pools" worker/test/liquidity-sweep-market-data.test.mjs
+
+      - name: Test pool importance threshold
+        run: node --test --test-name-pattern="liquidity mapping applies the configured importance threshold" worker/test/liquidity-sweep-market-data.test.mjs
+
+      - name: Test major liquidity source retention
+        run: node --test --test-name-pattern="liquidity mapping retains at least one major session or equal-level source" worker/test/liquidity-sweep-market-data.test.mjs
 
       - name: Test sweep detection and breakout classification
         run: node --test worker/test/liquidity-sweep-classifier.test.mjs
