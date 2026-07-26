@@ -1,3 +1,4 @@
+import { marginExitDirective } from './capital-policy.js';
 import { getWebullOpenOrders, getWebullOrderDetail, getWebullPositions } from './webull-client.js';
 
 const TERMINAL_ORDER_STATES = new Set(['FILLED', 'CANCELLED', 'CANCELED', 'REJECTED', 'EXPIRED', 'FAILED']);
@@ -165,7 +166,8 @@ export async function readSandboxLifecycleSnapshot(accountId, trades = [], env =
   const positions = pickArray(positionsResult.value).map(normalizePosition).filter((item) => item.symbol && item.quantity !== 0);
   const openOrderMap = indexOpenOrders(openOrdersResult.value);
   const ids = uniqueOrderIds(trades);
-  const detailResult = await orderDetails(accountId, ids, env);
+  const idsMissingFromOpenOrders = ids.filter((id) => !openOrderMap.has(id));
+  const detailResult = await orderDetails(accountId, idsMissingFromOpenOrders, env);
   const orderMap = new Map(openOrderMap);
   for (const [id, detail] of detailResult.details.entries()) orderMap.set(id, detail);
 
@@ -184,6 +186,7 @@ export async function readSandboxLifecycleSnapshot(accountId, trades = [], env =
       openOrders: openOrderMap.size,
       trackedOrderIds: ids.length,
       orderDetailsRequested: detailResult.requested,
+      orderDetailsAvoided: Math.max(0, ids.length - idsMissingFromOpenOrders.length),
       orderDetailsTruncated: detailResult.truncated,
     },
   };
@@ -199,7 +202,7 @@ function protectionState(entry, takeProfit, stopLoss, position) {
   return 'UNPROTECTED';
 }
 
-export function deriveTradeLifecycle(trade = {}, snapshot = {}) {
+export function deriveTradeLifecycle(trade = {}, snapshot = {}, env = {}) {
   const ids = tradeOrderIds(trade);
   const orders = snapshot.orders || {};
   const entry = ids.entry ? orders[ids.entry] || null : null;
@@ -208,12 +211,16 @@ export function deriveTradeLifecycle(trade = {}, snapshot = {}) {
   const symbol = text(trade.symbol).toUpperCase();
   const position = (snapshot.positions || []).find((item) => item.symbol === symbol) || null;
   const protectionStatus = protectionState(entry, takeProfit, stopLoss, position);
+  const marginDirective = marginExitDirective({ capitalSource: trade.capitalSource, now: snapshot.fetchedAt ? new Date(snapshot.fetchedAt) : new Date() }, env);
   const anomalies = [];
   if (!ids.entry) anomalies.push('ENTRY_ORDER_ID_MISSING');
   if (!ids.takeProfit) anomalies.push('TAKE_PROFIT_ORDER_ID_MISSING');
   if (!ids.stopLoss) anomalies.push('STOP_LOSS_ORDER_ID_MISSING');
   if (protectionStatus === 'UNPROTECTED') anomalies.push('FILLED_POSITION_HAS_NO_WORKING_PROTECTION');
   if (protectionStatus === 'PARTIALLY_PROTECTED') anomalies.push('FILLED_POSITION_IS_PARTIALLY_PROTECTED');
+  if (marginDirective.action === 'BEGIN_EXIT') anomalies.push('MARGIN_EXIT_WINDOW_ACTIVE');
+  if (marginDirective.action === 'FORCE_EXIT') anomalies.push('MARGIN_HARD_EXIT_REQUIRED');
+  if (marginDirective.action === 'EMERGENCY_FLATTEN') anomalies.push('MARGIN_POSITION_OUTSIDE_REGULAR_SESSION');
 
   let lifecycleStatus = 'SUBMITTED';
   if (entry?.status === 'REJECTED' || entry?.status === 'CANCELLED' || entry?.status === 'EXPIRED') lifecycleStatus = `ENTRY_${entry.status}`;
@@ -232,6 +239,9 @@ export function deriveTradeLifecycle(trade = {}, snapshot = {}) {
     checkedAt: snapshot.fetchedAt || new Date().toISOString(),
     lifecycleStatus,
     protectionStatus,
+    capitalSource: trade.capitalSource || null,
+    holdPolicy: trade.holdPolicy || null,
+    marginDirective,
     position,
     orderIds: ids,
     orders: { entry, takeProfit, stopLoss },
@@ -244,8 +254,8 @@ export function deriveTradeLifecycle(trade = {}, snapshot = {}) {
   };
 }
 
-export function buildLifecycleReport(trades = [], snapshot = {}) {
-  const lifecycles = trades.map((trade) => deriveTradeLifecycle(trade, snapshot));
+export function buildLifecycleReport(trades = [], snapshot = {}, env = {}) {
+  const lifecycles = trades.map((trade) => deriveTradeLifecycle(trade, snapshot, env));
   return {
     version: 1,
     mode: snapshot.mode || 'SANDBOX_READ_ONLY',
@@ -258,6 +268,8 @@ export function buildLifecycleReport(trades = [], snapshot = {}) {
       attentionRequired: lifecycles.filter((item) => item.attentionRequired).length,
       protectedPositions: lifecycles.filter((item) => item.protectionStatus === 'PROTECTED').length,
       unprotectedPositions: lifecycles.filter((item) => item.protectionStatus === 'UNPROTECTED').length,
+      marginExitWindow: lifecycles.filter((item) => item.marginDirective?.action === 'BEGIN_EXIT').length,
+      marginHardExitRequired: lifecycles.filter((item) => item.marginDirective?.action === 'FORCE_EXIT' || item.marginDirective?.action === 'EMERGENCY_FLATTEN').length,
       ...snapshot.metrics,
     },
     lifecycles,
