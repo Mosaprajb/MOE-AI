@@ -61,6 +61,7 @@ function compactHigherTimeframe(value) {
 }
 
 function compactDataQuality(snapshot) {
+  const rvol = snapshot.relativeVolumeDetails || null;
   return freeze({
     accepted: snapshot.quality?.accepted === true,
     score: finite(snapshot.quality?.score),
@@ -75,6 +76,22 @@ function compactDataQuality(snapshot) {
     spreadPercent: finite(snapshot.spread?.spreadPercent),
     relativeVolume: finite(snapshot.relativeVolume),
     relativeVolumeMethod: snapshot.relativeVolumeMethod || null,
+    relativeVolumeDetails: rvol ? {
+      value: finite(rvol.value),
+      available: rvol.available === true,
+      fallbackUsed: rvol.fallbackUsed === true,
+      fallbackReason: rvol.fallbackReason || null,
+      latestVolume: finite(rvol.latestVolume),
+      baselineVolume: finite(rvol.baselineVolume),
+      sampleCount: finite(rvol.sampleCount, 0),
+      requiredSamples: finite(rvol.requiredSamples, 0),
+      maximumSessions: finite(rvol.maximumSessions, 0),
+      session: rvol.session || null,
+      slotMinutes: finite(rvol.slotMinutes),
+      dateKey: rvol.dateKey || null,
+      baselineDates: Array.isArray(rvol.baselineDates) ? rvol.baselineDates.slice(0, 30) : [],
+      fallbackLookbackBars: finite(rvol.fallbackLookbackBars),
+    } : null,
   });
 }
 
