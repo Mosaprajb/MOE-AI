@@ -153,9 +153,14 @@ test('rejects delayed and abnormally wide-spread market data', () => {
   }), /Spread/);
 });
 
-test('calculates ATR deterministically', () => {
-  const snapshot = metricSnapshot();
-  assertApproximatelyEqual(calculateAtr(snapshot.candles, 5), snapshot.atr);
+test('calculates ATR deterministically from known true ranges', () => {
+  const candles = [
+    { high: 10, low: 9, close: 9.5 },
+    { high: 11, low: 9.5, close: 10.5 },
+    { high: 12, low: 10, close: 11 },
+    { high: 11.5, low: 10.5, close: 11.25 },
+  ];
+  assert.equal(calculateAtr(candles, 3), 1.5);
 });
 
 test('calculates relative volume deterministically', () => {
