@@ -2,32 +2,31 @@
 
 ## Status
 
-Architecture and data-contract phase only.
+Core observation engine implemented and protected by tests.
 
 - Strategy version: `LIQUIDITY_SWEEP_1.0.0-alpha.1`
 - Default mode: `PAPER_TRADING`
 - Live execution: disabled
-- Broker submission integration: not part of this milestone
+- Automatic Sandbox submission: disabled
+- Broker submission integration: intentionally excluded
 - Existing MOERAND safety gates, kill switch, capital policy, lifecycle reconciliation, and duplicate-order reservations remain authoritative
 
-## Why this engine is needed
+## Implemented pipeline
 
-The current scanner promotes candidates after the legacy MOE engine emits `BUY NOW`, then uses a hard-coded liquidity score based on the market session. That does not prove that meaningful liquidity was swept, reclaimed, and confirmed. The new engine replaces that shortcut with an explainable sequence:
-
-1. Normalize completed candles.
-2. Determine session, volatility, and higher-timeframe context.
-3. Map meaningful liquidity pools.
-4. Detect penetration beyond a pool.
-5. Score rejection and acceptance.
-6. Classify sweep versus genuine breakout.
-7. Require post-sweep confirmation.
-8. Build a realistic entry, stop, and opposing-liquidity target.
-9. Score the complete setup.
-10. Return `NO_TRADE` whenever a mandatory requirement fails.
+1. Normalize completed candles and reject delayed, incomplete, missing, zero-volume, or excessively wide-spread data.
+2. Determine session, ATR, relative volume, realized volatility, tick size, higher-timeframe bias, range location, and market regime.
+3. Map, merge, rank, and expire meaningful buy-side and sell-side liquidity pools.
+4. Detect meaningful penetration beyond a pool using ATR and tick-size adaptive limits.
+5. Measure reclaim speed, wick rejection, close location, outside closes, penetration depth, and relative volume.
+6. Independently score rejection and acceptance to classify a sweep versus a genuine breakout.
+7. Require post-sweep displacement and failed continuation, with configurable structure-shift and retest requirements.
+8. Build a realistic limit-entry zone, stop beyond the sweep extreme, and target at opposing liquidity or the configured minimum reward-to-risk.
+9. Score liquidity, sweep, confirmation, context, risk, and execution quality on a 0-100 scale.
+10. Produce an explainable paper-only setup or return `NO_TRADE` when a mandatory requirement fails.
 
 A wick through a level is never sufficient.
 
-## Proposed file structure
+## Implemented files
 
 ```text
 worker/src/liquidity-sweep/
@@ -35,28 +34,22 @@ worker/src/liquidity-sweep/
   contracts.js              Normalized data contracts and enums
   state-machine.js          Explicit setup transitions
   normalization.js          Candle, timestamp, tick, ATR, RVOL, spread validation
-  higher-timeframe.js       Directional context and range location
+  higher-timeframe.js       Directional context, range location, and market regime
   liquidity-map.js          Pool detection, merging, ranking, and expiration
-  sweep-detector.js         Penetration, reclaim, depth, duration, wick metrics
+  sweep-detector.js         Penetration, reclaim, depth, duration, and wick metrics
   classifier.js             Acceptance versus rejection and breakout classification
   confirmation.js           Displacement, internal shift, retest, imbalance
-  trade-plan.js             Entry zone, stop buffer, realistic targets, position inputs
-  scoring.js                0-100 score and explicit penalties
-  engine.js                 Orchestration only; no broker calls
-  explainability.js         Approved/rejected decision narrative
-worker/test/liquidity-sweep/
-  contracts.test.mjs
-  state-machine.test.mjs
-  classifier.test.mjs
-  scoring.test.mjs
-  fixtures/
-    valid-sell-side-sweep.json
-    valid-buy-side-sweep.json
-    genuine-breakout.json
-    ambiguous-penetration.json
-```
+  trade-plan.js             Entry zone, stop buffer, opposing-liquidity targets
+  scoring.js                Weighted 0-100 quality score and explicit penalties
+  explainability.js         Approved/rejected decision narrative and audit message
+  engine.js                 Broker-independent orchestration
 
-This milestone initially creates the first four foundation files. Detection modules follow incrementally after the contracts are approved by tests.
+worker/test/
+  liquidity-sweep-foundation.test.mjs
+  liquidity-sweep-market-data.test.mjs
+  liquidity-sweep-classifier.test.mjs
+  liquidity-sweep-engine.test.mjs
+```
 
 ## Dependency flow
 
@@ -66,108 +59,42 @@ Market bars
   -> higher-timeframe context
   -> liquidity map
   -> sweep detector
+  -> post-sweep confirmation
   -> acceptance/rejection classifier
-  -> confirmation engine
   -> trade-plan engine
   -> opportunity scoring
+  -> explainability
   -> setup state machine
-  -> MOE AI Brain ranking
-  -> existing capital policy
-  -> existing duplicate reservation
-  -> Sandbox execution only
+  -> observation result
 ```
 
-The liquidity engine must never call Webull directly.
+The liquidity engine never calls Webull directly.
 
-## Existing-system integration
+## Timeframe mapping
 
-### Auto scanner
+The mapping is fixed and startup validation rejects changes:
 
-`worker/src/auto-scanner.js` will later call the liquidity engine after completed-bar validation and before `rankBrainCandidates`.
+- `1m -> 15m`
+- `5m -> 1h`
+- `15m -> 4h`
+- `4h -> 1d`
+- `1d -> 1w`
 
-The current hard-coded session liquidity score must be removed only after the new engine passes its tests. The scanner candidate should carry:
+## Safety invariants
 
-- `liquiditySweep`
-- `liquidityPool`
-- `sweepClassification`
-- `acceptanceScore`
-- `rejectionScore`
-- `confirmation`
-- `tradePlan`
-- `liquiditySweepScore`
-- `setupId`
-- `invalidationConditions`
-
-### MOE AI Brain
-
-The brain remains the portfolio-level ranker, but liquidity quality becomes measured evidence rather than a session constant. A confirmed breakout blocks reversal candidates before ranking.
-
-### Trade engine
-
-The existing trade engine remains responsible for final numerical validation and sizing. The liquidity engine supplies a proposed entry zone, stop, and realistic target derived from market structure.
-
-### Execution safety
-
-The existing capital policy, order-reservation guard, trading-mode controls, and kill switch remain mandatory. Liquidity approval cannot bypass them.
-
-### Short setups
-
-The architecture supports buy-side sweeps for short candidates. The current protected broker path is long-entry focused, so short setups must remain `executionAllowed: false` and paper/watchlist only until a separately tested short execution path exists.
-
-## Normalized candle contract
-
-Every candle uses only completed historical data:
-
-```js
-{
-  timestamp: 0,
-  open: 0,
-  high: 0,
-  low: 0,
-  close: 0,
-  volume: 0,
-  session: 'REGULAR',
-  complete: true,
-  source: 'ALPACA_IEX'
-}
-```
-
-Mandatory validation:
-
-- finite timestamp and OHLCV
-- `low <= min(open, close)`
-- `high >= max(open, close)`
-- `high >= low`
-- non-negative volume
-- strictly increasing timestamps
-- completed candle only
-- maximum configured data delay
+- Every output remains `PAPER_TRADING`.
+- `executionAllowed` is always `false`.
+- `automaticSubmissionAllowed` is always `false`.
+- Confirmed and probable breakouts block reversal candidates.
+- Ambiguous events block reversal candidates.
+- Missing confirmation returns `NO_TRADE`.
+- Invalid risk/reward, excessive stop distance, excessive spread, delayed data, event risk, or contradictory inputs return `NO_TRADE` or a rejected observation.
+- Short setups may be analyzed but cannot enter the protected long-only broker path.
+- A liquidity decision cannot bypass capital policy, duplicate-order reservation, kill switch, or trading-mode locks.
 
 ## Liquidity-pool contract
 
-```js
-{
-  poolId: 'deterministic-id',
-  type: 'PREVIOUS_DAY_LOW',
-  side: 'SELL_SIDE',
-  zoneLower: 0,
-  zoneUpper: 0,
-  referencePrice: 0,
-  createdAt: 0,
-  lastTouchedAt: 0,
-  touchCount: 0,
-  originTimeframe: '5m',
-  originSession: 'REGULAR',
-  relativeVolume: 0,
-  status: 'UNSWEPT',
-  importanceScore: 0,
-  swept: false,
-  reclaimed: false,
-  expiresAt: 0,
-  evidence: [],
-  penalties: []
-}
-```
+Each pool contains a deterministic ID, type, side, adaptive price zone, origin timeframe/session, touches, relative volume, importance score, state, expiration, evidence, and penalties.
 
 Pool statuses:
 
@@ -178,34 +105,7 @@ Pool statuses:
 - `INVALIDATED`
 - `EXPIRED`
 
-## Sweep-event contract
-
-```js
-{
-  sweepId: 'deterministic-id',
-  poolId: 'pool-id',
-  symbol: 'AAPL',
-  direction: 'LONG',
-  detectedAt: 0,
-  extremePrice: 0,
-  penetrationDistance: 0,
-  penetrationAtr: 0,
-  candlesOutside: 0,
-  reclaimed: false,
-  reclaimedAt: null,
-  reclaimCandles: null,
-  wickToBodyRatio: 0,
-  closeLocation: 0,
-  acceptanceScore: 0,
-  rejectionScore: 0,
-  classification: 'UNCONFIRMED_PENETRATION',
-  confidence: 0,
-  evidence: [],
-  rejectionReasons: []
-}
-```
-
-Classifications:
+## Sweep classifications
 
 - `UNCONFIRMED_PENETRATION`
 - `PROBABLE_LIQUIDITY_SWEEP`
@@ -216,106 +116,32 @@ Classifications:
 - `AMBIGUOUS_EVENT`
 - `INVALID_EVENT`
 
-## Setup contract
+Only `CONFIRMED_LIQUIDITY_SWEEP` may proceed to trade planning.
 
-```js
-{
-  setupId: 'deterministic-id',
-  strategyName: 'Institutional Liquidity Sweep',
-  strategyVersion: 'LIQUIDITY_SWEEP_1.0.0-alpha.1',
-  symbol: 'AAPL',
-  executionTimeframe: '5m',
-  contextTimeframe: '1h',
-  direction: 'LONG',
-  state: 'DETECTED',
-  marketSession: 'REGULAR',
-  marketRegime: 'BALANCED_RANGE',
-  liquidityPool: {},
-  sweep: {},
-  confirmation: {},
-  tradePlan: {},
-  quality: {},
-  invalidationConditions: [],
-  createdAt: 0,
-  updatedAt: 0,
-  expiresAt: 0,
-  executionAllowed: false,
-  mode: 'PAPER_TRADING',
-  auditTrail: []
-}
-```
+## Confirmation requirements
 
-## Deterministic setup ID
+The confirmation engine evaluates:
 
-The setup ID is derived from:
+- displacement in the reversal direction
+- displacement measured in ATR
+- internal structural shift
+- imbalance after displacement
+- pool retest and retest rejection
+- failure to continue beyond the sweep extreme
+- movement away from swept liquidity
+- reversal relative volume
 
-```text
-strategyVersion | symbol | executionTimeframe | direction | poolId | sweepTimestamp | roundedSweepExtreme
-```
+Displacement and failed continuation are mandatory. Structure shift and retest can be made mandatory through validated configuration.
 
-The resulting value is SHA-256 and truncated to a stable identifier. It feeds the existing order-reservation layer later, preventing TradingView, scanner, or retry duplication.
+## Trade-plan rules
 
-## State machine
-
-Allowed states:
-
-1. `DETECTED`
-2. `VALIDATING`
-3. `CONFIRMED`
-4. `ARMED`
-5. `WAITING_FOR_ENTRY`
-6. `ENTRY_TRIGGERED`
-7. `ORDER_SUBMITTED`
-8. `PARTIALLY_FILLED`
-9. `FILLED`
-10. `MANAGING_POSITION`
-11. `TARGET_PARTIALLY_REACHED`
-12. `COMPLETED`
-13. `STOPPED`
-14. `CANCELLED`
-15. `INVALIDATED`
-16. `EXPIRED`
-17. `EXECUTION_ERROR`
-
-Terminal states cannot return to an active state. A new thesis requires a new setup ID.
-
-## Sweep-versus-breakout classification
-
-The classifier produces two independent 0-100 scores.
-
-### Rejection score
-
-Weighted inputs:
-
-- reclaim speed: 20
-- close back inside the pool/range: 20
-- wick-to-body rejection: 15
-- opposing displacement: 15
-- failed continuation: 10
-- retest rejection: 10
-- reversal relative volume: 5
-- movement toward opposing liquidity: 5
-
-### Acceptance score
-
-Weighted inputs:
-
-- closes beyond the pool: 20
-- body percentage beyond the pool: 15
-- time outside the range: 10
-- successful breakout retest: 20
-- continuation volume: 10
-- displacement in breakout direction: 10
-- higher-timeframe alignment: 10
-- distance maintained beyond the pool: 5
-
-### Decision rules
-
-- Confirmed sweep: rejection >= configured threshold, acceptance <= maximum, reclaim true, confirmation true.
-- Probable sweep: rejection leads acceptance by configured margin but confirmation is incomplete.
-- Confirmed breakout: acceptance >= configured threshold, no reclaim, continuation/retest evidence present.
-- Ambiguous: score difference is below the ambiguity margin or evidence conflicts.
-- No reversal trade is allowed for probable/confirmed breakout or ambiguous events.
+- Entry is derived from the reclaimed boundary and confirmed displacement, not the top of an extended candle.
+- Entry extension is capped in ATR.
+- Stop is placed beyond the sweep extreme with the larger of the ATR buffer or tick buffer.
+- Stop distance is capped in ATR.
+- The preferred target is the nearest meaningful opposing-liquidity pool.
+- If opposing liquidity is absent or too close, the configured minimum reward-to-risk target is used.
+- Spread and numerical validity are checked before approval.
 
 ## Opportunity score
 
@@ -332,75 +158,61 @@ Total                  0-100
 Initial actions:
 
 - 90-100: exceptional paper candidate
-- 80-89: high-quality paper candidate
-- 70-79: valid paper candidate
-- 60-69: watchlist only
-- below 60: reject
+- automatic threshold and above: high-quality paper candidate
+- valid threshold and above: valid paper candidate
+- watchlist threshold and above: watchlist only
+- below watchlist threshold: reject
 
-Automatic Sandbox submission remains disabled for this strategy until detection, classification, scoring, and integration tests pass.
+Countertrend setups require the stricter countertrend threshold and remain observation-only.
 
-## Central configuration groups
+## Deterministic setup identity
 
-- strategy identity and mode
-- timeframe mapping
-- data quality
-- ATR and volatility
-- liquidity zone merging
-- pool importance
-- sweep penetration and reclaim
-- rejection and acceptance thresholds
-- confirmation
-- entry and stop
-- target and reward-to-risk
-- session adjustments
-- event risk
-- scoring and penalties
-- state expiration and cooldown
-- duplicate protection
+The setup ID is derived from:
 
-Startup validation must reject unsafe or contradictory values.
+```text
+strategyVersion | symbol | executionTimeframe | direction | poolId | sweepTimestamp | roundedSweepExtreme
+```
 
-## First implementation milestone
+The SHA-256-derived ID is stable across retries and is designed to feed the existing duplicate-order reservation layer after observation and historical validation are complete.
 
-### Included
+## Setup state machine
 
-- centralized configuration and validation
-- normalized enums and data contracts
-- deterministic IDs
-- setup state machine
-- score/classification interfaces
-- unit tests for contracts and transitions
+Approved paper observations transition:
 
-### Excluded
+```text
+DETECTED -> VALIDATING -> CONFIRMED -> ARMED
+```
 
-- broker calls
-- Live activation
-- automatic Sandbox submission
-- order-book logic
-- news-provider integration
-- final liquidity-pool detection
-- final sweep detector
-- short-order execution
+Execution states remain unreachable from the liquidity engine because it has no broker dependency and no submission permission.
 
-## Risks and missing dependencies
+Terminal states cannot return to an active state. A new thesis requires a new setup ID.
 
-1. Alpaca bar history currently provides candle data but not full order-book depth.
-2. Earnings/news/halt protection needs a reliable event feed before automatic execution.
-3. Holiday-aware exchange calendars are not yet applied everywhere.
-4. Extended-hours relative volume needs comparable time-of-day historical baselines.
-5. Current scanner is long-oriented; short execution must remain blocked.
-6. Historical backtesting data must include extended sessions, gaps, splits, and delisted symbols where possible.
+## Scanner integration boundary
 
-## Recommended development order
+The engine is ready to be called by `worker/src/auto-scanner.js` after completed-bar validation and before `rankBrainCandidates` in observation-only mode. During that phase, scanner candidates should carry:
 
-1. Contracts, config, IDs, and state-machine tests.
-2. Candle normalization and data-quality tests.
-3. Liquidity-pool mapping and importance tests.
-4. Sweep detector and classifier tests.
-5. Confirmation and trade-plan tests.
-6. Scoring and explainability tests.
-7. Scanner integration in observation-only mode.
-8. Historical backtest and out-of-sample validation.
-9. Sandbox paper execution behind explicit feature gates.
+- `liquiditySweep`
+- `liquidityPool`
+- `sweepClassification`
+- `acceptanceScore`
+- `rejectionScore`
+- `confirmation`
+- `higherTimeframe`
+- `tradePlan`
+- `liquiditySweepScore`
+- `setupId`
+- `invalidationConditions`
 
-The correct output remains `NO_TRADE` whenever any mandatory component is missing or contradictory.
+The legacy hard-coded session liquidity score must not be removed until the new full test suite is green and observation data has been reviewed.
+
+## Remaining controlled milestones
+
+1. Green CI for all Worker safety and liquidity tests.
+2. Auto-scanner integration in observation-only mode without changing candidate acceptance or order submission.
+3. Historical backtest including extended sessions, gaps, splits, halts, and delisted symbols where available.
+4. Out-of-sample and walk-forward validation.
+5. Reliable earnings, macro-event, halt, and news-state feed.
+6. Explicit feature gate for Sandbox paper submission after review.
+7. Separately tested short-order execution path before any short submission.
+
+The correct output remains `NO_TRADE` whenever any mandatory component is missing, contradictory, unsafe, or unconfirmed.
