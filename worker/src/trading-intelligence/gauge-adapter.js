@@ -89,7 +89,6 @@ function unavailable(definition, item, summary) {
 function higherTimeframeGauge(definition, item) {
   const htf = item.diagnostics?.higherTimeframe;
   if (!htf) return unavailable(definition, item, 'Higher-timeframe context is unavailable for this scanner result.');
-  const biasDirection = direction(htf.bias);
   const status = htf.countertrend ? 'CONFLICTING' : htf.aligned ? 'CONFIRMED' : 'VALIDATING';
   return stageGauge(definition, {
     score: htf.score,
@@ -148,6 +147,44 @@ function relativeVolumeGauge(definition, item) {
   });
 }
 
+function smtDivergenceGauge(definition, item) {
+  const smt = item.diagnostics?.smtDivergence;
+  if (!smt) return unavailable(definition, item, 'SMT comparison result is unavailable for this scanner result.');
+  if (smt.status === 'UNAVAILABLE' || smt.classification === 'INSUFFICIENT_DATA') {
+    return unavailable(definition, item, `${smt.reason || 'SMT data unavailable'} · ${smt.primarySymbol || item.symbol} vs ${smt.comparisonSymbol || '—'}.`);
+  }
+  const statusMap = {
+    CONFIRMED: 'CONFIRMED',
+    IDLE: 'IDLE',
+    CONFLICTING: 'CONFLICTING',
+    EXPIRED: 'EXPIRED',
+    DISABLED: 'DISABLED',
+  };
+  const gaugeStatus = statusMap[smt.status] || 'VALIDATING';
+  const score = clamp(smt.score);
+  const pair = `${smt.primarySymbol || item.symbol} vs ${smt.comparisonSymbol || '—'}`;
+  const correlation = Number.isFinite(Number(smt.correlation)) ? Number(smt.correlation).toFixed(2) : '—';
+  const summary = smt.detected
+    ? `${String(smt.classification).replaceAll('_', ' ')} · ${pair} · correlation ${correlation}.`
+    : `${String(smt.classification || 'NO_DIVERGENCE').replaceAll('_', ' ')} · ${pair} · correlation ${correlation}.`;
+  return stageGauge({ ...definition, scored: true }, {
+    score,
+    confidence: smt.confidence,
+    direction: smt.direction,
+    passed: smt.detected === true,
+    status: smt.detected ? 'PASSED' : smt.status === 'CONFLICTING' ? 'REJECTED' : 'VALIDATING',
+    failedConditions: smt.failedConditions || [],
+  }, item, {
+    status: gaugeStatus,
+    timeframe: smt.timeframe || item.timeframe,
+    summary,
+    confirmationReasons: smt.evidence || [],
+    penalties: smt.status === 'CONFLICTING' ? (smt.failedConditions || []) : [],
+    blockers: [],
+    metadata: smt,
+  });
+}
+
 function dataQualityGauge(definition, item) {
   const quality = item.diagnostics?.dataQuality;
   if (!quality) return unavailable(definition, item, item.diagnostics?.marketDataError || 'Market-data quality details are unavailable.');
@@ -186,7 +223,7 @@ export function buildTradingIntelligenceSnapshot(item = {}) {
     stageGauge(byId['liquidity-sweep'], { ...stopRun, score: liquidityScore }, item, { summary: item.diagnostics?.liquiditySweepReason || stopRun?.classification || 'Liquidity sweep evaluation.' }),
     stageGauge(byId['stop-run'], stopRun, item),
     stageGauge(byId['smart-money'], { score: smartMoneyScore, direction: item.direction, passed: smartMoneyScore != null && smartMoneyScore > 0, status: smartMoneyScore != null ? 'PASSED' : 'BLOCKED' }, item, { summary: item.diagnostics?.smartMoneyReason || 'Smart Money confluence evaluation.', metadata: item.diagnostics?.smartMoneyContext || {} }),
-    unavailable(byId['smt-divergence'], item, 'SMT Divergence engine has not been implemented yet.'),
+    smtDivergenceGauge(byId['smt-divergence'], item),
     stageGauge(byId.absorption, absorption, item, { summary: `${absorption?.classification || 'Absorption unavailable'} · ${dataMode}` }),
     stageGauge(byId['market-imbalance'], imbalance, item),
     stageGauge(byId['market-structure'], structure, item),
