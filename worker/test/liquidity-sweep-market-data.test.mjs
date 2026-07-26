@@ -77,6 +77,31 @@ function metricSnapshot() {
   });
 }
 
+async function liquidityFixture() {
+  const bars = syntheticBars();
+  const snapshot = normalizeMarketData({
+    bars,
+    timeframe: '5m',
+    now: bars.at(-1).t + 5 * MINUTE + 30_000,
+    config,
+  });
+  return mapLiquidityPools(snapshot, { originTimeframe: '5m', config });
+}
+
+function mappingSummary(liquidity) {
+  return JSON.stringify({
+    poolCount: liquidity.poolCount,
+    buySide: liquidity.buySide.length,
+    sellSide: liquidity.sellSide.length,
+    pools: liquidity.pools.map((pool) => ({
+      type: pool.type,
+      side: pool.side,
+      referencePrice: pool.referencePrice,
+      importanceScore: pool.importanceScore,
+    })),
+  });
+}
+
 function assertApproximatelyEqual(actual, expected, tolerance = 1e-8) {
   assert.ok(Number.isFinite(actual), `Expected a finite actual value, received ${actual}`);
   assert.ok(Number.isFinite(expected), `Expected a finite expected value, received ${expected}`);
@@ -148,19 +173,31 @@ test('infers equity tick sizes conservatively', () => {
   assert.equal(inferTickSize(0.5), 0.0001);
 });
 
-test('maps meaningful buy-side and sell-side liquidity pools', async () => {
-  const bars = syntheticBars();
-  const snapshot = normalizeMarketData({
-    bars,
-    timeframe: '5m',
-    now: bars.at(-1).t + 5 * MINUTE + 30_000,
-    config,
-  });
-  const liquidity = await mapLiquidityPools(snapshot, { originTimeframe: '5m', config });
+test('liquidity mapping returns at least one meaningful pool', async () => {
+  const liquidity = await liquidityFixture();
+  assert.ok(liquidity.poolCount > 0, mappingSummary(liquidity));
+});
 
-  assert.ok(liquidity.poolCount > 0);
-  assert.ok(liquidity.buySide.length > 0);
-  assert.ok(liquidity.sellSide.length > 0);
-  assert.ok(liquidity.pools.every((pool) => pool.importanceScore >= config.liquidityPools.minimumImportanceScore));
-  assert.ok(liquidity.pools.some((pool) => ['PREVIOUS_DAY_HIGH', 'PREVIOUS_DAY_LOW', 'PREMARKET_HIGH', 'PREMARKET_LOW', 'EQUAL_LOWS', 'EQUAL_HIGHS'].includes(pool.type)));
+test('liquidity mapping returns buy-side pools', async () => {
+  const liquidity = await liquidityFixture();
+  assert.ok(liquidity.buySide.length > 0, mappingSummary(liquidity));
+});
+
+test('liquidity mapping returns sell-side pools', async () => {
+  const liquidity = await liquidityFixture();
+  assert.ok(liquidity.sellSide.length > 0, mappingSummary(liquidity));
+});
+
+test('liquidity mapping applies the configured importance threshold', async () => {
+  const liquidity = await liquidityFixture();
+  assert.ok(
+    liquidity.pools.every((pool) => pool.importanceScore >= config.liquidityPools.minimumImportanceScore),
+    mappingSummary(liquidity),
+  );
+});
+
+test('liquidity mapping retains at least one major session or equal-level source', async () => {
+  const liquidity = await liquidityFixture();
+  const majorTypes = new Set(['PREVIOUS_DAY_HIGH', 'PREVIOUS_DAY_LOW', 'PREMARKET_HIGH', 'PREMARKET_LOW', 'EQUAL_LOWS', 'EQUAL_HIGHS']);
+  assert.ok(liquidity.pools.some((pool) => majorTypes.has(pool.type)), mappingSummary(liquidity));
 });
