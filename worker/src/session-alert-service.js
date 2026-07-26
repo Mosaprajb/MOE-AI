@@ -4,6 +4,8 @@ import { currentTradingSession, sessionAllowed, sessionTransitionEvents } from '
 
 const STATE_KEY = 'trading-session-alerts:v1';
 const HISTORY_LIMIT = 80;
+const CURRENT_DASHBOARD_PATH = '/';
+const NOTIFICATION_ICON_PATH = '/icon-192.svg';
 
 function enabled(env = {}) {
   return String(env.MOE_SESSION_ALERTS_ENABLED || 'true').toLowerCase() === 'true';
@@ -29,13 +31,13 @@ async function sendPush(record, event, allowed, env) {
       payload: {
         title,
         body,
-        icon: `${env.APP_URL || '/'}icon-192.svg`,
-        badge: `${env.APP_URL || '/'}icon-192.svg`,
+        icon: NOTIFICATION_ICON_PATH,
+        badge: NOTIFICATION_ICON_PATH,
         tag: `moerand-session-${event.sessionKey}-${event.kind}-${event.localDate}`,
         renotify: true,
         timestamp: Date.parse(event.occurredAt),
         data: {
-          url: env.APP_URL || '/alerts',
+          url: CURRENT_DASHBOARD_PATH,
           kind: `SESSION_${event.kind}`,
           session: event.sessionKey,
           allowed,
