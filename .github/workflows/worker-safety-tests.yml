@@ -79,5 +79,8 @@ jobs:
       - name: Test institutional flow stage pipeline
         run: node --test --test-concurrency=1 worker/test/institutional-flow-pipeline.test.mjs
 
+      - name: Test trade-level order flow and historical replay
+        run: node --test --test-concurrency=1 worker/test/order-flow-replay.test.mjs
+
       - name: Run complete Worker safety suite
         run: npm run test:worker
