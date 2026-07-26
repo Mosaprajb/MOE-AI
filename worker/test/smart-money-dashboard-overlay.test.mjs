@@ -2,8 +2,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { enhanceSmartMoneyDashboard } from '../src/smart-money/dashboard-overlay.js';
 
-test('dashboard overlay adds interactive circular trading intelligence UI without changing response status', async () => {
-  const original = new Response('<!doctype html><html><head><title>MOE</title></head><body><section id="scanner"></section></body></html>', {
+test('dashboard overlay adds interactive circular trading and active-position intelligence UI without changing response status', async () => {
+  const original = new Response('<!doctype html><html><head><title>MOE</title></head><body><section id="active-trade"></section><section id="scanner"></section></body></html>', {
     status: 200,
     headers: { 'content-type': 'text/html; charset=utf-8', 'content-length': '100' },
   });
@@ -21,6 +21,12 @@ test('dashboard overlay adds interactive circular trading intelligence UI withou
   assert.match(html, /data-gauge-id/);
   assert.match(html, /data-symbol/);
   assert.match(html, /Selected Scanner Result/);
+  assert.match(html, /ACTIVE POSITION INTELLIGENCE/);
+  assert.match(html, /Trade Progress & Protection/);
+  assert.match(html, /ap-gauge/);
+  assert.match(html, /DISTANCE TO STOP/);
+  assert.match(html, /Progress to TP1/);
+  assert.match(html, /api\/trading-intelligence\/active-position/);
   assert.match(html, /prefers-reduced-motion/);
   assert.match(html, /scrollIntoView/);
   assert.match(html, /OBSERVATION ONLY/);
