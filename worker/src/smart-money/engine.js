@@ -6,6 +6,9 @@ import { detectStructuralEvents } from './market-structure.js';
 import { evaluateDisplacementSeries } from './displacement.js';
 import { detectFairValueGaps } from './fair-value-gap.js';
 import { buildActiveDealingRange } from './dealing-range.js';
+import { detectOrderBlocks } from './order-block.js';
+import { detectBreakerBlocks } from './breaker-block.js';
+import { evaluateSmartMoneyConfluence } from './confluence.js';
 
 function text(value, fallback = '') {
   const normalized = String(value ?? fallback).trim();
@@ -52,21 +55,47 @@ export async function evaluateSmartMoneyFoundation({
     config,
     swings: structure.swings,
   });
+  const orderBlockResult = await detectOrderBlocks({
+    symbol: normalizedSymbol,
+    snapshot,
+    config,
+    structureEvents: structure.events,
+    displacements: displacement,
+    fairValueGaps: imbalances.gaps,
+  });
+  const breakerResult = await detectBreakerBlocks({
+    symbol: normalizedSymbol,
+    snapshot,
+    config,
+    orderBlocks: orderBlockResult.blocks,
+    structureEvents: structure.events,
+  });
+  const confluence = evaluateSmartMoneyConfluence({
+    structure,
+    displacement,
+    fairValueGaps: imbalances.gaps,
+    orderBlocks: orderBlockResult.blocks,
+    breakers: breakerResult.breakers,
+    dealingRange,
+    config,
+  });
 
   const latestDisplacement = displacement.at(-1) || null;
   const activeGaps = imbalances.gaps.filter((gap) => ['NEW', 'ACTIVE', 'PARTIALLY_MITIGATED'].includes(gap.state));
-  const failedConditions = [];
+  const activeBlocks = orderBlockResult.blocks.filter((block) => ['ACTIVE', 'PARTIALLY_MITIGATED'].includes(block.state));
+  const failedConditions = [...confluence.failedConditions];
   if (!structure.events.length) failedConditions.push('NO_CONFIRMED_STRUCTURE');
   if (!latestDisplacement || ['NONE', 'WEAK', 'ABNORMAL_NEWS_DRIVEN'].includes(latestDisplacement.classification)) {
     failedConditions.push('NO_ACCEPTABLE_LATEST_DISPLACEMENT');
   }
   if (!dealingRange.range) failedConditions.push(dealingRange.reason || 'NO_CONFIRMED_DEALING_RANGE');
   if (!activeGaps.length) failedConditions.push('NO_ACTIVE_QUALITY_FVG');
+  if (!activeBlocks.length && !breakerResult.breakers.length) failedConditions.push('NO_ACTIVE_ORDER_BLOCK_OR_BREAKER');
   failedConditions.push('SMART_MONEY_FOUNDATION_OBSERVATION_ONLY');
 
   return smartMoneyNoTrade('SMART_MONEY_FOUNDATION_OBSERVATION_ONLY', {
-    failedConditions,
-    setupScore: 0,
+    failedConditions: [...new Set(failedConditions)],
+    setupScore: confluence.totalScore,
     details: {
       symbol: normalizedSymbol,
       strategyVersion: config.strategy.version,
@@ -84,7 +113,17 @@ export async function evaluateSmartMoneyFoundation({
         all: imbalances.gaps.slice(-50),
         rejected: imbalances.rejected.slice(-50),
       },
+      orderBlocks: {
+        active: activeBlocks.slice(-20),
+        all: orderBlockResult.blocks.slice(-50),
+        rejected: orderBlockResult.rejected.slice(-50),
+      },
+      breakerBlocks: {
+        active: breakerResult.breakers.slice(-20),
+        rejected: breakerResult.rejected.slice(-50),
+      },
       dealingRange,
+      confluence,
       executionAllowed: false,
       automaticSubmissionAllowed: false,
       observationOnly: true,
