@@ -1,7 +1,7 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "moerand-alerts",
-  "main": "worker/src/pin-session-entry.js",
+  "main": "worker/src/session-policy-entry.js",
   "compatibility_date": "2026-07-22",
   "observability": { "enabled": true },
   "triggers": { "crons": ["* * * * *"] },
@@ -15,6 +15,7 @@
     "VAPID_PUBLIC_KEY": "BP7XvNvwNZqLog4ldUcwEmMaXieeKD37sBddfWk5BbsC0mXRl09dS-kw-C__JnSUDGYaTDVKcKYJURIlac9T98c",
     "VAPID_SUBJECT": "https://mosaprajb.github.io/MOE-AI/",
     "MOE_TRADING_MODE_DEFAULT": "SANDBOX",
+    "MOE_TRADING_SESSION_POLICY_DEFAULT": "ALL_SESSIONS",
     "MOE_DIRECTION_POLICY": "LONG_ONLY",
     "MOE_ALLOW_SHORT_ENTRIES": "false",
     "MOE_LIVE_PIN_CONTROL_ENABLED": "true",
