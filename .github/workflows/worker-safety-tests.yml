@@ -116,7 +116,10 @@ jobs:
         env:
           CHROME_BIN: /usr/bin/google-chrome
           VISUAL_QA_OUTPUT: artifacts/dashboard-visual-qa
-        run: node worker/test/visual-dashboard-browser.mjs
+        run: |
+          set -o pipefail
+          mkdir -p artifacts/dashboard-visual-qa
+          node worker/test/visual-dashboard-browser.mjs 2>&1 | tee artifacts/dashboard-visual-qa/visual-qa.log
 
       - name: Upload dashboard visual QA screenshots
         if: always()
