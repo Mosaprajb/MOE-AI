@@ -1,5 +1,5 @@
 export const SMART_MONEY_STRATEGY_NAME = 'Quantitative Smart Money Engine';
-export const SMART_MONEY_STRATEGY_VERSION = 'SMART_MONEY_1.0.0-alpha.1';
+export const SMART_MONEY_STRATEGY_VERSION = 'SMART_MONEY_1.0.0-alpha.2';
 
 const TIMEFRAME_MAP = Object.freeze({
   '1m': '15m',
@@ -99,6 +99,38 @@ export function defaultSmartMoneyConfig(env = {}) {
       equilibriumTolerance: number(env.MOE_SM_EQUILIBRIUM_TOLERANCE, 0.08),
       minimumRangeAtr: number(env.MOE_SM_MIN_DEALING_RANGE_ATR, 1.5),
     },
+    orderBlock: {
+      minimumStructureScore: number(env.MOE_SM_OB_MIN_STRUCTURE_SCORE, 60),
+      minimumDisplacementScore: number(env.MOE_SM_OB_MIN_DISPLACEMENT_SCORE, 60),
+      originLookbackBars: integer(env.MOE_SM_OB_ORIGIN_LOOKBACK_BARS, 8),
+      maximumFvgLagBars: integer(env.MOE_SM_OB_MAX_FVG_LAG_BARS, 3),
+      requireFvg: boolean(env.MOE_SM_OB_REQUIRE_FVG, true),
+      useBodyAsProximalBoundary: boolean(env.MOE_SM_OB_BODY_PROXIMAL, true),
+      preferredMaximumWidthAtr: number(env.MOE_SM_OB_PREFERRED_MAX_WIDTH_ATR, 0.8),
+      maximumWidthAtr: number(env.MOE_SM_OB_MAX_WIDTH_ATR, 1.5),
+      fullMitigationPercent: number(env.MOE_SM_OB_FULL_MITIGATION_PERCENT, 0.95),
+      maximumMitigations: integer(env.MOE_SM_OB_MAX_MITIGATIONS, 2),
+      maximumAgeBars: integer(env.MOE_SM_OB_MAX_AGE_BARS, 100),
+      mitigationPenalty: number(env.MOE_SM_OB_MITIGATION_PENALTY, 8),
+      missingFvgPenalty: number(env.MOE_SM_OB_MISSING_FVG_PENALTY, 15),
+      minimumQualityScore: number(env.MOE_SM_OB_MIN_QUALITY_SCORE, 65),
+    },
+    breaker: {
+      minimumOriginalBlockScore: number(env.MOE_SM_BREAKER_MIN_ORIGINAL_SCORE, 65),
+      minimumOppositeStructureScore: number(env.MOE_SM_BREAKER_MIN_OPPOSITE_STRUCTURE_SCORE, 65),
+      maximumRetestBars: integer(env.MOE_SM_BREAKER_MAX_RETEST_BARS, 20),
+      rejectionCloseLocation: number(env.MOE_SM_BREAKER_REJECTION_CLOSE_LOCATION, 0.6),
+      minimumQualityScore: number(env.MOE_SM_BREAKER_MIN_QUALITY_SCORE, 70),
+    },
+    confluence: {
+      minimumMandatoryScore: number(env.MOE_SM_CONFLUENCE_MIN_MANDATORY_SCORE, 74),
+      minimumStructureScore: number(env.MOE_SM_CONFLUENCE_MIN_STRUCTURE_SCORE, 60),
+      minimumDisplacementScore: number(env.MOE_SM_CONFLUENCE_MIN_DISPLACEMENT_SCORE, 60),
+      minimumZoneScore: number(env.MOE_SM_CONFLUENCE_MIN_ZONE_SCORE, 65),
+      premiumLongPenalty: number(env.MOE_SM_PREMIUM_LONG_PENALTY, 12),
+      discountShortPenalty: number(env.MOE_SM_DISCOUNT_SHORT_PENALTY, 12),
+      repeatedMitigationPenalty: number(env.MOE_SM_REPEATED_MITIGATION_PENALTY, 10),
+    },
     scoring: {
       thresholds: {
         exceptional: 90,
@@ -152,6 +184,29 @@ export function validateSmartMoneyConfig(config) {
   assertRange('fvg.fullMitigationPercent', config.fvg.fullMitigationPercent, 0.5, 1);
   assertRange('dealingRange.equilibriumTolerance', config.dealingRange.equilibriumTolerance, 0, 0.49);
   assertRange('dealingRange.minimumRangeAtr', config.dealingRange.minimumRangeAtr, 0.1, 100);
+
+  assertRange('orderBlock.minimumStructureScore', config.orderBlock.minimumStructureScore, 0, 100);
+  assertRange('orderBlock.minimumDisplacementScore', config.orderBlock.minimumDisplacementScore, 0, 100);
+  assertInteger('orderBlock.originLookbackBars', config.orderBlock.originLookbackBars, 1, 100);
+  assertInteger('orderBlock.maximumFvgLagBars', config.orderBlock.maximumFvgLagBars, 0, 20);
+  assertRange('orderBlock.preferredMaximumWidthAtr', config.orderBlock.preferredMaximumWidthAtr, 0.05, 20);
+  assertRange('orderBlock.maximumWidthAtr', config.orderBlock.maximumWidthAtr, config.orderBlock.preferredMaximumWidthAtr, 50);
+  assertRange('orderBlock.fullMitigationPercent', config.orderBlock.fullMitigationPercent, 0.5, 1);
+  assertInteger('orderBlock.maximumMitigations', config.orderBlock.maximumMitigations, 0, 20);
+  assertInteger('orderBlock.maximumAgeBars', config.orderBlock.maximumAgeBars, 1, 10000);
+  assertRange('orderBlock.minimumQualityScore', config.orderBlock.minimumQualityScore, 0, 100);
+
+  assertRange('breaker.minimumOriginalBlockScore', config.breaker.minimumOriginalBlockScore, 0, 100);
+  assertRange('breaker.minimumOppositeStructureScore', config.breaker.minimumOppositeStructureScore, 0, 100);
+  assertInteger('breaker.maximumRetestBars', config.breaker.maximumRetestBars, 1, 100);
+  assertRange('breaker.rejectionCloseLocation', config.breaker.rejectionCloseLocation, 0.5, 1);
+  assertRange('breaker.minimumQualityScore', config.breaker.minimumQualityScore, 0, 100);
+
+  assertRange('confluence.minimumMandatoryScore', config.confluence.minimumMandatoryScore, 0, 100);
+  assertRange('confluence.minimumStructureScore', config.confluence.minimumStructureScore, 0, 100);
+  assertRange('confluence.minimumDisplacementScore', config.confluence.minimumDisplacementScore, 0, 100);
+  assertRange('confluence.minimumZoneScore', config.confluence.minimumZoneScore, 0, 100);
+
   const weightTotal = Object.values(config.scoring.weights).reduce((sum, value) => sum + Number(value), 0);
   if (weightTotal !== 100) throw new Error(`Smart Money scoring weights must total 100, received ${weightTotal}`);
   return deepFreeze(config);
