@@ -5,6 +5,7 @@ const WEEKDAYS = new Set(['Mon', 'Tue', 'Wed', 'Thu', 'Fri']);
 const TIMEFRAME_MINUTES = Object.freeze({ '1m': 1, '5m': 5, '15m': 15, '1h': 60, '4h': 240, '1d': 1440, '1w': 10080 });
 
 function finite(value, fallback = null) {
+  if (value == null || (typeof value === 'string' && value.trim() === '')) return fallback;
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : fallback;
 }
