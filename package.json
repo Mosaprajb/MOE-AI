@@ -5,7 +5,8 @@
   "scripts": {
     "dev": "next dev",
     "build": "next build",
-    "start": "next start"
+    "start": "next start",
+    "test:worker": "node --test worker/test/*.test.mjs"
   },
   "dependencies": {
     "@pushforge/builder": "2.0.5",
