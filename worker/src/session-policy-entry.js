@@ -1,11 +1,18 @@
 import worker, { AlertCoordinator as BaseAlertCoordinator } from './pin-session-entry.js';
+import { getSessionAlertStatus, processSessionAlerts } from './session-alert-service.js';
+import {
+  authoritativeSignalPayload,
+  currentTradingSession,
+  sessionAllowed,
+  validateDeclaredSignalSession,
+} from './trading-session-service.js';
 
 const POLICY_KEY = 'trading-session-policy:v1';
-const POLICY_VERSION = 1;
+const POLICY_VERSION = 2;
 const POLICY_PATH = '/api/trading/session-policy';
+const SESSION_ALERTS_PATH = '/api/trading/session-alerts';
 const SIGNAL_PATH = '/api/tradingview/signal';
 const DASHBOARD_PATHS = new Set(['/', '/moe-ai', '/moe-ai/', '/dashboard', '/dashboard/']);
-const SESSION_KEYS = Object.freeze(['PREMARKET', 'CORE', 'AFTER_HOURS', 'OVERNIGHT']);
 const PRESETS = Object.freeze({
   CORE_ONLY: ['CORE'],
   PREMARKET_ONLY: ['PREMARKET'],
@@ -48,47 +55,16 @@ function policySnapshot(saved, env = {}) {
   };
 }
 
-function nyParts(date = new Date()) {
-  const parts = new Intl.DateTimeFormat('en-US', {
-    timeZone: 'America/New_York',
-    weekday: 'short',
-    hour: '2-digit',
-    minute: '2-digit',
-    hourCycle: 'h23',
-  }).formatToParts(date);
-  return Object.fromEntries(parts.map((part) => [part.type, part.value]));
-}
-
-function currentTradingSession(date = new Date()) {
-  const parts = nyParts(date);
-  const weekday = parts.weekday;
-  const minutes = Number(parts.hour) * 60 + Number(parts.minute);
-  const weekdayDay = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri'].includes(weekday);
-  const overnightOpen = (weekday === 'Sun' && minutes >= 20 * 60)
-    || (['Mon', 'Tue', 'Wed', 'Thu'].includes(weekday) && (minutes < 4 * 60 || minutes >= 20 * 60))
-    || (weekday === 'Fri' && minutes < 4 * 60);
-
-  if (overnightOpen) return { key: 'OVERNIGHT', webullSession: 'NIGHT', label: 'OVERNIGHT', open: true };
-  if (!weekdayDay) return { key: 'CLOSED', webullSession: null, label: 'CLOSED', open: false };
-  if (minutes >= 4 * 60 && minutes < 9 * 60 + 30) return { key: 'PREMARKET', webullSession: 'ALL', label: 'PRE-MARKET', open: true };
-  if (minutes >= 9 * 60 + 30 && minutes < 16 * 60) return { key: 'CORE', webullSession: 'CORE', label: 'REGULAR', open: true };
-  if (minutes >= 16 * 60 && minutes < 20 * 60) return { key: 'AFTER_HOURS', webullSession: 'ALL', label: 'AFTER-HOURS', open: true };
-  return { key: 'CLOSED', webullSession: null, label: 'CLOSED', open: false };
-}
-
-function sessionAllowed(policy, session) {
-  return session.open === true && policy.allowedSessions.includes(session.key);
-}
-
 function scannerEnvironment(env, policy, session) {
-  if (!sessionAllowed(policy, session)) {
+  if (!policy || !sessionAllowed(policy, session)) {
     return {
       ...env,
       AUTO_SCANNER_ENABLED: 'false',
       WEBULL_AUTOMATION_ARMED: 'false',
       WEBULL_LIVE_AUTOMATION_ARMED: 'false',
-      MOE_ACTIVE_TRADING_SESSION: session.key,
+      MOE_ACTIVE_TRADING_SESSION: session?.key || 'UNKNOWN',
       MOE_TRADING_SESSION_ALLOWED: 'false',
+      MOE_SESSION_POLICY_HEALTH: policy ? 'BLOCKED_BY_POLICY' : 'READ_FAILED',
     };
   }
 
@@ -104,6 +80,7 @@ function scannerEnvironment(env, policy, session) {
     MOE_ACTIVE_TRADING_SESSION: session.key,
     MOE_TRADING_SESSION_ALLOWED: 'true',
     MOE_ALLOWED_TRADING_SESSIONS: policy.allowedSessions.join(','),
+    MOE_SESSION_POLICY_HEALTH: 'HEALTHY',
   };
 }
 
@@ -129,7 +106,7 @@ async function enhanceDashboard(response) {
   #sessionPolicyPanel{margin-top:12px;padding:14px;border:1px solid rgba(74,116,153,.5);border-radius:14px;background:linear-gradient(145deg,rgba(8,27,45,.94),rgba(4,14,26,.98));color:#dbe8f5}
   .session-policy-head{display:flex;justify-content:space-between;gap:12px;align-items:flex-start;flex-wrap:wrap}.session-policy-head strong{display:block;font-size:14px}.session-policy-head span{display:block;margin-top:5px;color:#8fa4bf;font-size:10px;line-height:1.55}.session-policy-state{padding:7px 10px;border:1px solid #38678e;border-radius:999px;color:#9bd2ff;font-size:9px;font-weight:900;white-space:nowrap}
   .session-policy-controls{display:grid;grid-template-columns:minmax(220px,1fr) auto;gap:9px;margin-top:12px}.session-policy-select,.session-policy-save{min-height:42px;border:1px solid #365a7a;border-radius:10px;background:#0c2136;color:#edf4ff;padding:9px 11px;font-weight:800}.session-policy-save{cursor:pointer;background:#155b43;border-color:#2c9a70}.session-policy-save:disabled{opacity:.55;cursor:wait}
-  .session-policy-note{margin-top:10px;padding:9px 10px;border:1px solid rgba(54,89,124,.4);border-radius:9px;background:rgba(6,18,32,.62);color:#91a8bf;font-size:9px;line-height:1.6}.session-policy-note.live{border-color:#8a3b46;color:#ffadb7}.session-policy-note.allowed{border-color:#28684c;color:#83e9b2}
+  .session-policy-note{margin-top:10px;padding:9px 10px;border:1px solid rgba(54,89,124,.4);border-radius:9px;background:rgba(6,18,32,.62);color:#91a8bf;font-size:9px;line-height:1.6}.session-policy-note.allowed{border-color:#28684c;color:#83e9b2}
   @media(max-width:620px){.session-policy-controls{grid-template-columns:1fr}}
   </style>`;
 
@@ -144,7 +121,6 @@ async function enhanceDashboard(response) {
       EXTENDED_SESSIONS:'ما قبل السوق + ما بعد السوق',
       ALL_SESSIONS:'كل الجلسات',
     };
-    let latest=null;
     const esc=value=>String(value??'').replace(/[&<>"']/g,char=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char]));
     function notify(message,type){
       const toast=document.getElementById('controlToast');
@@ -156,18 +132,18 @@ async function enhanceDashboard(response) {
       if(document.getElementById('sessionPolicyPanel'))return document.getElementById('sessionPolicyPanel');
       const actions=document.querySelector('.live-actions');if(!actions)return null;
       const panel=document.createElement('section');panel.id='sessionPolicyPanel';
-      panel.innerHTML='<div class="session-policy-head"><div><strong>الجلسات المسموح بالتداول فيها</strong><span>اختيار واحد يطبّق على Sandbox وLive ويحفظ تلقائيًا في النظام.</span></div><span class="session-policy-state" id="sessionPolicyState">تحميل...</span></div><div class="session-policy-controls"><select class="session-policy-select" id="sessionPolicySelect">'+Object.entries(labels).map(([value,label])=>'<option value="'+value+'">'+esc(label)+'</option>').join('')+'</select><button class="session-policy-save" id="sessionPolicySave" type="button">حفظ الجلسات</button></div><div class="session-policy-note" id="sessionPolicyNote">جارٍ قراءة الجلسة الحالية...</div>';
+      panel.innerHTML='<div class="session-policy-head"><div><strong>الجلسات المسموح بالتداول فيها</strong><span>سيصلك تنبيه مستقل عند افتتاح وانتهاء كل جلسة، سواء كانت مفعلة للتداول أم لا.</span></div><span class="session-policy-state" id="sessionPolicyState">تحميل...</span></div><div class="session-policy-controls"><select class="session-policy-select" id="sessionPolicySelect">'+Object.entries(labels).map(([value,label])=>'<option value="'+value+'">'+esc(label)+'</option>').join('')+'</select><button class="session-policy-save" id="sessionPolicySave" type="button">حفظ الجلسات</button></div><div class="session-policy-note" id="sessionPolicyNote">جارٍ قراءة الجلسة الحالية...</div>';
       const simple=document.getElementById('simpleTradingControls');
       if(simple&&simple.parentNode===actions)simple.insertAdjacentElement('afterend',panel);else actions.appendChild(panel);
       document.getElementById('sessionPolicySave').onclick=save;
       return panel;
     }
     function render(payload){
-      latest=payload;mount();
+      mount();
       const select=document.getElementById('sessionPolicySelect');if(select)select.value=payload.policy.preset;
       const session=payload.currentSession||{};const allowed=payload.currentSessionAllowed===true;
       const state=document.getElementById('sessionPolicyState');if(state)state.textContent=(labels[payload.policy.preset]||payload.policy.preset)+' · '+(allowed?'مسموح الآن':'غير مسموح الآن');
-      const note=document.getElementById('sessionPolicyNote');if(note){note.className='session-policy-note '+(allowed?'allowed':'');note.textContent='الجلسة الحالية: '+(session.label||'CLOSED')+' · '+(allowed?'الماسح مسموح له بالعمل عند تحقق شروط الصفقة.':'لن تُرسل صفقات حتى تبدأ جلسة مسموحة.');}
+      const note=document.getElementById('sessionPolicyNote');if(note){note.className='session-policy-note '+(allowed?'allowed':'');note.textContent='الجلسة الحالية: '+(session.labelAr||session.label||'CLOSED')+' · '+(allowed?'الماسح مسموح له بالعمل عند تحقق شروط الصفقة.':'لن تُرسل صفقات حتى تبدأ جلسة مسموحة.')+' · تنبيهات الافتتاح والانتهاء مفعلة.';}
     }
     async function load(){
       mount();
@@ -216,6 +192,14 @@ export class AlertCoordinator extends BaseAlertCoordinator {
     await this.ctx.storage.put(POLICY_KEY, saved);
     return policySnapshot(saved, this.env);
   }
+
+  async processTradingSessionAlerts(payload = {}) {
+    return processSessionAlerts(this.ctx.storage, payload, this.env);
+  }
+
+  async getTradingSessionAlertStatus() {
+    return getSessionAlertStatus(this.ctx.storage);
+  }
 }
 
 function coordinator(env) {
@@ -230,6 +214,25 @@ async function policyStatus(env, date = new Date()) {
     currentSession,
     currentSessionAllowed: sessionAllowed(policy, currentSession),
   };
+}
+
+async function authoritativeRequest(request, session, date = new Date()) {
+  const contentType = request.headers.get('content-type') || '';
+  if (!contentType.toLowerCase().includes('application/json')) return request;
+  const payload = await request.clone().json();
+  const validation = validateDeclaredSignalSession(payload, session);
+  if (!validation.matches) {
+    const error = new Error('Signal-declared session does not match the authoritative server session.');
+    error.validation = validation;
+    throw error;
+  }
+  const headers = new Headers(request.headers);
+  headers.set('content-type', 'application/json');
+  return new Request(request.url, {
+    method: request.method,
+    headers,
+    body: JSON.stringify(authoritativeSignalPayload(payload, session, date)),
+  });
 }
 
 export default {
@@ -254,6 +257,12 @@ export default {
       return secureJson({ ok: false, error: 'Method not allowed' }, 405);
     }
 
+    if (url.pathname === SESSION_ALERTS_PATH && request.method === 'GET') {
+      try { return secureJson({ ok: true, alerts: await coordinator(env).getTradingSessionAlertStatus() }); }
+      catch (error) { return secureJson({ ok: false, error: error instanceof Error ? error.message : 'Session-alert status failed' }, 500); }
+    }
+
+    let effectiveRequest = request;
     if (url.pathname === SIGNAL_PATH && request.method === 'POST') {
       try {
         const status = await policyStatus(env);
@@ -268,20 +277,44 @@ export default {
             currentSession: status.currentSession,
           }, 423);
         }
+        effectiveRequest = await authoritativeRequest(request, status.currentSession);
       } catch (error) {
-        return secureJson({ ok: false, accepted: false, submitted: false, blocked: true, error: 'Trading-session safety check failed.' }, 423);
+        return secureJson({
+          ok: false,
+          accepted: false,
+          submitted: false,
+          blocked: true,
+          error: error instanceof Error ? error.message : 'Trading-session safety check failed.',
+          sessionValidation: error?.validation || null,
+        }, 423);
       }
     }
 
-    const response = await worker.fetch(request, env, ctx);
+    const response = await worker.fetch(effectiveRequest, env, ctx);
     return DASHBOARD_PATHS.has(url.pathname) ? enhanceDashboard(response) : response;
   },
 
   async scheduled(controller, env, ctx) {
-    let policy;
-    try { policy = await coordinator(env).getTradingSessionPolicy(); }
-    catch { policy = policySnapshot(null, env); }
-    const session = currentTradingSession(new Date(Number(controller?.scheduledTime) || Date.now()));
+    const observedAt = new Date(Number(controller?.scheduledTime) || Date.now());
+    const session = currentTradingSession(observedAt);
+    let policy = null;
+    try {
+      policy = await coordinator(env).getTradingSessionPolicy();
+    } catch (error) {
+      console.error('Trading-session policy read failed; scanner and order automation are fail-closed.', error);
+    }
+
+    if (policy) {
+      const stub = coordinator(env);
+      ctx.waitUntil(stub.processTradingSessionAlerts({
+        observedAt: observedAt.toISOString(),
+        currentSession: session,
+        policy,
+      }).catch((error) => {
+        console.error('Trading-session alert delivery failed', error);
+      }));
+    }
+
     return worker.scheduled(controller, scannerEnvironment(env, policy, session), ctx);
   },
 };
