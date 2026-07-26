@@ -1,4 +1,5 @@
 const TRADE_KEY = 'trade-history:v1';
+const LIFECYCLE_REPORT_KEY = 'order-lifecycle-report:v1';
 const MAX_TRADES = 2000;
 
 function finite(value, fallback = 0) {
@@ -31,6 +32,11 @@ function safeObject(value, fallback = null) {
   }
 }
 
+function safeArray(value, fallback = []) {
+  if (!Array.isArray(value)) return fallback;
+  return value.map(String).slice(0, 50);
+}
+
 function tradeId(value = {}) {
   if (value.id) return text(value.id);
   const seed = `${value.signalId || ''}:${value.symbol || ''}:${value.entryTime || Date.now()}`;
@@ -60,6 +66,8 @@ export function normalizeTrade(input = {}, previous = null) {
   const currentPrice = nullableFinite(input.currentPrice ?? input.lastPrice, previous?.currentPrice ?? null);
   const unrealizedPnl = currentPrice == null ? previous?.unrealizedPnl ?? null : Number(((currentPrice - entryPrice) * quantity * multiplier).toFixed(2));
   const replay = safeObject(input.decisionReplay ?? input.decision ?? previous?.decisionReplay, previous?.decisionReplay ?? null);
+  const brokerOrderIds = safeObject(input.brokerOrderIds ?? input.clientOrderIds ?? previous?.brokerOrderIds, previous?.brokerOrderIds ?? null);
+  const lifecycleAnomalies = safeArray(input.lifecycleAnomalies, previous?.lifecycleAnomalies || []);
 
   return {
     id: tradeId({ ...previous, ...input, entryTime }),
@@ -72,17 +80,29 @@ export function normalizeTrade(input = {}, previous = null) {
     entryPrice,
     stopLoss: finite(input.stopLoss ?? previous?.stopLoss),
     takeProfit: finite(input.takeProfit ?? previous?.takeProfit),
+    trailingStop: nullableFinite(input.trailingStop ?? input.trailingStopPrice, previous?.trailingStop ?? null),
     quantity,
+    filledQuantity: Math.max(0, finite(input.filledQuantity ?? previous?.filledQuantity)),
+    averageFillPrice: nullableFinite(input.averageFillPrice, previous?.averageFillPrice ?? null),
     entryTime,
     exitTime,
     exitPrice,
     exitReason: text(input.exitReason ?? previous?.exitReason),
     currentPrice,
     unrealizedPnl,
+    brokerOrderIds,
     brokerPositionSeen: input.brokerPositionSeen ?? previous?.brokerPositionSeen ?? false,
     brokerSyncStatus: text(input.brokerSyncStatus ?? previous?.brokerSyncStatus, 'PENDING'),
     lastBrokerSyncAt: input.lastBrokerSyncAt ? isoDate(input.lastBrokerSyncAt) : previous?.lastBrokerSyncAt ?? null,
     missingPositionChecks: Math.max(0, finite(input.missingPositionChecks ?? previous?.missingPositionChecks)),
+    lifecycleStatus: text(input.lifecycleStatus ?? previous?.lifecycleStatus, 'SUBMITTED').toUpperCase(),
+    protectionStatus: text(input.protectionStatus ?? previous?.protectionStatus, 'WAITING_FOR_ENTRY').toUpperCase(),
+    lifecycleCheckedAt: input.lifecycleCheckedAt ? isoDate(input.lifecycleCheckedAt) : previous?.lifecycleCheckedAt ?? null,
+    lifecycleAnomalies,
+    attentionRequired: input.attentionRequired ?? previous?.attentionRequired ?? lifecycleAnomalies.length > 0,
+    brokerEntryStatus: text(input.brokerEntryStatus ?? previous?.brokerEntryStatus, 'UNKNOWN').toUpperCase(),
+    brokerTakeProfitStatus: text(input.brokerTakeProfitStatus ?? previous?.brokerTakeProfitStatus, 'UNKNOWN').toUpperCase(),
+    brokerStopLossStatus: text(input.brokerStopLossStatus ?? previous?.brokerStopLossStatus, 'UNKNOWN').toUpperCase(),
     risk,
     reward,
     riskReward: risk > 0 ? Number((reward / risk).toFixed(2)) : 0,
@@ -161,6 +181,13 @@ export async function getTradeDecision(storage, id) {
     engineVersion: trade.decisionEngineVersion,
     reasons: trade.decisionReasons,
     replay: trade.decisionReplay,
+    lifecycle: {
+      status: trade.lifecycleStatus,
+      protectionStatus: trade.protectionStatus,
+      checkedAt: trade.lifecycleCheckedAt,
+      anomalies: trade.lifecycleAnomalies,
+      attentionRequired: trade.attentionRequired,
+    },
     outcome: {
       tradeStatus: trade.status,
       exitReason: trade.exitReason,
@@ -168,6 +195,76 @@ export async function getTradeDecision(storage, id) {
       realizedPnlPercent: trade.realizedPnlPercent,
       holdingMinutes: trade.holdingMinutes,
     },
+  };
+}
+
+export async function applyLifecycleReport(storage, report = {}) {
+  const trades = await readTrades(storage);
+  const lifecycles = Array.isArray(report.lifecycles) ? report.lifecycles : [];
+  const now = report.generatedAt || new Date().toISOString();
+  let updated = 0;
+  let closed = 0;
+  let attentionRequired = 0;
+
+  for (const lifecycle of lifecycles) {
+    const index = trades.findIndex((trade) => trade.id === lifecycle.tradeId || (lifecycle.signalId && trade.signalId === lifecycle.signalId));
+    if (index < 0) continue;
+    const previous = trades[index];
+    const shouldClose = previous.status === 'OPEN' && Boolean(lifecycle.exitReason);
+    const exitPrice = nullableFinite(lifecycle.currentPrice ?? lifecycle.averageFillPrice, previous.currentPrice ?? previous.entryPrice);
+    const patch = {
+      id: previous.id,
+      brokerOrderIds: lifecycle.orderIds,
+      currentPrice: lifecycle.currentPrice ?? previous.currentPrice,
+      filledQuantity: lifecycle.filledQuantity,
+      averageFillPrice: lifecycle.averageFillPrice,
+      brokerPositionSeen: Boolean(lifecycle.position) || previous.brokerPositionSeen,
+      brokerSyncStatus: lifecycle.lifecycleStatus,
+      lastBrokerSyncAt: lifecycle.checkedAt || now,
+      lifecycleStatus: lifecycle.lifecycleStatus,
+      protectionStatus: lifecycle.protectionStatus,
+      lifecycleCheckedAt: lifecycle.checkedAt || now,
+      lifecycleAnomalies: lifecycle.anomalies || [],
+      attentionRequired: lifecycle.attentionRequired === true,
+      brokerEntryStatus: lifecycle.orders?.entry?.status || 'UNKNOWN',
+      brokerTakeProfitStatus: lifecycle.orders?.takeProfit?.status || 'UNKNOWN',
+      brokerStopLossStatus: lifecycle.orders?.stopLoss?.status || 'UNKNOWN',
+      ...(shouldClose && exitPrice > 0 ? {
+        status: 'CLOSED',
+        exitReason: lifecycle.exitReason,
+        exitPrice,
+        exitTime: lifecycle.checkedAt || now,
+      } : {}),
+    };
+    trades[index] = normalizeTrade(patch, previous);
+    updated += 1;
+    if (shouldClose && exitPrice > 0) closed += 1;
+    if (lifecycle.attentionRequired) attentionRequired += 1;
+  }
+
+  if (updated > 0) await writeTrades(storage, trades);
+  const persistedReport = {
+    ...safeObject(report, {}),
+    persistedAt: new Date().toISOString(),
+    persistence: { updated, closed, attentionRequired },
+  };
+  await storage.put(LIFECYCLE_REPORT_KEY, persistedReport);
+  return persistedReport;
+}
+
+export async function getLatestLifecycleReport(storage) {
+  const report = await storage.get(LIFECYCLE_REPORT_KEY);
+  return report && typeof report === 'object' ? report : {
+    version: 1,
+    mode: 'SANDBOX_READ_ONLY',
+    generatedAt: null,
+    readOnly: true,
+    noOrdersSubmitted: true,
+    noOrdersModified: true,
+    metrics: { tradesChecked: 0, attentionRequired: 0, protectedPositions: 0, unprotectedPositions: 0 },
+    lifecycles: [],
+    errors: [],
+    persistence: { updated: 0, closed: 0, attentionRequired: 0 },
   };
 }
 
@@ -255,6 +352,8 @@ export async function tradeAnalytics(storage) {
     closedTrades: closed.length,
     winningTrades: wins.length,
     losingTrades: losses.length,
+    lifecycleAttentionRequired: trades.filter((trade) => trade.status === 'OPEN' && trade.attentionRequired).length,
+    protectedOpenTrades: trades.filter((trade) => trade.status === 'OPEN' && trade.protectionStatus === 'PROTECTED').length,
     winRate: closed.length ? Number(((wins.length / closed.length) * 100).toFixed(2)) : 0,
     averageWin: wins.length ? Number((grossProfit / wins.length).toFixed(2)) : 0,
     averageLoss: losses.length ? Number((grossLoss / losses.length).toFixed(2)) : 0,
