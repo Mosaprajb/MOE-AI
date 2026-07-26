@@ -4,16 +4,14 @@ import { getTradingMode, TRADING_MODES, updateTradingMode } from './trading-mode
 import { getLiveTradingReadiness, handleWebullLiveOrder } from './webull-live.js';
 import { handleLiveCertification } from './live-certification.js';
 import { AUTO_SCANNER_SYMBOLS, activeTradingWindow, scannerProfiles } from './auto-scanner.js';
-import { applyRuntimeLiveControl, getLiveControlState, updateLiveControlState } from './live-control-service.js';
+import { applyRuntimeLiveControl, getLiveControlState, updateLiveControlState, verifyLiveControlPin } from './live-control-service.js';
+import { marketSessionStatus } from './market-session.js';
+import { runReadOnlyProductionAudit } from './live-production-audit.js';
 
 const PATHS = {
-  mode: '/api/trading/mode',
-  readiness: '/api/trading/live/readiness',
-  certification: '/api/trading/live/certify',
-  control: '/api/trading/live/control',
-  scanner: '/api/scanner/status',
-  trades: '/api/trades/all',
-  signal: '/api/tradingview/signal',
+  mode: '/api/trading/mode', readiness: '/api/trading/live/readiness', certification: '/api/trading/live/certify',
+  control: '/api/trading/live/control', audit: '/api/trading/live/audit', session: '/api/market/session',
+  scanner: '/api/scanner/status', trades: '/api/trades/all', signal: '/api/tradingview/signal',
 };
 const DASHBOARD_PATHS = new Set(['/', '/moe-ai', '/moe-ai/', '/dashboard', '/dashboard/']);
 const TRADE_PATHS = new Set(['/trades', '/trades/']);
@@ -23,25 +21,14 @@ const BOT_HISTORY_KEY = 'bot-status-history:v2';
 export class AlertCoordinator extends BaseAlertCoordinator {
   async getLiveControlState() { return getLiveControlState(this.ctx.storage, this.env); }
   async updateLiveControlState(patch = {}) { return updateLiveControlState(this.ctx.storage, patch, this.env); }
-  async getTradingMode() {
-    const control = await this.getLiveControlState();
-    return getTradingMode(this.ctx.storage, applyRuntimeLiveControl(this.env, control));
-  }
-  async updateTradingMode(patch = {}) {
-    const control = await this.getLiveControlState();
-    return updateTradingMode(this.ctx.storage, patch, applyRuntimeLiveControl(this.env, control));
-  }
-  async listAllTrades() {
-    const trades = await this.ctx.storage.get('trade-history:v1');
-    return Array.isArray(trades) ? trades.slice(0, 2000) : [];
-  }
+  async verifyLiveControlPin(pin) { return verifyLiveControlPin(this.ctx.storage, pin, this.env); }
+  async getTradingMode() { const control = await this.getLiveControlState(); return getTradingMode(this.ctx.storage, applyRuntimeLiveControl(this.env, control)); }
+  async updateTradingMode(patch = {}) { const control = await this.getLiveControlState(); return updateTradingMode(this.ctx.storage, patch, applyRuntimeLiveControl(this.env, control)); }
+  async listAllTrades() { const trades = await this.ctx.storage.get('trade-history:v1'); return Array.isArray(trades) ? trades.slice(0, 2000) : []; }
   async recordBotStatus(record = {}) {
     const normalized = { ...record, recordedAt: new Date().toISOString() };
     const history = await this.ctx.storage.get(BOT_HISTORY_KEY);
-    await this.ctx.storage.put({
-      [BOT_STATUS_KEY]: normalized,
-      [BOT_HISTORY_KEY]: [normalized, ...(Array.isArray(history) ? history : [])].slice(0, 100),
-    });
+    await this.ctx.storage.put({ [BOT_STATUS_KEY]: normalized, [BOT_HISTORY_KEY]: [normalized, ...(Array.isArray(history) ? history : [])].slice(0, 100) });
     return normalized;
   }
   async scannerStatus() {
@@ -63,33 +50,19 @@ export class AlertCoordinator extends BaseAlertCoordinator {
     const sandbox = this.env.WEBULL_ENVIRONMENT === 'sandbox' && this.env.WEBULL_LIVE_TRADING !== 'true';
     return {
       state: !enabled ? 'DISABLED' : !sandbox ? 'SAFETY_BLOCKED' : heartbeatAgeSeconds != null && heartbeatAgeSeconds <= 180 ? 'ONLINE' : 'WAITING_FOR_HEARTBEAT',
-      enabled,
-      configured,
-      automationArmed,
-      sandboxSafetyLock: sandbox,
-      liveTrading: this.env.WEBULL_LIVE_TRADING === 'true',
-      environment: this.env.WEBULL_ENVIRONMENT || 'sandbox',
-      universeSize: AUTO_SCANNER_SYMBOLS.length,
-      symbols: AUTO_SCANNER_SYMBOLS,
+      enabled, configured, automationArmed, sandboxSafetyLock: sandbox, liveTrading: this.env.WEBULL_LIVE_TRADING === 'true',
+      environment: this.env.WEBULL_ENVIRONMENT || 'sandbox', universeSize: AUTO_SCANNER_SYMBOLS.length, symbols: AUTO_SCANNER_SYMBOLS,
       configuredProfiles: scannerProfiles(this.env).map((item) => `${item.primaryMinutes >= 60 ? `${item.primaryMinutes / 60}h` : `${item.primaryMinutes}m`} -> ${item.higherMinutes >= 60 ? `${item.higherMinutes / 60}h` : `${item.higherMinutes}m`}`),
-      tradingHoursMode: String(this.env.AUTO_SCANNER_TRADING_HOURS || 'CORE').toUpperCase(),
-      activeSession: window,
-      lastHeartbeat,
-      heartbeatAgeSeconds,
-      lastRun: bot,
-      recentRuns: Array.isArray(history) ? history.slice(0, 20) : [],
-      activeSubscriptions: active.length,
-      notificationSymbolCount: notificationSymbols.length,
-      notificationSymbols,
+      tradingHoursMode: String(this.env.AUTO_SCANNER_TRADING_HOURS || 'CORE').toUpperCase(), activeSession: window,
+      lastHeartbeat, heartbeatAgeSeconds, lastRun: bot, recentRuns: Array.isArray(history) ? history.slice(0, 20) : [],
+      activeSubscriptions: active.length, notificationSymbolCount: notificationSymbols.length, notificationSymbols,
       notificationTimeframes: notificationTimeframes.map((value) => value >= 60 ? `${value / 60}h` : `${value}m`),
       lastNotificationScanAt: checks.length ? new Date(Math.max(...checks)).toISOString() : null,
       notificationActivityCount: activity.length,
       recentNotificationActivity: activity.sort((a, b) => Number(b?.at || 0) - Number(a?.at || 0)).slice(0, 25),
       limits: {
-        maximumOpenPositions: Number(this.env.MOE_MAX_OPEN_POSITIONS || 4),
-        maximumDailyTrades: Number(this.env.MOE_MAX_DAILY_TRADES || 4),
-        maximumSubmissionsPerRun: Number(this.env.AUTO_SCANNER_MAX_SUBMISSIONS_PER_RUN || 1),
-        maximumQuantityPerOrder: Number(this.env.WEBULL_MAX_QUANTITY || 1),
+        maximumOpenPositions: Number(this.env.MOE_MAX_OPEN_POSITIONS || 4), maximumDailyTrades: Number(this.env.MOE_MAX_DAILY_TRADES || 4),
+        maximumSubmissionsPerRun: Number(this.env.AUTO_SCANNER_MAX_SUBMISSIONS_PER_RUN || 1), maximumQuantityPerOrder: Number(this.env.WEBULL_MAX_QUANTITY || 1),
         maximumNotionalPerOrder: Number(this.env.WEBULL_MAX_NOTIONAL || 1000),
       },
     };
@@ -98,58 +71,35 @@ export class AlertCoordinator extends BaseAlertCoordinator {
 
 function coordinator(env) { return env.ALERT_COORDINATOR.getByName('global'); }
 function allowedOrigin(request, env) {
-  const origin = request.headers.get('origin');
-  if (!origin) return null;
+  const origin = request.headers.get('origin'); if (!origin) return null;
   const requestOrigin = new URL(request.url).origin;
   const appOrigin = String(env.APP_ORIGIN || '').replace(/\/$/, '');
-  let appUrlOrigin = '';
-  try { appUrlOrigin = env.APP_URL ? new URL(env.APP_URL).origin : ''; } catch { appUrlOrigin = ''; }
+  let appUrlOrigin = ''; try { appUrlOrigin = env.APP_URL ? new URL(env.APP_URL).origin : ''; } catch { appUrlOrigin = ''; }
   if (origin === requestOrigin || origin === appOrigin || origin === appUrlOrigin || origin === 'http://localhost:3000') return origin;
   return false;
 }
-function cors(origin) {
-  return origin ? {
-    'access-control-allow-origin': origin,
-    'access-control-allow-methods': 'GET, PUT, POST, OPTIONS',
-    'access-control-allow-headers': 'content-type,x-moe-webhook-secret',
-    vary: 'Origin',
-  } : {};
-}
-function secureJson(data, status = 200, headers = {}) {
-  return Response.json(data, { status, headers: { 'cache-control': 'no-store', 'x-content-type-options': 'nosniff', ...headers } });
-}
-function authorized(request, env) {
-  return Boolean(env.MOE_WEBHOOK_SECRET) && (request.headers.get('x-moe-webhook-secret') || '') === env.MOE_WEBHOOK_SECRET;
-}
-async function runtime(env) {
-  const control = await coordinator(env).getLiveControlState();
-  return { control, env: applyRuntimeLiveControl(env, control) };
-}
+function cors(origin) { return origin ? { 'access-control-allow-origin': origin, 'access-control-allow-methods': 'GET, PUT, POST, OPTIONS', 'access-control-allow-headers': 'content-type,x-moe-webhook-secret', vary: 'Origin' } : {}; }
+function secureJson(data, status = 200, headers = {}) { return Response.json(data, { status, headers: { 'cache-control': 'no-store', 'x-content-type-options': 'nosniff', ...headers } }); }
+function authorized(request, env) { return Boolean(env.MOE_WEBHOOK_SECRET) && (request.headers.get('x-moe-webhook-secret') || '') === env.MOE_WEBHOOK_SECRET; }
+async function runtime(env) { const control = await coordinator(env).getLiveControlState(); return { control, env: applyRuntimeLiveControl(env, control) }; }
 
 async function handleMode(request, env) {
-  const origin = allowedOrigin(request, env);
-  const headers = cors(origin || null);
+  const origin = allowedOrigin(request, env); const headers = cors(origin || null);
   if (request.method === 'OPTIONS') return new Response(null, { status: 204, headers });
   if (origin === false) return secureJson({ ok: false, error: 'Origin not allowed' }, 403, headers);
   if (request.method === 'GET') return secureJson({ ok: true, tradingMode: await coordinator(env).getTradingMode(), storage: 'DURABLE_OBJECT' }, 200, headers);
   if (request.method !== 'PUT') return secureJson({ ok: false, error: 'Method not allowed' }, 405, headers);
   if (!authorized(request, env)) return secureJson({ ok: false, error: 'Unauthorized' }, 401, headers);
-  let payload;
-  try { payload = await request.json(); } catch { return secureJson({ ok: false, error: 'Invalid JSON payload' }, 400, headers); }
+  let payload; try { payload = await request.json(); } catch { return secureJson({ ok: false, error: 'Invalid JSON payload' }, 400, headers); }
   try {
     const control = await coordinator(env).getLiveControlState();
-    if (String(payload.mode || '').toUpperCase() === TRADING_MODES.LIVE && !control.effectiveLiveUnlocked) {
-      throw new Error('Live controls must be unlocked by PIN and the kill switch must be cleared first.');
-    }
+    if (String(payload.mode || '').toUpperCase() === TRADING_MODES.LIVE && !control.effectiveLiveUnlocked) throw new Error('Live controls must be unlocked by PIN and the kill switch must be cleared first.');
     return secureJson({ ok: true, tradingMode: await coordinator(env).updateTradingMode(payload), storage: 'DURABLE_OBJECT' }, 200, headers);
-  } catch (error) {
-    return secureJson({ ok: false, blocked: true, error: error instanceof Error ? error.message : 'Trading mode update failed' }, 423, headers);
-  }
+  } catch (error) { return secureJson({ ok: false, blocked: true, error: error instanceof Error ? error.message : 'Trading mode update failed' }, 423, headers); }
 }
 
 async function handleReadiness(request, env) {
-  const origin = allowedOrigin(request, env);
-  const headers = cors(origin || null);
+  const origin = allowedOrigin(request, env); const headers = cors(origin || null);
   if (request.method === 'OPTIONS') return new Response(null, { status: 204, headers });
   if (origin === false) return secureJson({ ok: false, error: 'Origin not allowed' }, 403, headers);
   if (request.method !== 'GET') return secureJson({ ok: false, error: 'Method not allowed' }, 405, headers);
@@ -158,24 +108,30 @@ async function handleReadiness(request, env) {
 }
 
 async function handleControl(request, env) {
-  const origin = allowedOrigin(request, env);
-  const headers = cors(origin || null);
+  const origin = allowedOrigin(request, env); const headers = cors(origin || null);
   if (request.method === 'OPTIONS') return new Response(null, { status: 204, headers });
   if (origin === false) return secureJson({ ok: false, error: 'Origin not allowed' }, 403, headers);
   if (request.method === 'GET') return secureJson({ ok: true, control: await coordinator(env).getLiveControlState(), storage: 'DURABLE_OBJECT' }, 200, headers);
   if (request.method !== 'PUT') return secureJson({ ok: false, error: 'Method not allowed' }, 405, headers);
-  let payload;
-  try { payload = await request.json(); } catch { return secureJson({ ok: false, error: 'Invalid JSON payload' }, 400, headers); }
+  let payload; try { payload = await request.json(); } catch { return secureJson({ ok: false, error: 'Invalid JSON payload' }, 400, headers); }
+  try { return secureJson({ ok: true, control: await coordinator(env).updateLiveControlState(payload), storage: 'DURABLE_OBJECT' }, 200, headers); }
+  catch (error) { return secureJson({ ok: false, blocked: true, error: error instanceof Error ? error.message : 'Live control update failed' }, 423, headers); }
+}
+
+async function handleAudit(request, env) {
+  const origin = allowedOrigin(request, env); const headers = cors(origin || null);
+  if (request.method === 'OPTIONS') return new Response(null, { status: 204, headers });
+  if (origin === false) return secureJson({ ok: false, error: 'Origin not allowed' }, 403, headers);
+  if (request.method !== 'POST') return secureJson({ ok: false, error: 'Method not allowed' }, 405, headers);
+  let payload; try { payload = await request.json(); } catch { return secureJson({ ok: false, error: 'Invalid JSON payload' }, 400, headers); }
   try {
-    return secureJson({ ok: true, control: await coordinator(env).updateLiveControlState(payload), storage: 'DURABLE_OBJECT' }, 200, headers);
-  } catch (error) {
-    return secureJson({ ok: false, blocked: true, error: error instanceof Error ? error.message : 'Live control update failed' }, 423, headers);
-  }
+    await coordinator(env).verifyLiveControlPin(payload.pin);
+    return secureJson({ ok: true, audit: await runReadOnlyProductionAudit(env) }, 200, headers);
+  } catch (error) { return secureJson({ ok: false, blocked: true, error: error instanceof Error ? error.message : 'Production audit failed' }, 423, headers); }
 }
 
 async function handleScanner(request, env) {
-  const origin = allowedOrigin(request, env);
-  const headers = cors(origin || null);
+  const origin = allowedOrigin(request, env); const headers = cors(origin || null);
   if (request.method === 'OPTIONS') return new Response(null, { status: 204, headers });
   if (origin === false) return secureJson({ ok: false, error: 'Origin not allowed' }, 403, headers);
   if (request.method !== 'GET') return secureJson({ ok: false, error: 'Method not allowed' }, 405, headers);
@@ -183,8 +139,7 @@ async function handleScanner(request, env) {
 }
 
 async function handleTrades(request, env) {
-  const origin = allowedOrigin(request, env);
-  const headers = cors(origin || null);
+  const origin = allowedOrigin(request, env); const headers = cors(origin || null);
   if (request.method === 'OPTIONS') return new Response(null, { status: 204, headers });
   if (origin === false) return secureJson({ ok: false, error: 'Origin not allowed' }, 403, headers);
   if (request.method !== 'GET') return secureJson({ ok: false, error: 'Method not allowed' }, 405, headers);
@@ -201,9 +156,7 @@ async function enforceMode(request, env) {
     return handleWebullLiveOrder(request, live.env);
   }
   try {
-    const payload = await request.clone().json();
-    const headers = new Headers(request.headers);
-    headers.set('content-type', 'application/json');
+    const payload = await request.clone().json(); const headers = new Headers(request.headers); headers.set('content-type', 'application/json');
     return new Request(request.url, { method: request.method, headers, body: JSON.stringify({ ...payload, submitSandbox: false, submitLive: false, tradingMode: TRADING_MODES.DRY_RUN }) });
   } catch { return request; }
 }
@@ -217,6 +170,8 @@ export default {
     if (path === PATHS.readiness) return handleReadiness(request, env);
     if (path === PATHS.certification) return handleLiveCertification(request, env);
     if (path === PATHS.control) return handleControl(request, env);
+    if (path === PATHS.audit) return handleAudit(request, env);
+    if (path === PATHS.session) return secureJson({ ok: true, market: marketSessionStatus(new Date()) });
     if (path === PATHS.scanner) return handleScanner(request, env);
     if (path === PATHS.trades) return handleTrades(request, env);
     if (path === '/api/webull/bootstrap') return secureJson({ ok: false, blocked: true, error: 'Remote token bootstrap is disabled. Configure broker credentials only as Cloudflare secrets.' }, 423);
@@ -225,14 +180,9 @@ export default {
     return entryWorker.fetch(enforced, env, ctx);
   },
   async scheduled(controller, env, ctx) {
-    let mode;
-    let control;
-    try {
-      [mode, control] = await Promise.all([coordinator(env).getTradingMode(), coordinator(env).getLiveControlState()]);
-    } catch {
-      mode = { effectiveMode: TRADING_MODES.DRY_RUN };
-      control = { sandboxAutomationEnabled: false, effectiveLiveAutomationArmed: false };
-    }
+    let mode; let control;
+    try { [mode, control] = await Promise.all([coordinator(env).getTradingMode(), coordinator(env).getLiveControlState()]); }
+    catch { mode = { effectiveMode: TRADING_MODES.DRY_RUN }; control = { sandboxAutomationEnabled: false, effectiveLiveAutomationArmed: false }; }
     if (mode.effectiveMode === TRADING_MODES.SANDBOX && control.sandboxAutomationEnabled) return entryWorker.scheduled(controller, env, ctx);
     if (mode.effectiveMode === TRADING_MODES.LIVE && control.effectiveLiveAutomationArmed) return entryWorker.scheduled(controller, applyRuntimeLiveControl(env, control), ctx);
     return entryWorker.scheduled(controller, { ...env, AUTO_SCANNER_ENABLED: 'false', WEBULL_AUTOMATION_ARMED: 'false', WEBULL_LIVE_AUTOMATION_ARMED: 'false' }, ctx);
