@@ -62,5 +62,8 @@ jobs:
       - name: Test Smart Money zones breakers and confluence
         run: node --test --test-concurrency=1 worker/test/smart-money-zones-confluence.test.mjs
 
+      - name: Test Smart Money setup selection and risk evaluation
+        run: node --test --test-concurrency=1 worker/test/smart-money-selection-risk.test.mjs
+
       - name: Run complete Worker safety suite
         run: npm run test:worker
