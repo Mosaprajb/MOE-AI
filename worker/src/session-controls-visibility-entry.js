@@ -2,9 +2,29 @@ import worker, { AlertCoordinator } from './session-notification-entry.js';
 
 const DASHBOARD_PATHS = new Set(['/', '/moe-ai', '/moe-ai/', '/dashboard', '/dashboard/']);
 
+function allowSameOriginServiceWorker(policy = '') {
+  const directives = String(policy)
+    .split(';')
+    .map(value => value.trim())
+    .filter(Boolean);
+
+  const workerIndex = directives.findIndex(value => /^worker-src\b/i.test(value));
+  if (workerIndex >= 0) {
+    const tokens = directives[workerIndex].split(/\s+/);
+    if (!tokens.includes("'self'")) tokens.push("'self'");
+    directives[workerIndex] = tokens.join(' ');
+  } else {
+    directives.push("worker-src 'self'");
+  }
+
+  return directives.join('; ');
+}
+
 function secureHeaders(response) {
   const headers = new Headers(response.headers);
   headers.delete('content-length');
+  const policy = headers.get('content-security-policy');
+  if (policy) headers.set('content-security-policy', allowSameOriginServiceWorker(policy));
   return headers;
 }
 
