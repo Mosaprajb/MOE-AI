@@ -82,5 +82,8 @@ jobs:
       - name: Test trade-level order flow and historical replay
         run: node --test --test-concurrency=1 worker/test/order-flow-replay.test.mjs
 
+      - name: Test trading intelligence gauge contracts
+        run: node --test --test-concurrency=1 worker/test/trading-intelligence-gauge-adapter.test.mjs
+
       - name: Run complete Worker safety suite
         run: npm run test:worker
