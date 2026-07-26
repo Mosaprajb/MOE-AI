@@ -1,3 +1,4 @@
+import { evaluateCapitalPolicy } from './capital-policy.js';
 import { buildTradePlan } from './trade-engine.js';
 import { evaluatePortfolioRisk } from './portfolio-manager.js';
 import { evaluateBrainCandidate, MOE_AI_BRAIN_VERSION } from './moe-ai-brain.js';
@@ -87,6 +88,18 @@ function brainWindow(signal, context = {}) {
 
 function secureJson(payload, status = 200) {
   return Response.json(payload, { status, headers: { 'cache-control': 'no-store', 'x-content-type-options': 'nosniff' } });
+}
+
+function capitalContext(payload, context, quantity) {
+  return {
+    ...context,
+    quantity,
+    capitalMode: payload.capitalMode ?? context.capitalMode ?? 'AUTO',
+    marginable: payload.marginable ?? context.marginable,
+    isMarginable: payload.isMarginable ?? context.isMarginable,
+    maintenanceRequirementPercent: payload.maintenanceRequirementPercent ?? context.maintenanceRequirementPercent,
+    dataDelayMinutes: payload.dataDelayMinutes ?? context.dataDelayMinutes,
+  };
 }
 
 export function getLiveTradingReadiness(env = {}) {
@@ -179,17 +192,83 @@ export async function handleWebullLiveOrder(request, env = {}) {
       plan.evaluation.accepted = false;
       plan.evaluation.reasons.push(...decision.hardBlocks.filter((reason) => !plan.evaluation.reasons.includes(reason)));
     }
+
+    const policyContext = capitalContext(payload, context, quantity);
+    const capitalPolicy = evaluateCapitalPolicy({
+      signal: { ...signal, requestedQuantity: quantity },
+      plan: { ...plan, sizing: { ...plan.sizing, quantity } },
+      brain,
+      decision,
+      context: policyContext,
+      accountSnapshot,
+      mode: 'LIVE',
+    }, env);
+    if (!capitalPolicy.accepted) {
+      plan.evaluation.accepted = false;
+      for (const reason of capitalPolicy.reasons) {
+        const normalized = `Capital policy: ${reason}`;
+        if (!plan.evaluation.reasons.includes(normalized)) plan.evaluation.reasons.push(normalized);
+      }
+    }
+
     if (!plan.evaluation.accepted) {
-      return secureJson({ ok: false, accepted: false, submitted: false, blocked: true, order, plan, brain: { version: MOE_AI_BRAIN_VERSION, ...brain }, decision, portfolio, message: 'Live order was rejected by MOERAND safety rules.' }, 422);
+      return secureJson({
+        ok: false,
+        accepted: false,
+        submitted: false,
+        blocked: true,
+        order,
+        plan,
+        brain: { version: MOE_AI_BRAIN_VERSION, ...brain },
+        decision,
+        portfolio,
+        capitalPolicy,
+        message: !capitalPolicy.accepted
+          ? 'Live order was blocked by the shared cash and intraday-margin capital policy.'
+          : 'Live order was rejected by MOERAND safety rules.',
+      }, 422);
     }
 
     const preview = await previewWebullLiveOrder(accountId, order, liveEnv);
     if (!submissionRequested) {
-      return secureJson({ ok: true, accepted: true, mode: 'LIVE_PREVIEW', submitted: false, previewRequired: true, order, preview, plan, brain: { version: MOE_AI_BRAIN_VERSION, ...brain }, decision, portfolio, readiness, message: 'Live order passed all checks and broker preview but was not submitted.' });
+      return secureJson({
+        ok: true,
+        accepted: true,
+        mode: 'LIVE_PREVIEW',
+        submitted: false,
+        previewRequired: true,
+        order,
+        preview,
+        plan,
+        brain: { version: MOE_AI_BRAIN_VERSION, ...brain },
+        decision,
+        portfolio,
+        capitalPolicy,
+        readiness,
+        message: `Live order passed all checks and broker preview but was not submitted. Capital source: ${capitalPolicy.capitalSource}.`,
+      });
     }
 
     const submission = await placeWebullLiveOrder(accountId, order, liveEnv);
-    return secureJson({ ok: true, accepted: true, mode: 'LIVE_SUBMITTED', submitted: true, previewRequired: false, order, preview, submission, plan, brain: { version: MOE_AI_BRAIN_VERSION, ...brain }, decision, portfolio, readiness, decisionPipeline: ['SIGNAL_VALIDATION','MOE_AI_BRAIN','LIVE_ACCOUNT_SYNC','TRADE_ENGINE','POSITION_SIZING','PORTFOLIO_MANAGER','EXPLAINABLE_DECISION_ENGINE','BROKER_PREVIEW','LIVE_SUBMISSION'], message: 'Protected live order was submitted after all safety checks.', createdAt: new Date().toISOString() });
+    return secureJson({
+      ok: true,
+      accepted: true,
+      mode: 'LIVE_SUBMITTED',
+      submitted: true,
+      previewRequired: false,
+      order,
+      preview,
+      submission,
+      plan,
+      brain: { version: MOE_AI_BRAIN_VERSION, ...brain },
+      decision,
+      portfolio,
+      capitalPolicy,
+      readiness,
+      decisionPipeline: ['SIGNAL_VALIDATION','MOE_AI_BRAIN','LIVE_ACCOUNT_SYNC','TRADE_ENGINE','POSITION_SIZING','PORTFOLIO_MANAGER','EXPLAINABLE_DECISION_ENGINE','CAPITAL_POLICY_ENFORCED','BROKER_PREVIEW','LIVE_SUBMISSION'],
+      message: `Protected live order was submitted after all safety checks. Capital source: ${capitalPolicy.capitalSource}.`,
+      createdAt: new Date().toISOString(),
+    });
   } catch (error) {
     return secureJson({ ok: false, submitted: false, error: error instanceof Error ? error.message : 'Live order failed' }, 400);
   }
