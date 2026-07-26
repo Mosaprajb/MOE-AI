@@ -7,11 +7,13 @@ import { AUTO_SCANNER_SYMBOLS, activeTradingWindow, scannerProfiles } from './au
 import { applyRuntimeLiveControl, getLiveControlState, updateLiveControlState, verifyLiveControlPin } from './live-control-service.js';
 import { marketSessionStatus } from './market-session.js';
 import { runReadOnlyProductionAudit } from './live-production-audit.js';
+import { buildLifecycleReport, readSandboxLifecycleSnapshot } from './order-lifecycle.js';
+import { applyLifecycleReport, getLatestLifecycleReport, listTrades } from './trade-history.js';
 
 const PATHS = {
   mode: '/api/trading/mode', readiness: '/api/trading/live/readiness', certification: '/api/trading/live/certify',
   control: '/api/trading/live/control', audit: '/api/trading/live/audit', session: '/api/market/session',
-  scanner: '/api/scanner/status', trades: '/api/trades/all', signal: '/api/tradingview/signal',
+  scanner: '/api/scanner/status', trades: '/api/trades/all', lifecycle: '/api/trades/lifecycle', signal: '/api/tradingview/signal',
 };
 const DASHBOARD_PATHS = new Set(['/', '/moe-ai', '/moe-ai/', '/dashboard', '/dashboard/']);
 const TRADE_PATHS = new Set(['/trades', '/trades/']);
@@ -25,6 +27,9 @@ export class AlertCoordinator extends BaseAlertCoordinator {
   async getTradingMode() { const control = await this.getLiveControlState(); return getTradingMode(this.ctx.storage, applyRuntimeLiveControl(this.env, control)); }
   async updateTradingMode(patch = {}) { const control = await this.getLiveControlState(); return updateTradingMode(this.ctx.storage, patch, applyRuntimeLiveControl(this.env, control)); }
   async listAllTrades() { const trades = await this.ctx.storage.get('trade-history:v1'); return Array.isArray(trades) ? trades.slice(0, 2000) : []; }
+  async listLifecycleTrades() { return listTrades(this.ctx.storage, { status: 'OPEN', limit: 500 }); }
+  async applyLifecycleReport(report = {}) { return applyLifecycleReport(this.ctx.storage, report); }
+  async latestLifecycleReport() { return getLatestLifecycleReport(this.ctx.storage); }
   async recordBotStatus(record = {}) {
     const normalized = { ...record, recordedAt: new Date().toISOString() };
     const history = await this.ctx.storage.get(BOT_HISTORY_KEY);
@@ -82,6 +87,20 @@ function cors(origin) { return origin ? { 'access-control-allow-origin': origin,
 function secureJson(data, status = 200, headers = {}) { return Response.json(data, { status, headers: { 'cache-control': 'no-store', 'x-content-type-options': 'nosniff', ...headers } }); }
 function authorized(request, env) { return Boolean(env.MOE_WEBHOOK_SECRET) && (request.headers.get('x-moe-webhook-secret') || '') === env.MOE_WEBHOOK_SECRET; }
 async function runtime(env) { const control = await coordinator(env).getLiveControlState(); return { control, env: applyRuntimeLiveControl(env, control) }; }
+
+async function runSandboxLifecycle(env) {
+  if (String(env.WEBULL_ENVIRONMENT || 'sandbox').toLowerCase() !== 'sandbox' || String(env.WEBULL_LIVE_TRADING || '').toLowerCase() === 'true') {
+    return { skipped: true, reason: 'SANDBOX_LIFECYCLE_SAFETY_LOCK' };
+  }
+  if (String(env.WEBULL_LIFECYCLE_ENABLED || 'true').toLowerCase() === 'false') return { skipped: true, reason: 'WEBULL_LIFECYCLE_DISABLED' };
+  const accountId = String(env.WEBULL_ACCOUNT_ID || '').trim();
+  if (!accountId) return { skipped: true, reason: 'WEBULL_ACCOUNT_ID_MISSING' };
+  const stub = coordinator(env);
+  const trades = await stub.listLifecycleTrades();
+  const snapshot = await readSandboxLifecycleSnapshot(accountId, trades, env);
+  const report = buildLifecycleReport(trades, snapshot, env);
+  return stub.applyLifecycleReport(report);
+}
 
 async function handleMode(request, env) {
   const origin = allowedOrigin(request, env); const headers = cors(origin || null);
@@ -147,6 +166,17 @@ async function handleTrades(request, env) {
   return secureJson({ ok: true, count: trades.length, trades, storage: 'DURABLE_OBJECT' }, 200, headers);
 }
 
+async function handleLifecycle(request, env) {
+  const origin = allowedOrigin(request, env); const headers = cors(origin || null);
+  if (request.method === 'OPTIONS') return new Response(null, { status: 204, headers });
+  if (origin === false) return secureJson({ ok: false, error: 'Origin not allowed' }, 403, headers);
+  if (request.method === 'GET') return secureJson({ ok: true, lifecycle: await coordinator(env).latestLifecycleReport(), storage: 'DURABLE_OBJECT' }, 200, headers);
+  if (request.method !== 'POST') return secureJson({ ok: false, error: 'Method not allowed' }, 405, headers);
+  if (!authorized(request, env)) return secureJson({ ok: false, error: 'Unauthorized' }, 401, headers);
+  const lifecycle = await runSandboxLifecycle(env);
+  return secureJson({ ok: true, lifecycle, storage: 'DURABLE_OBJECT' }, 200, headers);
+}
+
 async function enforceMode(request, env) {
   if (request.method !== 'POST' || new URL(request.url).pathname !== PATHS.signal) return request;
   const [mode, live] = await Promise.all([coordinator(env).getTradingMode(), runtime(env)]);
@@ -174,6 +204,7 @@ export default {
     if (path === PATHS.session) return secureJson({ ok: true, market: marketSessionStatus(new Date()) });
     if (path === PATHS.scanner) return handleScanner(request, env);
     if (path === PATHS.trades) return handleTrades(request, env);
+    if (path === PATHS.lifecycle) return handleLifecycle(request, env);
     if (path === '/api/webull/bootstrap') return secureJson({ ok: false, blocked: true, error: 'Remote token bootstrap is disabled. Configure broker credentials only as Cloudflare secrets.' }, 423);
     const enforced = await enforceMode(request, env);
     if (enforced instanceof Response) return enforced;
@@ -183,6 +214,14 @@ export default {
     let mode; let control;
     try { [mode, control] = await Promise.all([coordinator(env).getTradingMode(), coordinator(env).getLiveControlState()]); }
     catch { mode = { effectiveMode: TRADING_MODES.DRY_RUN }; control = { sandboxAutomationEnabled: false, effectiveLiveAutomationArmed: false }; }
+    const lifecycleTask = runSandboxLifecycle(env).then((result) => {
+      console.log(JSON.stringify({ event: 'SANDBOX_ORDER_LIFECYCLE', ...result, createdAt: new Date().toISOString() }));
+      return result;
+    }).catch((error) => {
+      console.error(JSON.stringify({ event: 'SANDBOX_ORDER_LIFECYCLE_FAILED', error: error instanceof Error ? error.message : 'Unknown lifecycle error', createdAt: new Date().toISOString() }));
+      return null;
+    });
+    if (ctx?.waitUntil) ctx.waitUntil(lifecycleTask);
     if (mode.effectiveMode === TRADING_MODES.SANDBOX && control.sandboxAutomationEnabled) return entryWorker.scheduled(controller, env, ctx);
     if (mode.effectiveMode === TRADING_MODES.LIVE && control.effectiveLiveAutomationArmed) return entryWorker.scheduled(controller, applyRuntimeLiveControl(env, control), ctx);
     return entryWorker.scheduled(controller, { ...env, AUTO_SCANNER_ENABLED: 'false', WEBULL_AUTOMATION_ARMED: 'false', WEBULL_LIVE_AUTOMATION_ARMED: 'false' }, ctx);
