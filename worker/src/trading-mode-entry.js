@@ -4,10 +4,12 @@ import { getTradingMode, TRADING_MODES, updateTradingMode } from './trading-mode
 import { getLiveTradingReadiness, handleWebullLiveOrder } from './webull-live.js';
 import { handleLiveCertification } from './live-certification.js';
 import { AUTO_SCANNER_SYMBOLS, activeTradingWindow, scannerProfiles } from './auto-scanner.js';
+import { applyRuntimeLiveControl, getLiveControlState, updateLiveControlState } from './live-control-service.js';
 
 const TRADING_MODE_PATH = '/api/trading/mode';
 const LIVE_READINESS_PATH = '/api/trading/live/readiness';
 const LIVE_CERTIFICATION_PATH = '/api/trading/live/certify';
+const LIVE_CONTROL_PATH = '/api/trading/live/control';
 const SCANNER_STATUS_PATH = '/api/scanner/status';
 const ALL_TRADES_PATH = '/api/trades/all';
 const SIGNAL_PATH = '/api/tradingview/signal';
@@ -19,6 +21,8 @@ const BOT_HISTORY_KEY = 'bot-status-history:v2';
 export class AlertCoordinator extends BaseAlertCoordinator {
   async getTradingMode() { return getTradingMode(this.ctx.storage, this.env); }
   async updateTradingMode(patch = {}) { return updateTradingMode(this.ctx.storage, patch, this.env); }
+  async getLiveControlState() { return getLiveControlState(this.ctx.storage, this.env); }
+  async updateLiveControlState(patch = {}) { return updateLiveControlState(this.ctx.storage, patch, this.env); }
   async listAllTrades() {
     const trades = await this.ctx.storage.get('trade-history:v1');
     return Array.isArray(trades) ? trades.slice(0, 2000) : [];
@@ -39,15 +43,18 @@ export class AlertCoordinator extends BaseAlertCoordinator {
     const activity = active.flatMap((item) => Array.isArray(item.activity) ? item.activity : []);
     const bot = await this.ctx.storage.get(BOT_STATUS_KEY) || null;
     const history = await this.ctx.storage.get(BOT_HISTORY_KEY) || [];
+    const control = await getLiveControlState(this.ctx.storage, this.env);
     const window = activeTradingWindow(new Date(), this.env);
     const lastHeartbeat = bot?.completedAt || bot?.recordedAt || null;
     const heartbeatAgeSeconds = lastHeartbeat ? Math.max(0, Math.floor((Date.now() - Date.parse(lastHeartbeat)) / 1000)) : null;
-    const scannerEnabled = String(this.env.AUTO_SCANNER_ENABLED || '').toLowerCase() === 'true';
-    const automationArmed = String(this.env.WEBULL_AUTOMATION_ARMED || '').toLowerCase() === 'true';
+    const scannerConfigured = String(this.env.AUTO_SCANNER_ENABLED || '').toLowerCase() === 'true';
+    const scannerEnabled = scannerConfigured && control.sandboxAutomationEnabled === true;
+    const automationArmed = String(this.env.WEBULL_AUTOMATION_ARMED || '').toLowerCase() === 'true' && control.sandboxAutomationEnabled === true;
     const sandbox = this.env.WEBULL_ENVIRONMENT === 'sandbox' && this.env.WEBULL_LIVE_TRADING !== 'true';
     return {
       state: !scannerEnabled ? 'DISABLED' : !sandbox ? 'SAFETY_BLOCKED' : heartbeatAgeSeconds != null && heartbeatAgeSeconds <= 180 ? 'ONLINE' : 'WAITING_FOR_HEARTBEAT',
       enabled: scannerEnabled,
+      configured: scannerConfigured,
       automationArmed,
       sandboxSafetyLock: sandbox,
       liveTrading: this.env.WEBULL_LIVE_TRADING === 'true',
@@ -106,6 +113,11 @@ function authorized(request, env) {
   return Boolean(env.MOE_WEBHOOK_SECRET) && supplied === env.MOE_WEBHOOK_SECRET;
 }
 
+async function runtimeEnv(env) {
+  const control = await coordinator(env).getLiveControlState();
+  return { env: applyRuntimeLiveControl(env, control), control };
+}
+
 async function handleTradingMode(request, env) {
   const origin = allowedOrigin(request, env);
   const headers = cors(origin || null);
@@ -114,12 +126,16 @@ async function handleTradingMode(request, env) {
     return new Response(null, { status: 204, headers });
   }
   if (origin === false) return secureJson({ ok: false, error: 'Origin not allowed' }, 403, headers);
-  if (request.method === 'GET') return secureJson({ ok: true, tradingMode: await coordinator(env).getTradingMode(), storage: 'DURABLE_OBJECT' }, 200, headers);
+  const runtime = await runtimeEnv(env);
+  if (request.method === 'GET') return secureJson({ ok: true, tradingMode: await getTradingMode(coordinator(env), runtime.env), storage: 'DURABLE_OBJECT' }, 200, headers);
   if (request.method === 'PUT') {
     if (!authorized(request, env)) return secureJson({ ok: false, error: 'Unauthorized' }, 401, headers);
     let payload;
     try { payload = await request.json(); } catch { return secureJson({ ok: false, error: 'Invalid JSON payload' }, 400, headers); }
     try {
+      if (String(payload.mode || '').toUpperCase() === TRADING_MODES.LIVE && !runtime.control.effectiveLiveUnlocked) {
+        throw new Error('Live controls must be unlocked by PIN and the kill switch must be cleared first.');
+      }
       const tradingMode = await coordinator(env).updateTradingMode(payload);
       return secureJson({ ok: true, tradingMode, storage: 'DURABLE_OBJECT' }, 200, headers);
     } catch (error) {
@@ -135,7 +151,27 @@ async function handleLiveReadiness(request, env) {
   if (request.method === 'OPTIONS') return new Response(null, { status: 204, headers });
   if (origin === false) return secureJson({ ok: false, error: 'Origin not allowed' }, 403, headers);
   if (request.method !== 'GET') return secureJson({ ok: false, error: 'Method not allowed' }, 405, headers);
-  return secureJson({ ok: true, readiness: getLiveTradingReadiness(env), tradingMode: await coordinator(env).getTradingMode() }, 200, headers);
+  const runtime = await runtimeEnv(env);
+  return secureJson({ ok: true, readiness: getLiveTradingReadiness(runtime.env), control: runtime.control, tradingMode: await coordinator(env).getTradingMode() }, 200, headers);
+}
+
+async function handleLiveControl(request, env) {
+  const origin = allowedOrigin(request, env);
+  const headers = cors(origin || null);
+  if (request.method === 'OPTIONS') return new Response(null, { status: 204, headers });
+  if (origin === false) return secureJson({ ok: false, error: 'Origin not allowed' }, 403, headers);
+  if (request.method === 'GET') return secureJson({ ok: true, control: await coordinator(env).getLiveControlState(), storage: 'DURABLE_OBJECT' }, 200, headers);
+  if (request.method === 'PUT') {
+    let payload;
+    try { payload = await request.json(); } catch { return secureJson({ ok: false, error: 'Invalid JSON payload' }, 400, headers); }
+    try {
+      const control = await coordinator(env).updateLiveControlState(payload);
+      return secureJson({ ok: true, control, storage: 'DURABLE_OBJECT' }, 200, headers);
+    } catch (error) {
+      return secureJson({ ok: false, blocked: true, error: error instanceof Error ? error.message : 'Live control update failed' }, 423, headers);
+    }
+  }
+  return secureJson({ ok: false, error: 'Method not allowed' }, 405, headers);
 }
 
 async function handleScannerStatus(request, env) {
@@ -159,9 +195,13 @@ async function handleAllTrades(request, env) {
 
 async function enforceTradingMode(request, env) {
   if (request.method !== 'POST' || new URL(request.url).pathname !== SIGNAL_PATH) return request;
+  const runtime = await runtimeEnv(env);
   const mode = await coordinator(env).getTradingMode();
   if (mode.effectiveMode === TRADING_MODES.SANDBOX) return request;
-  if (mode.effectiveMode === TRADING_MODES.LIVE) return handleWebullLiveOrder(request, env);
+  if (mode.effectiveMode === TRADING_MODES.LIVE) {
+    if (!runtime.control.effectiveLiveUnlocked) return secureJson({ ok: false, blocked: true, submitted: false, error: 'Live controls are locked or the kill switch is active.' }, 423);
+    return handleWebullLiveOrder(request, runtime.env);
+  }
   const contentType = request.headers.get('content-type') || '';
   if (!contentType.toLowerCase().includes('application/json')) return request;
   try {
@@ -180,6 +220,7 @@ export default {
     if (path === TRADING_MODE_PATH) return handleTradingMode(request, env);
     if (path === LIVE_READINESS_PATH) return handleLiveReadiness(request, env);
     if (path === LIVE_CERTIFICATION_PATH) return handleLiveCertification(request, env);
+    if (path === LIVE_CONTROL_PATH) return handleLiveControl(request, env);
     if (path === SCANNER_STATUS_PATH) return handleScannerStatus(request, env);
     if (path === ALL_TRADES_PATH) return handleAllTrades(request, env);
     if (path === '/api/webull/bootstrap') return secureJson({ ok: false, blocked: true, error: 'Remote token bootstrap is disabled. Configure broker credentials only as Cloudflare secrets.' }, 423);
@@ -190,10 +231,18 @@ export default {
 
   async scheduled(controller, env, ctx) {
     let mode;
-    try { mode = await coordinator(env).getTradingMode(); } catch { mode = { effectiveMode: TRADING_MODES.DRY_RUN }; }
-    const scheduledEnv = mode.effectiveMode === TRADING_MODES.SANDBOX
-      ? env
-      : { ...env, AUTO_SCANNER_ENABLED: 'false', WEBULL_AUTOMATION_ARMED: 'false' };
-    return entryWorker.scheduled(controller, scheduledEnv, ctx);
+    let control;
+    try {
+      [mode, control] = await Promise.all([coordinator(env).getTradingMode(), coordinator(env).getLiveControlState()]);
+    } catch {
+      mode = { effectiveMode: TRADING_MODES.DRY_RUN };
+      control = { sandboxAutomationEnabled: false, effectiveLiveAutomationArmed: false };
+    }
+    if (mode.effectiveMode === TRADING_MODES.SANDBOX && control.sandboxAutomationEnabled) return entryWorker.scheduled(controller, env, ctx);
+    if (mode.effectiveMode === TRADING_MODES.LIVE && control.effectiveLiveAutomationArmed) {
+      const liveEnv = applyRuntimeLiveControl(env, control);
+      return entryWorker.scheduled(controller, liveEnv, ctx);
+    }
+    return entryWorker.scheduled(controller, { ...env, AUTO_SCANNER_ENABLED: 'false', WEBULL_AUTOMATION_ARMED: 'false', WEBULL_LIVE_AUTOMATION_ARMED: 'false' }, ctx);
   },
 };
