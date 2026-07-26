@@ -2,6 +2,7 @@ import { createLiquiditySweepConfig } from '../liquidity-sweep/config.js';
 import { evaluateLiquiditySweepEngine } from '../liquidity-sweep/engine.js';
 import { normalizeMarketData } from '../liquidity-sweep/normalization.js';
 import { evaluateSmartMoneyFoundation } from '../smart-money/engine.js';
+import { buildExecutionQualitySnapshot } from '../trading-intelligence/execution-quality.js';
 import { createInstitutionalFlowConfig, INSTITUTIONAL_FLOW_STAGE_ORDER } from './config.js';
 import { evaluateStopRunStage } from './stop-run.js';
 import { evaluateAbsorptionStage } from './absorption.js';
@@ -134,6 +135,7 @@ export async function evaluateInstitutionalFlowPipeline({
       stages: {},
       diagnostics: {
         dataQuality: null,
+        executionQuality: null,
         marketDataError: error instanceof Error ? error.message : 'Unknown market-data error',
       },
       observationOnly: true,
@@ -192,6 +194,21 @@ export async function evaluateInstitutionalFlowPipeline({
   const smartDetails = smartMoneyResult?.details || {};
   const higherTimeframe = compactHigherTimeframe(liquiditySweepResult?.higherTimeframe || null);
   const dataQuality = compactDataQuality(snapshot);
+  const executionQuality = buildExecutionQualitySnapshot({
+    dataQuality,
+    orderFlow,
+    tradingMode: 'PAPER_TRADING',
+    brokerConnectivity: 'UNAVAILABLE',
+    observationOnly: true,
+    executionAllowed: false,
+    automaticSubmissionAllowed: false,
+    liveExecutionAllowed: false,
+    thresholds: {
+      maximumMarketDataDelaySeconds: marketConfig.dataQuality.maximumDelaySeconds,
+      maximumSpreadPercent: marketConfig.risk.maximumSpreadPercent,
+    },
+    evaluatedAt: new Date(Number(now)).toISOString(),
+  });
 
   return freeze({
     eventType: 'INSTITUTIONAL_FLOW_SETUP',
@@ -232,6 +249,7 @@ export async function evaluateInstitutionalFlowPipeline({
       higherTimeframe,
       marketRegime: higherTimeframe?.marketRegime || null,
       dataQuality,
+      executionQuality,
       smartMoneyContext: {
         currentBias: smartDetails.structure?.currentBias || null,
         confluenceDirection: smartDetails.confluence?.direction || null,
