@@ -76,5 +76,8 @@ jobs:
       - name: Test Smart Money dashboard overlay
         run: node --test --test-concurrency=1 worker/test/smart-money-dashboard-overlay.test.mjs
 
+      - name: Test institutional flow stage pipeline
+        run: node --test --test-concurrency=1 worker/test/institutional-flow-pipeline.test.mjs
+
       - name: Run complete Worker safety suite
         run: npm run test:worker
