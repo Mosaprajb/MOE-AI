@@ -26,6 +26,14 @@ function oppositeDirection(direction) {
   return direction === 'BULLISH' ? 'BEARISH' : 'BULLISH';
 }
 
+function historicalBlockScore(block) {
+  if (Number(block.qualityScore) > 0) return Number(block.qualityScore);
+  const displacement = clamp(Number(block.displacementScore || 0), 0, 100);
+  const evidenceBonus = Math.min(20, Array.isArray(block.evidence) ? block.evidence.length * 5 : 0);
+  const widthScore = clamp(100 - Number(block.widthAtr || 0) * 40, 0, 100);
+  return round(displacement * 0.55 + widthScore * 0.25 + evidenceBonus, 2);
+}
+
 export async function detectBreakerBlocks({ symbol, snapshot, config, orderBlocks = [], structureEvents = [] } = {}) {
   if (!snapshot?.candles?.length) throw new Error('snapshot.candles are required');
   if (!config?.breaker) throw new Error('Validated Smart Money breaker configuration is required');
@@ -36,8 +44,9 @@ export async function detectBreakerBlocks({ symbol, snapshot, config, orderBlock
 
   for (const block of orderBlocks) {
     if (block.state !== 'INVALIDATED' || block.invalidationIndex == null) continue;
-    if (block.qualityScore < config.breaker.minimumOriginalBlockScore) {
-      rejected.push({ blockId: block.blockId, reason: 'BREAKER_ORIGINAL_BLOCK_TOO_WEAK' });
+    const originalQualityScore = historicalBlockScore(block);
+    if (originalQualityScore < config.breaker.minimumOriginalBlockScore) {
+      rejected.push({ blockId: block.blockId, reason: 'BREAKER_ORIGINAL_BLOCK_TOO_WEAK', originalQualityScore });
       continue;
     }
 
@@ -72,7 +81,7 @@ export async function detectBreakerBlocks({ symbol, snapshot, config, orderBlock
     }
 
     const qualityScore = round(clamp(
-      block.qualityScore * 0.35
+      originalQualityScore * 0.35
       + oppositeEvent.qualityScore * 0.4
       + rejectionScore * 0.25,
       0,
@@ -96,6 +105,7 @@ export async function detectBreakerBlocks({ symbol, snapshot, config, orderBlock
     breakers.push(freeze({
       breakerId,
       originalBlockId: block.blockId,
+      originalQualityScore,
       symbol: String(symbol).toUpperCase(),
       timeframe: snapshot.timeframe,
       direction,
@@ -112,6 +122,7 @@ export async function detectBreakerBlocks({ symbol, snapshot, config, orderBlock
       state: 'ACTIVE',
       evidence: [
         'ORIGINAL_ORDER_BLOCK_FAILED',
+        'HISTORICAL_ORIGIN_QUALITY_PRESERVED',
         'OPPOSITE_STRUCTURE_CONFIRMED',
         'BREAKER_RETEST_REJECTED',
       ],
