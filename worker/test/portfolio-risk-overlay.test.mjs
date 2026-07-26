@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { enhancePortfolioRiskDashboard } from '../src/trading-intelligence/portfolio-risk-overlay.js';
 
-test('portfolio risk overlay adds responsive read-only risk panel', async () => {
+test('portfolio risk overlay adds responsive production-aware risk panel', async () => {
   const original = new Response('<!doctype html><html><head><title>MOE</title></head><body><main></main></body></html>', {
     status: 200,
     headers: { 'content-type': 'text/html; charset=utf-8', 'content-length': '100' },
@@ -15,9 +15,12 @@ test('portfolio risk overlay adds responsive read-only risk panel', async () => 
   assert.match(html, /PORTFOLIO & CAPITAL RISK/);
   assert.match(html, /Portfolio Risk Command Panel/);
   assert.match(html, /Execution Permission/);
-  assert.match(html, /BLOCKED/);
-  assert.match(html, /Correlation exposure remains unavailable/);
+  assert.match(html, /PRODUCTION ACCOUNT/);
+  assert.match(html, /SANDBOX ACCOUNT/);
+  assert.match(html, /PIN required to display Production portfolio risk/);
   assert.match(html, /\/api\/trading-intelligence\/portfolio-risk/);
+  assert.match(html, /options\.method='POST'/);
+  assert.match(html, /JSON\.stringify\(\{pin\}\)/);
   assert.match(html, /setInterval\(refresh,60000\)/);
   assert.match(html, /node\.id='portfolio-risk'/);
   assert.match(html, /getElementById\('portfolio-risk'\)/);
