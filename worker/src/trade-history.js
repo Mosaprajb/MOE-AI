@@ -68,6 +68,8 @@ export function normalizeTrade(input = {}, previous = null) {
   const replay = safeObject(input.decisionReplay ?? input.decision ?? previous?.decisionReplay, previous?.decisionReplay ?? null);
   const brokerOrderIds = safeObject(input.brokerOrderIds ?? input.clientOrderIds ?? previous?.brokerOrderIds, previous?.brokerOrderIds ?? null);
   const lifecycleAnomalies = safeArray(input.lifecycleAnomalies, previous?.lifecycleAnomalies || []);
+  const capitalPolicy = safeObject(input.capitalPolicy ?? previous?.capitalPolicy, previous?.capitalPolicy ?? null);
+  const marginDirective = safeObject(input.marginDirective ?? previous?.marginDirective, previous?.marginDirective ?? null);
 
   return {
     id: tradeId({ ...previous, ...input, entryTime }),
@@ -90,6 +92,14 @@ export function normalizeTrade(input = {}, previous = null) {
     exitReason: text(input.exitReason ?? previous?.exitReason),
     currentPrice,
     unrealizedPnl,
+    capitalSource: text(input.capitalSource ?? capitalPolicy?.capitalSource ?? previous?.capitalSource, 'UNKNOWN').toUpperCase(),
+    holdPolicy: text(input.holdPolicy ?? capitalPolicy?.holdPolicy ?? previous?.holdPolicy, 'UNSPECIFIED').toUpperCase(),
+    accountRoute: text(input.accountRoute ?? capitalPolicy?.accountRoute ?? previous?.accountRoute, 'UNSPECIFIED').toUpperCase(),
+    capitalPolicyMode: text(input.capitalPolicyMode ?? previous?.capitalPolicyMode, 'UNKNOWN').toUpperCase(),
+    capitalPolicy,
+    capitalPolicyReasons: safeArray(input.capitalPolicyReasons ?? capitalPolicy?.reasons, previous?.capitalPolicyReasons || []),
+    capitalPolicyWarnings: safeArray(input.capitalPolicyWarnings ?? capitalPolicy?.warnings, previous?.capitalPolicyWarnings || []),
+    marginDirective,
     brokerOrderIds,
     brokerPositionSeen: input.brokerPositionSeen ?? previous?.brokerPositionSeen ?? false,
     brokerSyncStatus: text(input.brokerSyncStatus ?? previous?.brokerSyncStatus, 'PENDING'),
@@ -181,6 +191,14 @@ export async function getTradeDecision(storage, id) {
     engineVersion: trade.decisionEngineVersion,
     reasons: trade.decisionReasons,
     replay: trade.decisionReplay,
+    capital: {
+      source: trade.capitalSource,
+      holdPolicy: trade.holdPolicy,
+      accountRoute: trade.accountRoute,
+      policyMode: trade.capitalPolicyMode,
+      policy: trade.capitalPolicy,
+      marginDirective: trade.marginDirective,
+    },
     lifecycle: {
       status: trade.lifecycleStatus,
       protectionStatus: trade.protectionStatus,
@@ -218,6 +236,9 @@ export async function applyLifecycleReport(storage, report = {}) {
       currentPrice: lifecycle.currentPrice ?? previous.currentPrice,
       filledQuantity: lifecycle.filledQuantity,
       averageFillPrice: lifecycle.averageFillPrice,
+      capitalSource: lifecycle.capitalSource ?? previous.capitalSource,
+      holdPolicy: lifecycle.holdPolicy ?? previous.holdPolicy,
+      marginDirective: lifecycle.marginDirective,
       brokerPositionSeen: Boolean(lifecycle.position) || previous.brokerPositionSeen,
       brokerSyncStatus: lifecycle.lifecycleStatus,
       lastBrokerSyncAt: lifecycle.checkedAt || now,
@@ -261,7 +282,7 @@ export async function getLatestLifecycleReport(storage) {
     readOnly: true,
     noOrdersSubmitted: true,
     noOrdersModified: true,
-    metrics: { tradesChecked: 0, attentionRequired: 0, protectedPositions: 0, unprotectedPositions: 0 },
+    metrics: { tradesChecked: 0, attentionRequired: 0, protectedPositions: 0, unprotectedPositions: 0, marginExitWindow: 0, marginHardExitRequired: 0 },
     lifecycles: [],
     errors: [],
     persistence: { updated: 0, closed: 0, attentionRequired: 0 },
@@ -321,8 +342,9 @@ export async function listTrades(storage, options = {}) {
   const limit = Math.min(500, Math.max(1, finite(options.limit, 100)));
   const status = text(options.status).toUpperCase();
   const symbol = text(options.symbol).toUpperCase();
+  const capitalSource = text(options.capitalSource).toUpperCase();
   const trades = await readTrades(storage);
-  return trades.filter((trade) => (!status || trade.status === status) && (!symbol || trade.symbol === symbol)).slice(0, limit);
+  return trades.filter((trade) => (!status || trade.status === status) && (!symbol || trade.symbol === symbol) && (!capitalSource || trade.capitalSource === capitalSource)).slice(0, limit);
 }
 
 export async function tradeAnalytics(storage) {
@@ -352,6 +374,9 @@ export async function tradeAnalytics(storage) {
     closedTrades: closed.length,
     winningTrades: wins.length,
     losingTrades: losses.length,
+    openCashTrades: trades.filter((trade) => trade.status === 'OPEN' && trade.capitalSource === 'CASH').length,
+    openMarginIntradayTrades: trades.filter((trade) => trade.status === 'OPEN' && trade.capitalSource === 'MARGIN_INTRADAY').length,
+    marginExitActionsRequired: trades.filter((trade) => trade.status === 'OPEN' && ['BEGIN_EXIT', 'FORCE_EXIT', 'EMERGENCY_FLATTEN'].includes(trade.marginDirective?.action)).length,
     lifecycleAttentionRequired: trades.filter((trade) => trade.status === 'OPEN' && trade.attentionRequired).length,
     protectedOpenTrades: trades.filter((trade) => trade.status === 'OPEN' && trade.protectionStatus === 'PROTECTED').length,
     winRate: closed.length ? Number(((wins.length / closed.length) * 100).toFixed(2)) : 0,
