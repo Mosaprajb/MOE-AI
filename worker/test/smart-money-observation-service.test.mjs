@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { runSmartMoneyObservation, smartMoneyObservationDue } from '../src/smart-money/observation-service.js';
+import { evaluateInstitutionalFlowScannerBatch } from '../src/institutional-flow/scanner-adapter.js';
 
 const dueTime = 101 * 60_000;
 const window = { open: true, label: 'CORE', session: 'CORE', dataFeed: 'iex' };
@@ -32,6 +33,44 @@ function fakeFetch() {
       };
     },
   });
+}
+
+function pipelineResult(symbol, options = {}) {
+  const passed = options.passed === true;
+  const failedStage = passed ? null : (options.failedStage || 'ABSORPTION');
+  const stages = {
+    STOP_RUN: { passed: true, status: 'PASSED', score: 84, classification: 'STOP_RUN_REVERSAL', failedConditions: [] },
+    ABSORPTION: failedStage === 'ABSORPTION'
+      ? { passed: false, status: 'REJECTED', score: 62, classification: 'AMBIGUOUS', failedConditions: ['PROXY_ABSORPTION_SCORE_BELOW_MINIMUM'] }
+      : { passed: true, status: 'PASSED', score: 82, classification: 'PROBABLE_ABSORPTION', failedConditions: [] },
+    IMBALANCE: passed
+      ? { passed: true, status: 'PASSED', score: 80, classification: 'PRICE_IMBALANCE', failedConditions: [] }
+      : { passed: false, status: 'BLOCKED', score: 0, classification: 'INVALID', failedConditions: ['BLOCKED_BY_ABSORPTION_STAGE'] },
+    STRUCTURE_CONFIRMATION: passed
+      ? { passed: true, status: 'PASSED', score: 86, classification: 'MARKET_STRUCTURE_SHIFT', failedConditions: [] }
+      : { passed: false, status: 'BLOCKED', score: 0, classification: 'INVALID', failedConditions: ['BLOCKED_BY_IMBALANCE_STAGE'] },
+    RISK_ENGINE: passed
+      ? { passed: true, status: 'PASSED', score: 75, classification: 'OBSERVATION_ACCEPTED', failedConditions: [] }
+      : { passed: false, status: 'BLOCKED', score: 0, classification: 'INVALID', failedConditions: ['BLOCKED_BY_STRUCTURE_CONFIRMATION_STAGE'] },
+  };
+  return {
+    symbol,
+    pipelinePassed: passed,
+    pipelineScore: options.score || (passed ? 86 : 68),
+    failedStage,
+    reason: passed ? 'INSTITUTIONAL_FLOW_OBSERVATION_ONLY' : `${failedStage}_STAGE_REJECTED`,
+    direction: 'BULLISH',
+    dataMode: options.dataMode || 'PROXY_ABSORPTION',
+    stages,
+    candidate: passed ? {
+      status: 'OBSERVATION_CANDIDATE',
+      imbalanceType: 'BULLISH_FVG',
+      entry: 100,
+      stopLoss: 98,
+      takeProfit: 104,
+      rewardRisk: 2,
+    } : null,
+  };
 }
 
 test('observation cadence waits for a completed configured candle', () => {
@@ -66,25 +105,49 @@ test('live trading activates a hard observation safety lock', async () => {
   assert.equal(result.executionAllowed, false);
 });
 
-test('sidecar fetches market data and stores only ranked observations', async () => {
+test('institutional scanner adapter ranks completed pipelines before rejected stages', async () => {
+  const evaluator = async ({ symbol }) => symbol === 'AAPL'
+    ? pipelineResult(symbol, { passed: true, score: 88 })
+    : pipelineResult(symbol, { passed: false, score: 72, failedStage: 'ABSORPTION' });
+  const result = await evaluateInstitutionalFlowScannerBatch({
+    symbols: ['MSFT', 'AAPL'],
+    marketDataBySymbol: {
+      AAPL: { bars: [{ t: 1 }] },
+      MSFT: { bars: [{ t: 1 }] },
+    },
+    evaluator,
+  });
+  assert.equal(result.observations[0].symbol, 'AAPL');
+  assert.equal(result.observations[0].pipelinePassed, true);
+  assert.equal(result.observations[1].failedStage, 'ABSORPTION');
+  assert.equal(result.completedCandidates, 1);
+  assert.equal(result.stageDistribution.ABSORPTION, 1);
+  assert.equal(result.executionAllowed, false);
+});
+
+test('sidecar stores pipeline stage diagnostics and ranked observation candidates', async () => {
   let captured = null;
   const evaluator = async (input) => {
     captured = input;
     return {
       observations: [
         {
-          symbol: 'AAPL', setupScore: 88, setupFamily: 'BREAKER_RETEST', direction: 'BULLISH',
-          candidate: { timeframe: '5m', state: 'OBSERVATION_CANDIDATE', entry: 100, stopLoss: 98, takeProfit: 104, rewardRisk: 2 },
-          failedConditions: [],
+          ...pipelineResult('AAPL', { passed: true, score: 88 }),
+          currentStage: 'RISK_ENGINE',
         },
         {
-          symbol: 'MSFT', setupScore: 76, setupFamily: 'FVG_REPRICING', direction: 'BULLISH',
-          candidate: { timeframe: '5m', state: 'OBSERVATION_CANDIDATE', entry: 200, stopLoss: 196, takeProfit: 208, rewardRisk: 2 },
-          failedConditions: ['SMART_MONEY_FOUNDATION_OBSERVATION_ONLY'],
+          ...pipelineResult('MSFT', { passed: false, score: 76, failedStage: 'ABSORPTION' }),
+          currentStage: 'STOP_RUN',
         },
-        { symbol: 'NVDA', setupScore: 0, setupFamily: 'UNCLASSIFIED', direction: null, candidate: null, failedConditions: ['NO_SETUP'] },
+        {
+          ...pipelineResult('NVDA', { passed: false, score: 0, failedStage: 'STOP_RUN' }),
+          currentStage: 'STOP_RUN',
+        },
       ],
       rejected: [{ symbol: 'NVDA', reason: 'SCANNER_MARKET_DATA_MISSING' }],
+      completedCandidates: 1,
+      stageDistribution: { STOP_RUN: 1, ABSORPTION: 1, IMBALANCE: 0, STRUCTURE_CONFIRMATION: 0, RISK_ENGINE: 0 },
+      stageOrder: ['STOP_RUN', 'ABSORPTION', 'IMBALANCE', 'STRUCTURE_CONFIRMATION', 'RISK_ENGINE'],
     };
   };
 
@@ -101,9 +164,15 @@ test('sidecar fetches market data and stores only ranked observations', async ()
   assert.equal(captured.timeframe, '5m');
   assert.deepEqual(captured.symbols, ['AAPL', 'MSFT', 'NVDA']);
   assert.equal(result.ok, true);
+  assert.equal(result.engine, 'INSTITUTIONAL_FLOW_PIPELINE');
+  assert.equal(result.completedCandidates, 1);
+  assert.equal(result.stageDistribution.ABSORPTION, 1);
   assert.equal(result.topOpportunities.length, 2);
   assert.equal(result.topOpportunities[0].symbol, 'AAPL');
-  assert.equal(result.topOpportunities[0].setupScore, 88);
+  assert.equal(result.topOpportunities[0].pipelinePassed, true);
+  assert.equal(result.topOpportunities[0].candidateState, 'OBSERVATION_CANDIDATE');
+  assert.equal(result.topOpportunities[1].failedStage, 'ABSORPTION');
+  assert.equal(result.topOpportunities[1].currentStage, 'STOP_RUN');
   assert.equal(result.topOpportunities[0].executionAllowed, false);
   assert.equal(result.observationOnly, true);
   assert.equal(result.mode, 'PAPER_TRADING');
