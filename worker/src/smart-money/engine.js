@@ -12,6 +12,9 @@ import { evaluateSmartMoneyConfluence } from './confluence.js';
 import { classifySmartMoneySetupFamily } from './setup-families.js';
 import { selectSmartMoneyEntryZone } from './entry-zone.js';
 import { evaluateSmartMoneyRisk } from './risk-evaluation.js';
+import { createSmartMoneySetupCandidate } from './setup-candidate.js';
+import { evaluateAnalyticalPositionSize } from './position-sizing.js';
+import { evaluateCandidateLifecycle } from './candidate-lifecycle.js';
 
 function text(value, fallback = '') {
   const normalized = String(value ?? fallback).trim();
@@ -36,6 +39,9 @@ export async function evaluateSmartMoneyFoundation({
   bid = null,
   ask = null,
   tickSize = null,
+  accountEquity = null,
+  maximumRiskPercent = 0.5,
+  maximumNotionalPercent = 10,
   smartMoneyConfig = null,
   marketDataConfig = null,
 } = {}) {
@@ -103,10 +109,51 @@ export async function evaluateSmartMoneyFoundation({
     opposingLiquidityTarget: target,
   });
 
+  const candidateInvalidations = [];
+  if (!setupFamily.classified) candidateInvalidations.push('NO_CLASSIFIED_SETUP_FAMILY');
+  if (!entryZoneSelection.selected) candidateInvalidations.push('NO_SELECTED_ENTRY_ZONE');
+  const candidate = confluence.direction && entryZoneSelection.selected
+    ? await createSmartMoneySetupCandidate({
+      symbol: normalizedSymbol,
+      timeframe: snapshot.timeframe,
+      strategyVersion: config.strategy.version,
+      setupFamily: setupFamily.family,
+      direction: confluence.direction,
+      confluence,
+      entryZone: entryZoneSelection,
+      riskEvaluation,
+      createdAt: Number(now),
+      expiresAt: Number(now) + snapshot.timeframeMs * 12,
+      invalidationReasons: candidateInvalidations,
+    })
+    : null;
+
+  const positionSizing = evaluateAnalyticalPositionSize({
+    accountEquity,
+    maximumRiskPercent,
+    entryPrice: riskEvaluation.entryPrice,
+    stopPrice: riskEvaluation.stopPrice,
+    maximumNotionalPercent,
+  });
+  const candidateLifecycle = candidate
+    ? evaluateCandidateLifecycle({
+      candidate,
+      latestPrice: snapshot.latest.close,
+      now,
+      latestStructureDirection: structure.currentBias === 'NEUTRAL' ? null : structure.currentBias,
+    })
+    : null;
+
   const latestDisplacement = displacement.at(-1) || null;
   const activeGaps = imbalances.gaps.filter((gap) => ['NEW', 'ACTIVE', 'PARTIALLY_MITIGATED'].includes(gap.state));
   const activeBlocks = orderBlockResult.blocks.filter((block) => ['ACTIVE', 'PARTIALLY_MITIGATED'].includes(block.state));
-  const failedConditions = [...confluence.failedConditions, ...riskEvaluation.failedConditions];
+  const failedConditions = [
+    ...confluence.failedConditions,
+    ...riskEvaluation.failedConditions,
+    ...candidateInvalidations,
+    ...(positionSizing.failedConditions || []),
+    ...(candidateLifecycle?.invalidationReasons || []),
+  ];
   if (!structure.events.length) failedConditions.push('NO_CONFIRMED_STRUCTURE');
   if (!latestDisplacement || ['NONE', 'WEAK', 'ABNORMAL_NEWS_DRIVEN'].includes(latestDisplacement.classification)) {
     failedConditions.push('NO_ACCEPTABLE_LATEST_DISPLACEMENT');
@@ -114,8 +161,6 @@ export async function evaluateSmartMoneyFoundation({
   if (!dealingRange.range) failedConditions.push(dealingRange.reason || 'NO_CONFIRMED_DEALING_RANGE');
   if (!activeGaps.length) failedConditions.push('NO_ACTIVE_QUALITY_FVG');
   if (!activeBlocks.length && !breakerResult.breakers.length) failedConditions.push('NO_ACTIVE_ORDER_BLOCK_OR_BREAKER');
-  if (!setupFamily.classified) failedConditions.push('NO_CLASSIFIED_SETUP_FAMILY');
-  if (!entryZoneSelection.selected) failedConditions.push('NO_SELECTED_ENTRY_ZONE');
   failedConditions.push('SMART_MONEY_FOUNDATION_OBSERVATION_ONLY');
 
   return smartMoneyNoTrade('SMART_MONEY_FOUNDATION_OBSERVATION_ONLY', {
@@ -138,8 +183,12 @@ export async function evaluateSmartMoneyFoundation({
       setupFamily,
       entryZoneSelection,
       riskEvaluation,
+      candidate,
+      candidateLifecycle,
+      positionSizing,
       executionAllowed: false,
       automaticSubmissionAllowed: false,
+      liveExecutionAllowed: false,
       observationOnly: true,
     },
   });
