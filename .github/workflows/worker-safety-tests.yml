@@ -28,7 +28,7 @@ jobs:
   worker-safety:
     name: Worker safety and liquidity engine
     runs-on: ubuntu-latest
-    timeout-minutes: 8
+    timeout-minutes: 10
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -41,8 +41,20 @@ jobs:
       - name: Test liquidity foundation
         run: node --test worker/test/liquidity-sweep-foundation.test.mjs
 
-      - name: Test market data and liquidity mapping
-        run: node --test worker/test/liquidity-sweep-market-data.test.mjs
+      - name: Test exchange session detection
+        run: node --test --test-name-pattern="identifies exchange sessions correctly" worker/test/liquidity-sweep-market-data.test.mjs
+
+      - name: Test completed-bar normalization
+        run: node --test --test-name-pattern="normalizes only completed bars" worker/test/liquidity-sweep-market-data.test.mjs
+
+      - name: Test delayed and spread rejection
+        run: node --test --test-name-pattern="rejects delayed and abnormally wide-spread" worker/test/liquidity-sweep-market-data.test.mjs
+
+      - name: Test deterministic volatility metrics
+        run: node --test --test-name-pattern="calculates ATR, relative volume" worker/test/liquidity-sweep-market-data.test.mjs
+
+      - name: Test liquidity pool mapping
+        run: node --test --test-name-pattern="maps meaningful buy-side and sell-side" worker/test/liquidity-sweep-market-data.test.mjs
 
       - name: Run complete Worker safety suite
         run: npm run test:worker
