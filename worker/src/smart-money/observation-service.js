@@ -1,4 +1,5 @@
 import { evaluateInstitutionalFlowScannerBatch } from '../institutional-flow/scanner-adapter.js';
+import { buildTradingIntelligenceSnapshot } from '../trading-intelligence/gauge-adapter.js';
 
 const SUPPORTED_TIMEFRAMES = Object.freeze({
   '1m': { minutes: 1, alpaca: '1Min', lookbackDays: 3 },
@@ -93,12 +94,15 @@ async function fetchObservationBars({ env, now, window, symbols, timeframe, fetc
 
 function compactOpportunity(item) {
   const candidate = item.candidate || {};
-  return Object.freeze({
+  const compact = {
     symbol: item.symbol,
-    timeframe: candidate.timeframe || null,
+    timeframe: item.executionTimeframe || candidate.timeframe || null,
+    contextTimeframe: item.contextTimeframe || null,
+    evaluatedAt: item.evaluatedAt || null,
     setupFamily: candidate.imbalanceType || item.stages?.IMBALANCE?.classification || 'INSTITUTIONAL_FLOW',
     direction: item.direction,
     setupScore: Number(item.pipelineScore || 0),
+    pipelineScore: Number(item.pipelineScore || 0),
     candidateState: candidate.status || (item.pipelinePassed ? 'OBSERVATION_CANDIDATE' : 'PIPELINE_REJECTED'),
     entry: candidate.entry ?? null,
     stopLoss: candidate.stopLoss ?? null,
@@ -110,12 +114,14 @@ function compactOpportunity(item) {
     dataMode: item.dataMode || 'INSUFFICIENT_DATA',
     pipelinePassed: item.pipelinePassed === true,
     stages: item.stages || {},
+    diagnostics: item.diagnostics || {},
     failedConditions: item.failedStage
       ? (item.stages?.[item.failedStage]?.failedConditions || []).slice(0, 8)
       : [],
     observationOnly: true,
     executionAllowed: false,
-  });
+  };
+  return Object.freeze({ ...compact, tradingIntelligence: buildTradingIntelligenceSnapshot(compact) });
 }
 
 export async function runSmartMoneyObservation({
