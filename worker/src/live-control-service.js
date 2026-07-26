@@ -1,6 +1,6 @@
 const CONTROL_KEY = 'live-control:v1';
 const SECURITY_KEY = 'live-control-security:v1';
-const VERSION = 1;
+const VERSION = 2;
 
 function enabled(value) {
   return String(value || '').toLowerCase() === 'true';
@@ -21,9 +21,7 @@ async function secureEqual(left, right) {
   const [a, b] = await Promise.all([digest(left), digest(right)]);
   let difference = a.length ^ b.length;
   const length = Math.max(a.length, b.length);
-  for (let index = 0; index < length; index += 1) {
-    difference |= (a[index] || 0) ^ (b[index] || 0);
-  }
+  for (let index = 0; index < length; index += 1) difference |= (a[index] || 0) ^ (b[index] || 0);
   return difference === 0;
 }
 
@@ -46,24 +44,18 @@ function staticLiveCapability(env = {}) {
   const checks = {
     pinControlEnabled: enabled(env.MOE_LIVE_PIN_CONTROL_ENABLED),
     pinConfigured: Boolean(String(env.MOE_LIVE_CONTROL_PIN || '').trim()),
-    productionEnvironment: String(env.WEBULL_ENVIRONMENT || '').toLowerCase() === 'production',
+    productionCredentials: missingSecrets.length === 0,
     liveMasterConfigured: enabled(env.WEBULL_LIVE_TRADING),
     liveSubmissionConfigured: enabled(env.WEBULL_LIVE_ORDER_SUBMISSION),
     executionAdapterApproved: enabled(env.MOE_LIVE_EXECUTION_IMPLEMENTED),
     protectedOrders: enabled(env.WEBULL_PROTECTED_ORDERS),
   };
-  return {
-    ready: missingSecrets.length === 0 && Object.values(checks).every(Boolean),
-    missingSecrets,
-    checks,
-  };
+  return { ready: Object.values(checks).every(Boolean), missingSecrets, checks };
 }
 
 async function securityState(storage) {
   const saved = await storage.get(SECURITY_KEY);
-  return saved && typeof saved === 'object'
-    ? saved
-    : { failedAttempts: 0, lockedUntil: null, lastFailureAt: null };
+  return saved && typeof saved === 'object' ? saved : { failedAttempts: 0, lockedUntil: null, lastFailureAt: null };
 }
 
 async function verifyPin(storage, pin, env = {}) {
@@ -73,9 +65,7 @@ async function verifyPin(storage, pin, env = {}) {
 
   const security = await securityState(storage);
   const lockedUntil = security.lockedUntil ? Date.parse(security.lockedUntil) : 0;
-  if (lockedUntil > Date.now()) {
-    throw new Error(`PIN controls are temporarily locked until ${security.lockedUntil}.`);
-  }
+  if (lockedUntil > Date.now()) throw new Error(`PIN controls are temporarily locked until ${security.lockedUntil}.`);
 
   const valid = await secureEqual(pin, configured);
   if (!valid) {
@@ -84,17 +74,12 @@ async function verifyPin(storage, pin, env = {}) {
     const failedAttempts = Number(security.failedAttempts || 0) + 1;
     const lockoutTriggered = failedAttempts >= maximumAttempts;
     const remainingAttempts = Math.max(0, maximumAttempts - failedAttempts);
-    const next = {
+    await storage.put(SECURITY_KEY, {
       failedAttempts: lockoutTriggered ? 0 : failedAttempts,
       lastFailureAt: new Date().toISOString(),
-      lockedUntil: lockoutTriggered
-        ? new Date(Date.now() + lockoutMinutes * 60_000).toISOString()
-        : null,
-    };
-    await storage.put(SECURITY_KEY, next);
-    if (lockoutTriggered) {
-      throw new Error(`Incorrect PIN. Too many failed attempts; PIN controls are locked for ${lockoutMinutes} minutes.`);
-    }
+      lockedUntil: lockoutTriggered ? new Date(Date.now() + lockoutMinutes * 60_000).toISOString() : null,
+    });
+    if (lockoutTriggered) throw new Error(`Incorrect PIN. Too many failed attempts; PIN controls are locked for ${lockoutMinutes} minutes.`);
     throw new Error(`Incorrect PIN. ${remainingAttempts} attempt${remainingAttempts === 1 ? '' : 's'} remaining before temporary lockout.`);
   }
 
@@ -107,14 +92,17 @@ export async function getLiveControlState(storage, env = {}) {
   const state = { ...defaultState(env), ...(saved && typeof saved === 'object' ? saved : {}) };
   const security = await securityState(storage);
   const capability = staticLiveCapability(env);
+  const effectiveLiveUnlocked = state.liveControlsUnlocked === true && state.killSwitch === false && capability.ready;
   return {
     ...state,
     pinConfigured: capability.checks.pinConfigured,
     pinControlEnabled: capability.checks.pinControlEnabled,
     staticLiveCapability: capability,
+    productionReady: capability.ready,
+    liveTradingEnabled: effectiveLiveUnlocked,
     pinLockedUntil: security.lockedUntil || null,
-    effectiveLiveUnlocked: state.liveControlsUnlocked === true && state.killSwitch === false && capability.ready,
-    effectiveLiveAutomationArmed: state.liveAutomationArmed === true && state.liveControlsUnlocked === true && state.killSwitch === false && capability.ready,
+    effectiveLiveUnlocked,
+    effectiveLiveAutomationArmed: state.liveAutomationArmed === true && effectiveLiveUnlocked,
   };
 }
 
@@ -141,37 +129,31 @@ export async function updateLiveControlState(storage, patch = {}, env = {}) {
     next = { ...next, sandboxAutomationEnabled: true };
   } else if (action === 'DISABLE_SANDBOX_AUTOMATION') {
     next = { ...next, sandboxAutomationEnabled: false };
+  } else if (action === 'START_LIVE_TRADING') {
+    if (!capability.ready) throw new Error('Production system is not ready. Complete every static production gate first.');
+    if (String(patch.confirmation || '') !== 'START_LIVE_TRADING') throw new Error('Starting live trading requires the exact confirmation START_LIVE_TRADING.');
+    next = { ...next, sandboxAutomationEnabled: false, liveControlsUnlocked: true, liveAutomationArmed: true, killSwitch: false };
+  } else if (action === 'STOP_LIVE_TRADING') {
+    next = { ...next, liveControlsUnlocked: false, liveAutomationArmed: false, killSwitch: true };
   } else if (action === 'UNLOCK_LIVE_CONTROLS') {
-    if (String(patch.confirmation || '') !== 'UNLOCK_LIVE_CONTROLS') {
-      throw new Error('Live control unlock requires the exact confirmation UNLOCK_LIVE_CONTROLS.');
-    }
+    if (String(patch.confirmation || '') !== 'UNLOCK_LIVE_CONTROLS') throw new Error('Live control unlock requires the exact confirmation UNLOCK_LIVE_CONTROLS.');
     next = { ...next, liveControlsUnlocked: true, liveAutomationArmed: false, killSwitch: true };
   } else if (action === 'CLEAR_LIVE_KILL_SWITCH') {
     if (!capability.ready) throw new Error('Static live-trading capability is incomplete.');
     if (!next.liveControlsUnlocked) throw new Error('Live controls must be unlocked first.');
-    if (String(patch.confirmation || '') !== 'CLEAR_LIVE_KILL_SWITCH') {
-      throw new Error('Clearing the live kill switch requires the exact confirmation CLEAR_LIVE_KILL_SWITCH.');
-    }
+    if (String(patch.confirmation || '') !== 'CLEAR_LIVE_KILL_SWITCH') throw new Error('Clearing the live kill switch requires the exact confirmation CLEAR_LIVE_KILL_SWITCH.');
     next = { ...next, killSwitch: false, liveAutomationArmed: false };
   } else if (action === 'ARM_LIVE_AUTOMATION') {
     if (!capability.ready) throw new Error('Static live-trading capability is incomplete.');
     if (!next.liveControlsUnlocked || next.killSwitch) throw new Error('Live controls must be unlocked and the kill switch must be cleared first.');
-    if (String(patch.confirmation || '') !== 'ARM_LIVE_AUTOMATION') {
-      throw new Error('Arming live automation requires the exact confirmation ARM_LIVE_AUTOMATION.');
-    }
+    if (String(patch.confirmation || '') !== 'ARM_LIVE_AUTOMATION') throw new Error('Arming live automation requires the exact confirmation ARM_LIVE_AUTOMATION.');
     next = { ...next, liveAutomationArmed: true };
   } else if (action === 'DISARM_LIVE_AUTOMATION') {
     next = { ...next, liveAutomationArmed: false, killSwitch: true };
   } else if (action === 'LOCK_LIVE_CONTROLS') {
     next = { ...next, liveControlsUnlocked: false, liveAutomationArmed: false, killSwitch: true };
   } else if (action === 'LOCK_ALL') {
-    next = {
-      ...next,
-      sandboxAutomationEnabled: false,
-      liveControlsUnlocked: false,
-      liveAutomationArmed: false,
-      killSwitch: true,
-    };
+    next = { ...next, sandboxAutomationEnabled: false, liveControlsUnlocked: false, liveAutomationArmed: false, killSwitch: true };
   } else {
     throw new Error('Unsupported live-control action.');
   }
