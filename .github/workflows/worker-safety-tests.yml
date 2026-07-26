@@ -44,61 +44,36 @@ jobs:
       - name: Test liquidity contracts and state machine
         run: node --test worker/test/liquidity-sweep-foundation.test.mjs
 
-      - name: Diagnose exchange sessions
-        continue-on-error: true
-        run: node --test --test-name-pattern="identifies exchange sessions correctly" worker/test/liquidity-sweep-market-data.test.mjs
-
-      - name: Diagnose completed-bar normalization
-        continue-on-error: true
-        run: node --test --test-name-pattern="normalizes only completed bars and calculates volatility metrics" worker/test/liquidity-sweep-market-data.test.mjs
-
-      - name: Diagnose delayed and spread rejection
-        continue-on-error: true
-        run: node --test --test-name-pattern="rejects delayed and abnormally wide-spread market data" worker/test/liquidity-sweep-market-data.test.mjs
-
-      - name: Diagnose ATR
-        continue-on-error: true
-        run: node --test --test-name-pattern="calculates ATR deterministically from known true ranges" worker/test/liquidity-sweep-market-data.test.mjs
-
-      - name: Diagnose relative volume
-        continue-on-error: true
-        run: node --test --test-name-pattern="calculates relative volume deterministically" worker/test/liquidity-sweep-market-data.test.mjs
-
-      - name: Diagnose realized volatility
-        continue-on-error: true
-        run: node --test --test-name-pattern="calculates realized volatility deterministically" worker/test/liquidity-sweep-market-data.test.mjs
-
-      - name: Diagnose tick size
-        continue-on-error: true
-        run: node --test --test-name-pattern="infers equity tick sizes conservatively" worker/test/liquidity-sweep-market-data.test.mjs
-
-      - name: Diagnose liquidity pool existence
-        continue-on-error: true
-        run: node --test --test-name-pattern="liquidity mapping returns at least one meaningful pool" worker/test/liquidity-sweep-market-data.test.mjs
-
-      - name: Diagnose buy-side liquidity
-        continue-on-error: true
-        run: node --test --test-name-pattern="liquidity mapping returns buy-side pools" worker/test/liquidity-sweep-market-data.test.mjs
-
-      - name: Diagnose sell-side liquidity
-        continue-on-error: true
-        run: node --test --test-name-pattern="liquidity mapping returns sell-side pools" worker/test/liquidity-sweep-market-data.test.mjs
-
-      - name: Diagnose pool importance threshold
-        continue-on-error: true
-        run: node --test --test-name-pattern="liquidity mapping applies the configured importance threshold" worker/test/liquidity-sweep-market-data.test.mjs
-
-      - name: Diagnose major liquidity source retention
-        continue-on-error: true
-        run: node --test --test-name-pattern="liquidity mapping retains at least one major session or equal-level source" worker/test/liquidity-sweep-market-data.test.mjs
+      - name: Test market-data normalization and liquidity mapping
+        run: node --test worker/test/liquidity-sweep-market-data.test.mjs
 
       - name: Test sweep detection and breakout classification
-        continue-on-error: true
         run: node --test worker/test/liquidity-sweep-classifier.test.mjs
 
       - name: Test confirmation trade planning and scoring
-        continue-on-error: true
         run: node --test worker/test/liquidity-sweep-engine.test.mjs
 
-      - name: Run complete Worker safety suite sequentially
-        run: npm run test:worker
+      - name: Run all Worker tests in isolated processes
+        id: complete-suite
+        continue-on-error: true
+        shell: bash
+        run: |
+          set +e
+          npm run test:worker > worker-test-report.txt 2>&1
+          status=$?
+          echo "exit_code=$status" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      - name: Upload Worker test report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: worker-test-report
+          path: worker-test-report.txt
+          if-no-files-found: error
+          retention-days: 3
+
+      - name: Enforce complete Worker suite
+        if: always()
+        shell: bash
+        run: test "${{ steps.complete-suite.outputs.exit_code }}" = "0"
