@@ -94,5 +94,8 @@ jobs:
       - name: Test SMT divergence intelligence
         run: node --test --test-concurrency=1 worker/test/smt-divergence.test.mjs
 
+      - name: Test execution quality intelligence
+        run: node --test --test-concurrency=1 worker/test/execution-quality.test.mjs
+
       - name: Run complete Worker safety suite
         run: npm run test:worker
