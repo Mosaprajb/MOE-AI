@@ -217,6 +217,34 @@ function dataQualityGauge(definition, item) {
   });
 }
 
+function executionQualityGauge(definition, item) {
+  const execution = item.diagnostics?.executionQuality;
+  if (!execution) return unavailable(definition, item, 'Execution-quality diagnostics are unavailable for this scanner result.');
+  const score = clamp(execution.score);
+  const coverage = clamp(execution.coveragePercent);
+  const status = safeStatus(execution.status || 'BLOCKED');
+  const quality = String(execution.classification || 'INSUFFICIENT_COVERAGE').replaceAll('_', ' ');
+  const scoreText = score == null ? 'unscored' : `${Math.round(score)}/100`;
+  const coverageText = coverage == null ? 'unknown coverage' : `${Math.round(coverage)}% coverage`;
+  return stageGauge({ ...definition, scored: true }, {
+    score,
+    confidence: coverage,
+    direction: 'NO_TRADE',
+    passed: status === 'CONFIRMED',
+    status: status === 'REJECTED' ? 'REJECTED' : status === 'UNAVAILABLE' ? 'VALIDATING' : status === 'CONFIRMED' ? 'PASSED' : 'BLOCKED',
+    failedConditions: execution.blockers || [],
+  }, item, {
+    status,
+    summary: `${quality} · ${scoreText} · ${coverageText} · execution remains ${status}.`,
+    confirmationReasons: Array.isArray(execution.components)
+      ? execution.components.filter((component) => component.status === 'PASS').map((component) => component.id)
+      : [],
+    penalties: execution.marketBlockers || [],
+    blockers: execution.blockers || [],
+    metadata: execution,
+  });
+}
+
 export function buildTradingIntelligenceSnapshot(item = {}) {
   const stages = item.stages || {};
   const byId = Object.fromEntries(TRADING_GAUGE_REGISTRY.map((definition) => [definition.id, definition]));
@@ -243,7 +271,7 @@ export function buildTradingIntelligenceSnapshot(item = {}) {
     stageGauge(byId['risk-quality'], risk, item),
     stageGauge(byId['setup-confidence'], { score: item.pipelineScore, direction: item.direction, passed: item.pipelinePassed, status: item.pipelinePassed ? 'PASSED' : 'REJECTED', failedConditions: item.failedStage ? [item.reason || `${item.failedStage}_FAILED`] : [] }, item, { status: item.pipelinePassed ? 'CONFIRMED' : 'WAITING_FOR_CONFIRMATION', summary: item.pipelinePassed ? 'All Institutional Flow stages passed in observation mode.' : `Waiting on ${item.failedStage || 'required conditions'}.` }),
     dataQualityGauge(byId['data-quality'], item),
-    unavailable(byId['execution-quality'], item, 'Execution quality is intentionally unavailable because this scanner is observation-only and disconnected from order submission.'),
+    executionQualityGauge(byId['execution-quality'], item),
   ].sort((left, right) => (byId[left.id]?.priority || 999) - (byId[right.id]?.priority || 999));
 
   const mandatoryBlockers = gauges.filter((gauge) => gauge.mandatory && gauge.blocksExecution).map((gauge) => gauge.id);
