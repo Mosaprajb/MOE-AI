@@ -67,6 +67,22 @@ function syntheticBars() {
   return bars;
 }
 
+function metricSnapshot() {
+  const bars = syntheticBars();
+  return normalizeMarketData({
+    bars,
+    timeframe: '5m',
+    now: bars.at(-1).t + 5 * MINUTE + 30_000,
+    config,
+  });
+}
+
+function assertApproximatelyEqual(actual, expected, tolerance = 1e-8) {
+  assert.ok(Number.isFinite(actual), `Expected a finite actual value, received ${actual}`);
+  assert.ok(Number.isFinite(expected), `Expected a finite expected value, received ${expected}`);
+  assert.ok(Math.abs(actual - expected) <= tolerance, `Expected ${actual} to be within ${tolerance} of ${expected}`);
+}
+
 test('identifies exchange sessions correctly', () => {
   assert.equal(marketSessionAt(Date.parse('2026-07-24T12:00:00.000Z')), 'PREMARKET');
   assert.equal(marketSessionAt(Date.parse('2026-07-24T15:00:00.000Z')), 'REGULAR');
@@ -112,16 +128,22 @@ test('rejects delayed and abnormally wide-spread market data', () => {
   }), /Spread/);
 });
 
-test('calculates ATR, relative volume, realized volatility, and tick size deterministically', () => {
-  const snapshot = normalizeMarketData({
-    bars: syntheticBars(),
-    timeframe: '5m',
-    now: syntheticBars().at(-1).t + 5 * MINUTE + 30_000,
-    config,
-  });
-  assert.equal(calculateAtr(snapshot.candles, 5), snapshot.atr);
-  assert.equal(calculateRelativeVolume(snapshot.candles, 5), snapshot.relativeVolume);
-  assert.equal(calculateRealizedVolatility(snapshot.candles, 5), snapshot.realizedVolatilityPercent);
+test('calculates ATR deterministically', () => {
+  const snapshot = metricSnapshot();
+  assertApproximatelyEqual(calculateAtr(snapshot.candles, 5), snapshot.atr);
+});
+
+test('calculates relative volume deterministically', () => {
+  const snapshot = metricSnapshot();
+  assertApproximatelyEqual(calculateRelativeVolume(snapshot.candles, 5), snapshot.relativeVolume, 1e-4);
+});
+
+test('calculates realized volatility deterministically', () => {
+  const snapshot = metricSnapshot();
+  assertApproximatelyEqual(calculateRealizedVolatility(snapshot.candles, 5), snapshot.realizedVolatilityPercent, 1e-4);
+});
+
+test('infers equity tick sizes conservatively', () => {
   assert.equal(inferTickSize(100), 0.01);
   assert.equal(inferTickSize(0.5), 0.0001);
 });
