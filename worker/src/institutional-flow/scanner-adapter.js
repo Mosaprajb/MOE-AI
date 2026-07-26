@@ -27,7 +27,11 @@ function compactStage(stage, name) {
     passed: stage.passed === true,
     status: stage.status || (stage.passed ? 'PASSED' : 'REJECTED'),
     score: Number(stage.score || 0),
+    confidence: Number.isFinite(Number(stage.confidence)) ? Number(stage.confidence) : null,
     classification: stage.classification || stage.type || stage.category || null,
+    direction: stage.direction || null,
+    absorptionMode: stage.absorptionMode || null,
+    reason: stage.reason || null,
     failedConditions: Array.isArray(stage.failedConditions) ? stage.failedConditions.slice(0, 8) : [],
   };
 }
@@ -44,6 +48,9 @@ function compactObservation(result) {
   const stages = Object.fromEntries(INSTITUTIONAL_FLOW_STAGE_ORDER.map((name) => [name, compactStage(result.stages?.[name], name)]));
   return freeze({
     symbol: result.symbol,
+    executionTimeframe: result.executionTimeframe || null,
+    contextTimeframe: result.contextTimeframe || null,
+    evaluatedAt: result.evaluatedAt || null,
     pipelinePassed: result.pipelinePassed === true,
     pipelineScore: Number(result.pipelineScore || 0),
     currentStage: reachedStage(result),
@@ -53,6 +60,7 @@ function compactObservation(result) {
     dataMode: result.dataMode || 'INSUFFICIENT_DATA',
     candidate,
     stages,
+    diagnostics: result.diagnostics || {},
     stageOrder: INSTITUTIONAL_FLOW_STAGE_ORDER,
     tradeDecision: 'NO_TRADE',
     observationOnly: true,
