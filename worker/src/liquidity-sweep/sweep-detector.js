@@ -4,11 +4,6 @@ function clamp(value, minimum, maximum) {
   return Math.min(maximum, Math.max(minimum, value));
 }
 
-function finite(value, fallback = null) {
-  const parsed = Number(value);
-  return Number.isFinite(parsed) ? parsed : fallback;
-}
-
 function bodySize(candle) {
   return Math.abs(candle.close - candle.open);
 }
@@ -104,7 +99,9 @@ export async function detectLiquiditySweep({ symbol, snapshot, pool, config } = 
     snapshot.tickSize * config.sweep.minimumPenetrationTicks,
   );
   const maximumDistance = snapshot.atr * config.sweep.maximumPenetrationAtr;
-  const startIndex = Math.max(0, snapshot.candles.findIndex((candle) => candle.timestamp >= pool.createdAt));
+  const createdIndex = snapshot.candles.findIndex((candle) => candle.timestamp >= pool.createdAt);
+  const startIndex = createdIndex < 0 ? snapshot.candles.length : createdIndex;
+  const lastIndex = snapshot.candles.length - 1;
   const direction = eventDirection(pool);
   const events = [];
 
@@ -113,7 +110,7 @@ export async function detectLiquiditySweep({ symbol, snapshot, pool, config } = 
     if (!penetrates(candle, pool, minimumDistance)) continue;
     const depth = penetrationDistance(candle, pool);
     const penetrationAtr = depth / snapshot.atr;
-    const maximumWindowEnd = Math.min(snapshot.candles.length - 1, index + config.sweep.maximumReclaimCandles);
+    const maximumWindowEnd = Math.min(lastIndex, index + config.sweep.maximumReclaimCandles);
     let reclaimIndex = null;
     let outsideCount = closesOutside(candle, pool) ? 1 : 0;
 
@@ -126,7 +123,16 @@ export async function detectLiquiditySweep({ symbol, snapshot, pool, config } = 
       }
     }
 
-    const eventCandles = snapshot.candles.slice(index, (reclaimIndex ?? maximumWindowEnd) + 1);
+    const sequenceEnd = reclaimIndex ?? maximumWindowEnd;
+    const activeAtSnapshotEdge = reclaimIndex == null
+      ? maximumWindowEnd === lastIndex
+      : reclaimIndex >= Math.max(index, lastIndex - 1);
+    if (!activeAtSnapshotEdge) {
+      index = Math.max(index, sequenceEnd);
+      continue;
+    }
+
+    const eventCandles = snapshot.candles.slice(index, sequenceEnd + 1);
     const reclaimCandle = reclaimIndex == null ? null : snapshot.candles[reclaimIndex];
     const reclaimBars = reclaimIndex == null ? null : reclaimIndex - index;
     const representative = reclaimCandle || candle;
@@ -173,6 +179,8 @@ export async function detectLiquiditySweep({ symbol, snapshot, pool, config } = 
       ],
       rejectionReasons,
     }));
+
+    index = Math.max(index, sequenceEnd);
   }
 
   return Object.freeze({
