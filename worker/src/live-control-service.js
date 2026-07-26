@@ -1,6 +1,6 @@
 const CONTROL_KEY = 'live-control:v1';
 const SECURITY_KEY = 'live-control-security:v1';
-const VERSION = 3;
+const VERSION = 4;
 
 function enabled(value) {
   return String(value || '').toLowerCase() === 'true';
@@ -55,11 +55,10 @@ function staticLiveCapability(env = {}) {
     && checks.productionCredentials
     && checks.executionAdapterApproved
     && checks.protectedOrders;
-  const activationConfigured = checks.liveMasterConfigured && checks.liveSubmissionConfigured;
   return {
     ready: buildReady,
     buildReady,
-    activationConfigured,
+    activationConfigured: checks.liveMasterConfigured && checks.liveSubmissionConfigured,
     runtimeActivationRequired: true,
     missingSecrets,
     checks,
@@ -140,7 +139,28 @@ export async function updateLiveControlState(storage, patch = {}, env = {}) {
   if (action === 'TEST_PIN') next = { ...next, lastAction: 'PIN_VERIFIED' };
   else if (action === 'ENABLE_SANDBOX_AUTOMATION') next = { ...next, sandboxAutomationEnabled: true };
   else if (action === 'DISABLE_SANDBOX_AUTOMATION') next = { ...next, sandboxAutomationEnabled: false };
-  else if (action === 'UNLOCK_LIVE_CONTROLS') {
+  else if (action === 'ACTIVATE_LIVE_FULLY') {
+    if (!capability.ready) throw new Error(`Production is incomplete: ${capability.missingSecrets.join(', ') || 'required gate failed'}.`);
+    if (String(patch.confirmation || '') !== 'ACTIVATE_LIVE_TRADING') throw new Error('Full live activation requires the exact confirmation ACTIVATE_LIVE_TRADING.');
+    next = {
+      ...next,
+      sandboxAutomationEnabled: false,
+      liveControlsUnlocked: true,
+      liveAutomationArmed: true,
+      killSwitch: false,
+      lastAction: 'LIVE_FULLY_ACTIVATED',
+    };
+  } else if (action === 'RETURN_TO_SANDBOX') {
+    if (String(patch.confirmation || '') !== 'RETURN_TO_SANDBOX') throw new Error('Sandbox return requires the exact confirmation RETURN_TO_SANDBOX.');
+    next = {
+      ...next,
+      sandboxAutomationEnabled: true,
+      liveControlsUnlocked: false,
+      liveAutomationArmed: false,
+      killSwitch: true,
+      lastAction: 'RETURNED_TO_SANDBOX_LOCKED',
+    };
+  } else if (action === 'UNLOCK_LIVE_CONTROLS') {
     if (!capability.ready) throw new Error(`Static live-trading capability is incomplete: ${capability.missingSecrets.join(', ') || 'required gate failed'}.`);
     if (String(patch.confirmation || '') !== 'UNLOCK_LIVE_CONTROLS') throw new Error('Live control unlock requires the exact confirmation UNLOCK_LIVE_CONTROLS.');
     next = { ...next, sandboxAutomationEnabled: false, liveControlsUnlocked: true, liveAutomationArmed: false, killSwitch: true };
@@ -167,7 +187,7 @@ export function applyRuntimeLiveControl(env = {}, state = {}) {
   const liveActive = state.liveControlsUnlocked === true && state.killSwitch === false;
   return {
     ...env,
-    WEBULL_ENVIRONMENT: liveActive ? 'production' : (env.WEBULL_ENVIRONMENT || 'sandbox'),
+    WEBULL_ENVIRONMENT: liveActive ? 'production' : 'sandbox',
     WEBULL_LIVE_TRADING: liveActive ? 'true' : 'false',
     WEBULL_LIVE_ORDER_SUBMISSION: liveActive ? 'true' : 'false',
     MOE_LIVE_MODE_UNLOCKED: liveActive ? 'true' : 'false',
