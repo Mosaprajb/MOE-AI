@@ -109,5 +109,8 @@ jobs:
       - name: Test conflict and activity dashboard overlay
         run: node --test --test-concurrency=1 worker/test/conflict-activity-overlay.test.mjs
 
+      - name: Test final safety configuration
+        run: node --test --test-concurrency=1 worker/test/final-safety-configuration.test.mjs
+
       - name: Run complete Worker safety suite
         run: npm run test:worker
