@@ -6,7 +6,7 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "test:worker": "node --test --test-concurrency=1 worker/test/*.test.mjs"
+    "test:worker": "node worker/test/run-all.mjs"
   },
   "dependencies": {
     "@pushforge/builder": "2.0.5",
