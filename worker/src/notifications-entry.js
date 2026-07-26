@@ -8,6 +8,7 @@ import {
   unregisterNotificationSubscription,
 } from './trade-notification-service.js';
 
+const SERVICE_WORKER_PATH = '/notification-sw.js';
 const PATHS = {
   config: '/api/notifications/config',
   subscribe: '/api/notifications/subscribe',
@@ -24,6 +25,65 @@ function secureJson(data, status = 200) {
       'cache-control': 'no-store',
       'x-content-type-options': 'nosniff',
     },
+  });
+}
+
+function notificationServiceWorker() {
+  const source = `
+self.addEventListener('install',event=>{self.skipWaiting();});
+self.addEventListener('activate',event=>{event.waitUntil(self.clients.claim());});
+self.addEventListener('push',event=>{
+  let payload={};
+  try{payload=event.data?event.data.json():{};}catch{payload={title:'MOE-AI',body:event.data?event.data.text():'New trade update'};}
+  const title=payload.title||'MOE-AI';
+  const options={
+    body:payload.body||'New trade update',
+    tag:payload.tag||'moe-ai-trade',
+    renotify:payload.renotify===true,
+    timestamp:payload.timestamp||Date.now(),
+    data:payload.data||{url:'/alerts'}
+  };
+  event.waitUntil(self.registration.showNotification(title,options));
+});
+self.addEventListener('notificationclick',event=>{
+  event.notification.close();
+  const raw=event.notification.data&&event.notification.data.url?event.notification.data.url:'/alerts';
+  const target=new URL(raw,self.location.origin).href;
+  event.waitUntil(self.clients.matchAll({type:'window',includeUncontrolled:true}).then(windows=>{
+    const exact=windows.find(client=>client.url===target);
+    if(exact)return exact.focus();
+    const sameOrigin=windows.find(client=>client.url.startsWith(self.location.origin));
+    if(sameOrigin)return sameOrigin.navigate(target).then(client=>client.focus());
+    return self.clients.openWindow(target);
+  }));
+});`;
+  return new Response(source, {
+    headers: {
+      'content-type': 'application/javascript; charset=utf-8',
+      'cache-control': 'no-cache, no-store, must-revalidate',
+      'service-worker-allowed': '/',
+      'x-content-type-options': 'nosniff',
+    },
+  });
+}
+
+function isHtml(response) {
+  return String(response?.headers?.get?.('content-type') || '').includes('text/html');
+}
+
+async function registerNotificationWorkerInPage(response) {
+  if (!isHtml(response)) return response;
+  const html = await response.text();
+  if (html.includes('moeNotificationWorkerRegistration')) {
+    return new Response(html, { status: response.status, statusText: response.statusText, headers: response.headers });
+  }
+  const script = `<script id="moeNotificationWorkerRegistration">(function(){if(!('serviceWorker'in navigator))return;window.addEventListener('load',function(){navigator.serviceWorker.register('${SERVICE_WORKER_PATH}',{scope:'/'}).catch(function(error){console.error('MOE notification service worker registration failed',error);});},{once:true});})();</script>`;
+  const headers = new Headers(response.headers);
+  headers.delete('content-length');
+  return new Response(html.replace('</body>', `${script}</body>`), {
+    status: response.status,
+    statusText: response.statusText,
+    headers,
   });
 }
 
@@ -153,11 +213,13 @@ async function handleNotifications(request, env) {
 export default {
   async fetch(request, env, ctx) {
     const path = new URL(request.url).pathname;
+    if (path === SERVICE_WORKER_PATH) return notificationServiceWorker();
     if (Object.values(PATHS).includes(path)) {
       const response = await handleNotifications(request, env);
       if (response) return response;
     }
-    return worker.fetch(request, env, ctx);
+    const response = await worker.fetch(request, env, ctx);
+    return registerNotificationWorkerInPage(response);
   },
 
   scheduled(controller, env, ctx) {
