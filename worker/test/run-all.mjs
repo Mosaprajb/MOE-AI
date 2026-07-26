@@ -19,7 +19,7 @@ for (const name of files) {
   const absolute = join(directory, name);
   const display = relative(repositoryRoot, absolute).replaceAll('\\', '/');
   console.log(`\n=== ${display} ===`);
-  const result = spawnSync(process.execPath, ['--test', absolute], {
+  const result = spawnSync(process.execPath, ['--test', '--test-concurrency=1', absolute], {
     cwd: repositoryRoot,
     env: process.env,
     encoding: 'utf8',
@@ -34,4 +34,4 @@ if (failures.length) {
   process.exit(1);
 }
 
-console.log(`\nAll ${files.length} Worker test files passed in isolated processes.`);
+console.log(`\nAll ${files.length} Worker test files passed sequentially in isolated processes.`);
