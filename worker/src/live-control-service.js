@@ -1,6 +1,6 @@
 const CONTROL_KEY = 'live-control:v1';
 const SECURITY_KEY = 'live-control-security:v1';
-const VERSION = 2;
+const VERSION = 3;
 
 function enabled(value) {
   return String(value || '').toLowerCase() === 'true';
@@ -56,7 +56,14 @@ function staticLiveCapability(env = {}) {
     && checks.executionAdapterApproved
     && checks.protectedOrders;
   const activationConfigured = checks.liveMasterConfigured && checks.liveSubmissionConfigured;
-  return { ready: buildReady && activationConfigured, buildReady, activationConfigured, missingSecrets, checks };
+  return {
+    ready: buildReady,
+    buildReady,
+    activationConfigured,
+    runtimeActivationRequired: true,
+    missingSecrets,
+    checks,
+  };
 }
 
 async function securityState(storage) {
@@ -134,8 +141,9 @@ export async function updateLiveControlState(storage, patch = {}, env = {}) {
   else if (action === 'ENABLE_SANDBOX_AUTOMATION') next = { ...next, sandboxAutomationEnabled: true };
   else if (action === 'DISABLE_SANDBOX_AUTOMATION') next = { ...next, sandboxAutomationEnabled: false };
   else if (action === 'UNLOCK_LIVE_CONTROLS') {
+    if (!capability.ready) throw new Error(`Static live-trading capability is incomplete: ${capability.missingSecrets.join(', ') || 'required gate failed'}.`);
     if (String(patch.confirmation || '') !== 'UNLOCK_LIVE_CONTROLS') throw new Error('Live control unlock requires the exact confirmation UNLOCK_LIVE_CONTROLS.');
-    next = { ...next, liveControlsUnlocked: true, liveAutomationArmed: false, killSwitch: true };
+    next = { ...next, sandboxAutomationEnabled: false, liveControlsUnlocked: true, liveAutomationArmed: false, killSwitch: true };
   } else if (action === 'CLEAR_LIVE_KILL_SWITCH') {
     if (!capability.ready) throw new Error('Static live-trading capability is incomplete.');
     if (!next.liveControlsUnlocked) throw new Error('Live controls must be unlocked first.');
@@ -145,7 +153,7 @@ export async function updateLiveControlState(storage, patch = {}, env = {}) {
     if (!capability.ready) throw new Error('Static live-trading capability is incomplete.');
     if (!next.liveControlsUnlocked || next.killSwitch) throw new Error('Live controls must be unlocked and the kill switch must be cleared first.');
     if (String(patch.confirmation || '') !== 'ARM_LIVE_AUTOMATION') throw new Error('Arming live automation requires the exact confirmation ARM_LIVE_AUTOMATION.');
-    next = { ...next, liveAutomationArmed: true };
+    next = { ...next, sandboxAutomationEnabled: false, liveAutomationArmed: true };
   } else if (action === 'DISARM_LIVE_AUTOMATION') next = { ...next, liveAutomationArmed: false, killSwitch: true };
   else if (action === 'LOCK_LIVE_CONTROLS') next = { ...next, liveControlsUnlocked: false, liveAutomationArmed: false, killSwitch: true };
   else if (action === 'LOCK_ALL') next = { ...next, sandboxAutomationEnabled: false, liveControlsUnlocked: false, liveAutomationArmed: false, killSwitch: true };
@@ -156,10 +164,14 @@ export async function updateLiveControlState(storage, patch = {}, env = {}) {
 }
 
 export function applyRuntimeLiveControl(env = {}, state = {}) {
+  const liveActive = state.liveControlsUnlocked === true && state.killSwitch === false;
   return {
     ...env,
-    MOE_LIVE_MODE_UNLOCKED: state.liveControlsUnlocked === true ? 'true' : 'false',
-    WEBULL_LIVE_AUTOMATION_ARMED: state.liveAutomationArmed === true ? 'true' : 'false',
-    WEBULL_LIVE_KILL_SWITCH: state.killSwitch === false ? 'false' : 'true',
+    WEBULL_ENVIRONMENT: liveActive ? 'production' : (env.WEBULL_ENVIRONMENT || 'sandbox'),
+    WEBULL_LIVE_TRADING: liveActive ? 'true' : 'false',
+    WEBULL_LIVE_ORDER_SUBMISSION: liveActive ? 'true' : 'false',
+    MOE_LIVE_MODE_UNLOCKED: liveActive ? 'true' : 'false',
+    WEBULL_LIVE_AUTOMATION_ARMED: liveActive && state.liveAutomationArmed === true ? 'true' : 'false',
+    WEBULL_LIVE_KILL_SWITCH: liveActive ? 'false' : 'true',
   };
 }
