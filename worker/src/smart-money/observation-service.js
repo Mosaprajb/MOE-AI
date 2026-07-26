@@ -1,5 +1,6 @@
 import { evaluateInstitutionalFlowScannerBatch } from '../institutional-flow/scanner-adapter.js';
 import { buildTradingIntelligenceSnapshot } from '../trading-intelligence/gauge-adapter.js';
+import { comparisonSymbolFor, createSmtDivergenceConfig, evaluateSmtDivergence } from '../trading-intelligence/smt-divergence.js';
 
 const SUPPORTED_TIMEFRAMES = Object.freeze({
   '1m': { minutes: 1, alpaca: '1Min', lookbackDays: 3 },
@@ -43,6 +44,11 @@ function symbolList(universe = [], env = {}) {
   return [...new Set(source.map((symbol) => String(symbol || '').trim().toUpperCase()))]
     .filter((symbol) => /^[A-Z][A-Z0-9.-]{0,9}$/.test(symbol))
     .slice(0, limit);
+}
+
+function smtUniverse(primarySymbols, config) {
+  const comparisons = primarySymbols.map((primary) => comparisonSymbolFor(primary, config)).filter(Boolean);
+  return [...new Set([...primarySymbols, ...comparisons])];
 }
 
 export function smartMoneyObservationDue(now, timeframe = '5m') {
@@ -92,7 +98,23 @@ async function fetchObservationBars({ env, now, window, symbols, timeframe, fetc
   return output;
 }
 
-function compactOpportunity(item) {
+function evaluateSmtBySymbol({ primarySymbols, marketDataBySymbol, timeframe, config }) {
+  return Object.fromEntries(primarySymbols.map((primarySymbol) => {
+    const comparisonSymbol = comparisonSymbolFor(primarySymbol, config);
+    const primaryBars = marketDataBySymbol[primarySymbol]?.bars || [];
+    const comparisonBars = marketDataBySymbol[comparisonSymbol]?.bars || [];
+    return [primarySymbol, evaluateSmtDivergence({
+      primarySymbol,
+      comparisonSymbol,
+      primaryBars,
+      comparisonBars,
+      timeframe,
+      config,
+    })];
+  }));
+}
+
+function compactOpportunity(item, smtDivergence = null) {
   const candidate = item.candidate || {};
   const compact = {
     symbol: item.symbol,
@@ -114,7 +136,7 @@ function compactOpportunity(item) {
     dataMode: item.dataMode || 'INSUFFICIENT_DATA',
     pipelinePassed: item.pipelinePassed === true,
     stages: item.stages || {},
-    diagnostics: item.diagnostics || {},
+    diagnostics: { ...(item.diagnostics || {}), smtDivergence },
     failedConditions: item.failedStage
       ? (item.stages?.[item.failedStage]?.failedConditions || []).slice(0, 8)
       : [],
@@ -135,6 +157,8 @@ export async function runSmartMoneyObservation({
   const now = Number(scheduledTime) || Date.now();
   const timeframe = timeframeConfig(env.SMART_MONEY_OBSERVATION_TIMEFRAME).name;
   const symbols = symbolList(universe, env);
+  const smtConfig = createSmtDivergenceConfig(env);
+  const dataSymbols = smtUniverse(symbols, smtConfig);
   const base = {
     enabled: env.SMART_MONEY_OBSERVATION_ENABLED === 'true',
     engine: 'INSTITUTIONAL_FLOW_PIPELINE',
@@ -159,23 +183,27 @@ export async function runSmartMoneyObservation({
   }
   if (!symbols.length) return Object.freeze({ ...base, ok: false, skipped: 'OBSERVATION_UNIVERSE_EMPTY', topOpportunities: [] });
 
-  const marketDataBySymbol = await fetchObservationBars({ env, now, window, symbols, timeframe, fetchImpl });
+  const marketDataBySymbol = await fetchObservationBars({ env, now, window, symbols: dataSymbols, timeframe, fetchImpl });
   const batch = await evaluator({ symbols, marketDataBySymbol, timeframe, now, limit: symbols.length });
+  const smtBySymbol = evaluateSmtBySymbol({ primarySymbols: symbols, marketDataBySymbol, timeframe, config: smtConfig });
   const topLimit = integer(env.SMART_MONEY_OBSERVATION_TOP_RESULTS, 10, 1, 25);
   const topOpportunities = batch.observations
     .filter((item) => Number(item.pipelineScore || 0) > 0)
     .slice(0, topLimit)
-    .map(compactOpportunity);
+    .map((item) => compactOpportunity(item, smtBySymbol[item.symbol] || null));
 
   return Object.freeze({
     ...base,
     ok: true,
     requestedSymbols: symbols.length,
+    marketDataSymbols: dataSymbols.length,
     evaluatedSymbols: batch.observations.length,
     rejectedSymbols: batch.rejected.length,
     completedCandidates: Number(batch.completedCandidates || 0),
     stageDistribution: batch.stageDistribution || {},
     stageOrder: batch.stageOrder || [],
+    smtEnabled: smtConfig.enabled,
+    smtPairsEvaluated: Object.keys(smtBySymbol).length,
     topOpportunities,
     rejected: batch.rejected.slice(0, 20),
   });
