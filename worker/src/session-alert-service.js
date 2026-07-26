@@ -1,4 +1,5 @@
 import { buildPushHTTPRequest } from '@pushforge/builder';
+import { validSessionNotificationRecord } from './session-notification-service.js';
 import { currentTradingSession, sessionAllowed, sessionTransitionEvents } from './trading-session-service.js';
 
 const STATE_KEY = 'trading-session-alerts:v1';
@@ -6,15 +7,6 @@ const HISTORY_LIMIT = 80;
 
 function enabled(env = {}) {
   return String(env.MOE_SESSION_ALERTS_ENABLED || 'true').toLowerCase() === 'true';
-}
-
-function validPushRecord(record) {
-  const subscription = record?.subscription;
-  return record?.enabled === true
-    && typeof subscription?.endpoint === 'string'
-    && subscription.endpoint.startsWith('https://')
-    && typeof subscription?.keys?.p256dh === 'string'
-    && typeof subscription?.keys?.auth === 'string';
 }
 
 async function sendPush(record, event, allowed, env) {
@@ -95,7 +87,7 @@ export async function processSessionAlerts(storage, payload = {}, env = {}) {
   }
 
   const subscriptions = (await storage.get('subscriptions')) || {};
-  const recipients = Object.values(subscriptions).filter(validPushRecord);
+  const recipients = Object.values(subscriptions).filter(validSessionNotificationRecord);
   const summaries = [];
   const processed = { ...baseState.processed };
 
