@@ -26,7 +26,7 @@ concurrency:
 
 jobs:
   worker-safety:
-    name: Worker safety and liquidity engine
+    name: Worker safety, liquidity, and Smart Money engines
     runs-on: ubuntu-latest
     timeout-minutes: 12
     steps:
@@ -55,6 +55,9 @@ jobs:
 
       - name: Test confirmation trade planning and scoring
         run: node --test --test-concurrency=1 worker/test/liquidity-sweep-engine.test.mjs
+
+      - name: Test Smart Money quantitative foundation
+        run: node --test --test-concurrency=1 worker/test/smart-money-foundation.test.mjs
 
       - name: Run complete Worker safety suite
         run: npm run test:worker
