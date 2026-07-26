@@ -32,7 +32,7 @@ const config = createSmartMoneyConfig({
   structure: {
     pivotLeftBars: 1,
     pivotRightBars: 1,
-    externalWindowBars: 3,
+    externalWindowBars: 5,
     minimumSwingProminenceAtr: 0.05,
     minimumBosPenetrationAtr: 0.05,
     minimumBosPenetrationTicks: 1,
