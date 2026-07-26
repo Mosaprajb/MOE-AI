@@ -35,7 +35,8 @@ export function evaluateAbsorptionStage({ stopRun, snapshot, orderFlow = null, c
     ? (Number(latest.close) - Number(latest.low)) / range
     : (Number(latest.high) - Number(latest.close)) / range;
   const relativeVolume = Number(snapshot.relativeVolume || 0);
-  const attempts = Math.max(1, Number(stopRun.stopLevel?.touchCount || stopRun.raid?.reclaimCandles === 0 ? 2 : 1));
+  const observedAttempts = Number(stopRun.stopLevel?.touchCount || 0);
+  const attempts = Math.max(1, observedAttempts || (Number(stopRun.raid?.reclaimCandles) === 0 ? 2 : 1));
   const penetrationEfficiency = Number(stopRun.penetrationAtr || 0) / Math.max(relativeVolume, 0.01);
   const failedConditions = [];
   let score = 0;
@@ -48,12 +49,11 @@ export function evaluateAbsorptionStage({ stopRun, snapshot, orderFlow = null, c
     absorptionMode = 'TRUE_ORDER_FLOW_ABSORPTION';
     const aggressiveBuy = Number(orderFlow.aggressiveBuyVolume || 0);
     const aggressiveSell = Number(orderFlow.aggressiveSellVolume || 0);
-    const delta = Number(orderFlow.delta ?? aggressiveBuy - aggressiveSell);
+    const delta = Number(orderFlow.delta ?? (aggressiveBuy - aggressiveSell));
     const pressure = direction === 'BULLISH' ? aggressiveSell : aggressiveBuy;
-    const opposing = direction === 'BULLISH' ? aggressiveBuy : aggressiveSell;
     const total = Math.max(aggressiveBuy + aggressiveSell, 1);
     const pressureShare = pressure / total;
-    const progress = Math.abs(Number(orderFlow.priceProgress ?? stopRun.penetrationAtr || 0));
+    const progress = Math.abs(Number(orderFlow.priceProgress ?? stopRun.penetrationAtr ?? 0));
     const efficiency = progress / Math.max(pressure / 1000, 0.001);
     const repeatedAttempts = Number(orderFlow.repeatedAttempts || attempts);
     confidence = clamp(Number(orderFlow.classificationConfidence ?? 0.8), 0, 1);
