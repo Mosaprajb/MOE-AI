@@ -44,8 +44,11 @@ jobs:
       - name: Test liquidity contracts and state machine
         run: node --test --test-concurrency=1 worker/test/liquidity-sweep-foundation.test.mjs
 
-      - name: Test market-data normalization and liquidity mapping
-        run: node --test --test-concurrency=1 worker/test/liquidity-sweep-market-data.test.mjs
+      - name: Test market-data metrics and rejection gates
+        run: node --test --test-concurrency=1 worker/test/liquidity-sweep-market-metrics.test.mjs
+
+      - name: Test liquidity pool mapping
+        run: node --test --test-concurrency=1 worker/test/liquidity-sweep-liquidity-map.test.mjs
 
       - name: Test sweep detection and breakout classification
         run: node --test --test-concurrency=1 worker/test/liquidity-sweep-classifier.test.mjs
