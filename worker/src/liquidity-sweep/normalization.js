@@ -99,6 +99,62 @@ export function calculateRelativeVolume(candles, lookback = 20) {
   return Number((latest / baseline).toFixed(4));
 }
 
+export function calculateSessionRelativeVolume(candles, {
+  minimumSamples = 3,
+  maximumSessions = 20,
+} = {}) {
+  const values = Array.isArray(candles) ? candles : [];
+  const latest = values.at(-1);
+  if (!latest || !(finite(latest.timestamp) > 0) || !Number.isFinite(finite(latest.volume))) {
+    return Object.freeze({
+      value: null,
+      method: 'SESSION_TIME_NORMALIZED',
+      available: false,
+      reason: 'LATEST_COMPLETED_CANDLE_UNAVAILABLE',
+      latestVolume: null,
+      baselineVolume: null,
+      sampleCount: 0,
+      session: null,
+      slotMinutes: null,
+      dateKey: null,
+      baselineDates: [],
+    });
+  }
+
+  const required = Math.max(2, Math.min(20, Math.floor(Number(minimumSamples) || 3)));
+  const limit = Math.max(required, Math.min(60, Math.floor(Number(maximumSessions) || 20)));
+  const latestParts = exchangeParts(latest.timestamp);
+  const byDate = new Map();
+  for (let index = values.length - 2; index >= 0; index -= 1) {
+    const candle = values[index];
+    if (candle.session !== latest.session) continue;
+    const parts = exchangeParts(candle.timestamp);
+    if (parts.dateKey === latestParts.dateKey || parts.minutes !== latestParts.minutes) continue;
+    if (!Number.isFinite(finite(candle.volume)) || candle.volume < 0) continue;
+    if (!byDate.has(parts.dateKey)) byDate.set(parts.dateKey, candle.volume);
+    if (byDate.size >= limit) break;
+  }
+
+  const samples = [...byDate.entries()];
+  const baselineVolume = mean(samples.map(([, volume]) => volume));
+  const available = samples.length >= required && baselineVolume > 0;
+  return Object.freeze({
+    value: available ? Number((latest.volume / baselineVolume).toFixed(4)) : null,
+    method: 'SESSION_TIME_NORMALIZED',
+    available,
+    reason: available ? 'SESSION_SLOT_BASELINE_AVAILABLE' : 'INSUFFICIENT_SESSION_SLOT_HISTORY',
+    latestVolume: latest.volume,
+    baselineVolume: baselineVolume == null ? null : Number(baselineVolume.toFixed(4)),
+    sampleCount: samples.length,
+    requiredSamples: required,
+    maximumSessions: limit,
+    session: latest.session,
+    slotMinutes: latestParts.minutes,
+    dateKey: latestParts.dateKey,
+    baselineDates: samples.map(([dateKey]) => dateKey),
+  });
+}
+
 export function calculateRealizedVolatility(candles, lookback = 20) {
   if (!Array.isArray(candles) || candles.length < 3) return null;
   const closes = candles.slice(-(lookback + 1)).map((candle) => candle.close);
@@ -208,7 +264,23 @@ export function normalizeMarketData({
   }
 
   const atr = calculateAtr(candles, config.dataQuality.atrPeriod);
-  const relativeVolume = calculateRelativeVolume(candles, config.dataQuality.volumeLookback);
+  const sessionRelativeVolume = calculateSessionRelativeVolume(candles, {
+    minimumSamples: 3,
+    maximumSessions: Math.max(3, Math.min(30, Number(config.dataQuality.volumeLookback) || 20)),
+  });
+  const fallbackRelativeVolume = calculateRelativeVolume(candles, config.dataQuality.volumeLookback);
+  const relativeVolume = sessionRelativeVolume.available ? sessionRelativeVolume.value : fallbackRelativeVolume;
+  const relativeVolumeMethod = sessionRelativeVolume.available
+    ? 'SESSION_TIME_NORMALIZED'
+    : 'RECENT_COMPLETED_CANDLE_LOOKBACK';
+  const relativeVolumeDetails = Object.freeze({
+    ...sessionRelativeVolume,
+    value: relativeVolume,
+    method: relativeVolumeMethod,
+    fallbackUsed: !sessionRelativeVolume.available,
+    fallbackReason: sessionRelativeVolume.available ? null : sessionRelativeVolume.reason,
+    fallbackLookbackBars: sessionRelativeVolume.available ? null : config.dataQuality.volumeLookback,
+  });
   const realizedVolatilityPercent = calculateRealizedVolatility(candles, config.dataQuality.realizedVolatilityLookback);
   const spread = spreadMetrics(bid, ask);
   if (spread.spreadPercent != null && spread.spreadPercent > config.risk.maximumSpreadPercent) {
@@ -236,7 +308,8 @@ export function normalizeMarketData({
     tickSize: normalizedTickSize,
     atr,
     relativeVolume,
-    relativeVolumeMethod: 'RECENT_COMPLETED_CANDLE_LOOKBACK',
+    relativeVolumeMethod,
+    relativeVolumeDetails,
     realizedVolatilityPercent,
     spread,
     quality: Object.freeze({
