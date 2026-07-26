@@ -59,5 +59,8 @@ jobs:
       - name: Test Smart Money quantitative foundation
         run: node --test --test-concurrency=1 worker/test/smart-money-foundation.test.mjs
 
+      - name: Test Smart Money zones breakers and confluence
+        run: node --test --test-concurrency=1 worker/test/smart-money-zones-confluence.test.mjs
+
       - name: Run complete Worker safety suite
         run: npm run test:worker
