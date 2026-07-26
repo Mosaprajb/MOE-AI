@@ -19,6 +19,19 @@ test('unfilled opportunity or submitted order is not a confirmed entry', () => {
   }), false);
 });
 
+test('generic OPEN lifecycle without a fill is not a confirmed entry', () => {
+  assert.equal(isConfirmedEntry({
+    id: 'trade_open_only',
+    symbol: 'MSFT',
+    status: 'OPEN',
+    entryPrice: 501.25,
+    lifecycleStatus: 'OPEN',
+    brokerEntryStatus: 'NEW',
+    filledQuantity: 0,
+    brokerPositionSeen: false,
+  }), false);
+});
+
 test('filled or broker-visible position is a confirmed entry', () => {
   assert.equal(isConfirmedEntry({
     id: 'trade_filled',
