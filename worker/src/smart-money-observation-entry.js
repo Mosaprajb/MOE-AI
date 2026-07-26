@@ -1,9 +1,11 @@
 import tradingModeWorker, { AlertCoordinator as TradingAlertCoordinator } from './trading-mode-entry.js';
 import { AUTO_SCANNER_SYMBOLS, activeTradingWindow } from './auto-scanner.js';
+import { enhanceSmartMoneyDashboard } from './smart-money/dashboard-overlay.js';
 import { runSmartMoneyObservation } from './smart-money/observation-service.js';
 
 const OBSERVATION_STATUS_KEY = 'smart-money-observation:v1';
 const OBSERVATION_HISTORY_KEY = 'smart-money-observation-history:v1';
+const DASHBOARD_PATHS = new Set(['/', '/moe-ai', '/moe-ai/', '/dashboard', '/dashboard/']);
 
 function observationEnabled(env = {}) {
   return String(env.SMART_MONEY_OBSERVATION_ENABLED || '').toLowerCase() === 'true';
@@ -86,8 +88,10 @@ async function runObservationSidecar(controller, env) {
 }
 
 export default {
-  fetch(request, env, ctx) {
-    return tradingModeWorker.fetch(request, env, ctx);
+  async fetch(request, env, ctx) {
+    const response = await tradingModeWorker.fetch(request, env, ctx);
+    const path = new URL(request.url).pathname;
+    return DASHBOARD_PATHS.has(path) ? enhanceSmartMoneyDashboard(response) : response;
   },
 
   scheduled(controller, env, ctx) {
