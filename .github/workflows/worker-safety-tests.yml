@@ -25,10 +25,10 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  duplicate-protection:
-    name: Duplicate protection and reservations
+  worker-safety:
+    name: Worker safety and liquidity engine
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 8
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -38,5 +38,11 @@ jobs:
         with:
           node-version: '22'
 
-      - name: Run Worker safety tests
+      - name: Test liquidity foundation
+        run: node --test worker/test/liquidity-sweep-foundation.test.mjs
+
+      - name: Test market data and liquidity mapping
+        run: node --test worker/test/liquidity-sweep-market-data.test.mjs
+
+      - name: Run complete Worker safety suite
         run: npm run test:worker
