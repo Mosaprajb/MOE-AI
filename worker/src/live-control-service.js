@@ -50,7 +50,19 @@ function staticLiveCapability(env = {}) {
     executionAdapterApproved: enabled(env.MOE_LIVE_EXECUTION_IMPLEMENTED),
     protectedOrders: enabled(env.WEBULL_PROTECTED_ORDERS),
   };
-  return { ready: Object.values(checks).every(Boolean), missingSecrets, checks };
+  const buildReady = checks.pinControlEnabled
+    && checks.pinConfigured
+    && checks.productionCredentials
+    && checks.executionAdapterApproved
+    && checks.protectedOrders;
+  const activationConfigured = checks.liveMasterConfigured && checks.liveSubmissionConfigured;
+  return {
+    ready: buildReady && activationConfigured,
+    buildReady,
+    activationConfigured,
+    missingSecrets,
+    checks,
+  };
 }
 
 async function securityState(storage) {
@@ -98,7 +110,7 @@ export async function getLiveControlState(storage, env = {}) {
     pinConfigured: capability.checks.pinConfigured,
     pinControlEnabled: capability.checks.pinControlEnabled,
     staticLiveCapability: capability,
-    productionReady: capability.ready,
+    productionBuildReady: capability.buildReady,
     liveTradingEnabled: effectiveLiveUnlocked,
     pinLockedUntil: security.lockedUntil || null,
     effectiveLiveUnlocked,
@@ -129,12 +141,6 @@ export async function updateLiveControlState(storage, patch = {}, env = {}) {
     next = { ...next, sandboxAutomationEnabled: true };
   } else if (action === 'DISABLE_SANDBOX_AUTOMATION') {
     next = { ...next, sandboxAutomationEnabled: false };
-  } else if (action === 'START_LIVE_TRADING') {
-    if (!capability.ready) throw new Error('Production system is not ready. Complete every static production gate first.');
-    if (String(patch.confirmation || '') !== 'START_LIVE_TRADING') throw new Error('Starting live trading requires the exact confirmation START_LIVE_TRADING.');
-    next = { ...next, sandboxAutomationEnabled: false, liveControlsUnlocked: true, liveAutomationArmed: true, killSwitch: false };
-  } else if (action === 'STOP_LIVE_TRADING') {
-    next = { ...next, liveControlsUnlocked: false, liveAutomationArmed: false, killSwitch: true };
   } else if (action === 'UNLOCK_LIVE_CONTROLS') {
     if (String(patch.confirmation || '') !== 'UNLOCK_LIVE_CONTROLS') throw new Error('Live control unlock requires the exact confirmation UNLOCK_LIVE_CONTROLS.');
     next = { ...next, liveControlsUnlocked: true, liveAutomationArmed: false, killSwitch: true };
