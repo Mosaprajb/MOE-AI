@@ -39,19 +39,19 @@ jobs:
           node-version: '22'
 
       - name: Test duplicate-order reservations
-        run: node --test worker/test/order-reservation.test.mjs
+        run: node --test --test-concurrency=1 worker/test/order-reservation.test.mjs
 
       - name: Test liquidity contracts and state machine
-        run: node --test worker/test/liquidity-sweep-foundation.test.mjs
+        run: node --test --test-concurrency=1 worker/test/liquidity-sweep-foundation.test.mjs
 
       - name: Test market-data normalization and liquidity mapping
-        run: node --test worker/test/liquidity-sweep-market-data.test.mjs
+        run: node --test --test-concurrency=1 worker/test/liquidity-sweep-market-data.test.mjs
 
       - name: Test sweep detection and breakout classification
-        run: node --test worker/test/liquidity-sweep-classifier.test.mjs
+        run: node --test --test-concurrency=1 worker/test/liquidity-sweep-classifier.test.mjs
 
       - name: Test confirmation trade planning and scoring
-        run: node --test worker/test/liquidity-sweep-engine.test.mjs
+        run: node --test --test-concurrency=1 worker/test/liquidity-sweep-engine.test.mjs
 
       - name: Run all Worker tests in isolated processes
         id: complete-suite
