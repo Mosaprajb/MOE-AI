@@ -50,34 +50,11 @@ jobs:
       - name: Test liquidity pool mapping
         run: node --test --test-concurrency=1 worker/test/liquidity-sweep-liquidity-map.test.mjs
 
-      - name: Capture sweep classifier test
-        id: classifier
-        continue-on-error: true
-        shell: bash
-        run: |
-          set +e
-          node --test --test-concurrency=1 worker/test/liquidity-sweep-classifier.test.mjs > classifier-report.txt 2>&1
-          status=$?
-          echo "exit_code=$status" >> "$GITHUB_OUTPUT"
-          exit 0
-
-      - name: Upload classifier report
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: classifier-report
-          path: classifier-report.txt
-          if-no-files-found: error
-          retention-days: 3
+      - name: Test sweep detection and breakout classification
+        run: node --test --test-concurrency=1 worker/test/liquidity-sweep-classifier.test.mjs
 
       - name: Test confirmation trade planning and scoring
-        continue-on-error: true
         run: node --test --test-concurrency=1 worker/test/liquidity-sweep-engine.test.mjs
 
       - name: Run complete Worker safety suite
-        continue-on-error: true
         run: npm run test:worker
-
-      - name: Enforce classifier result
-        if: always()
-        run: test "${{ steps.classifier.outputs.exit_code }}" = "0"
