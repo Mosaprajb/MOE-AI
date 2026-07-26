@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs';
 import { spawn } from 'node:child_process';
+import { createServer as createNetServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { startVisualDashboardHarness } from './visual-dashboard-harness.mjs';
@@ -26,13 +27,17 @@ function wait(ms) {
   return new Promise((resolvePromise) => setTimeout(resolvePromise, ms));
 }
 
-async function waitForFile(path, timeoutMs = 10_000) {
-  const started = Date.now();
-  while (Date.now() - started < timeoutMs) {
-    if (existsSync(path)) return readFileSync(path, 'utf8').trim();
-    await wait(50);
-  }
-  throw new Error(`Timed out waiting for ${path}`);
+async function freePort() {
+  const server = createNetServer();
+  await new Promise((resolvePromise, reject) => {
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', resolvePromise);
+  });
+  const address = server.address();
+  const port = typeof address === 'object' && address ? address.port : null;
+  await new Promise((resolvePromise) => server.close(resolvePromise));
+  if (!port) throw new Error('Could not allocate a Chrome debugging port.');
+  return port;
 }
 
 class CdpClient {
@@ -42,7 +47,7 @@ class CdpClient {
     this.pending = new Map();
     this.listeners = new Map();
     socket.addEventListener('message', (message) => {
-      const payload = JSON.parse(String(message.data));
+      const payload = JSON.parse(typeof message.data === 'string' ? message.data : String(message.data));
       if (payload.id) {
         const deferred = this.pending.get(payload.id);
         if (!deferred) return;
@@ -51,8 +56,11 @@ class CdpClient {
         else deferred.resolve(payload.result || {});
         return;
       }
-      const listeners = this.listeners.get(payload.method) || [];
-      for (const listener of listeners) listener(payload.params || {});
+      for (const listener of this.listeners.get(payload.method) || []) listener(payload.params || {});
+    });
+    socket.addEventListener('close', () => {
+      for (const deferred of this.pending.values()) deferred.reject(new Error('Chrome DevTools connection closed.'));
+      this.pending.clear();
     });
   }
 
@@ -74,18 +82,15 @@ class CdpClient {
 async function connectCdp(webSocketDebuggerUrl) {
   const socket = new WebSocket(webSocketDebuggerUrl);
   await new Promise((resolvePromise, reject) => {
-    socket.addEventListener('open', resolvePromise, { once: true });
-    socket.addEventListener('error', reject, { once: true });
+    const timeout = setTimeout(() => reject(new Error('Timed out opening Chrome DevTools WebSocket.')), 10_000);
+    socket.addEventListener('open', () => { clearTimeout(timeout); resolvePromise(); }, { once: true });
+    socket.addEventListener('error', (event) => { clearTimeout(timeout); reject(event.error || new Error('Chrome DevTools WebSocket failed.')); }, { once: true });
   });
   return new CdpClient(socket);
 }
 
 async function evaluate(client, expression) {
-  const result = await client.send('Runtime.evaluate', {
-    expression,
-    returnByValue: true,
-    awaitPromise: true,
-  });
+  const result = await client.send('Runtime.evaluate', { expression, returnByValue: true, awaitPromise: true });
   if (result.exceptionDetails) throw new Error(result.exceptionDetails.text || 'Browser evaluation failed');
   return result.result?.value;
 }
@@ -98,37 +103,53 @@ async function waitForDashboard(client, timeoutMs = 15_000) {
       document.getElementById('activePositionIntelligence') &&
       document.getElementById('portfolioRiskPanel') &&
       document.getElementById('conflictActivityPanel')
-    )`);
+    )`).catch(() => false);
     if (ready) return;
     await wait(100);
   }
   throw new Error('Dashboard panels did not render before timeout.');
 }
 
+async function waitForPageTarget(port, processHandle, stderr, timeoutMs = 15_000) {
+  const started = Date.now();
+  let lastError = null;
+  while (Date.now() - started < timeoutMs) {
+    if (processHandle.exitCode != null) throw new Error(`Chrome exited before DevTools became available (${processHandle.exitCode}).\n${stderr()}`);
+    try {
+      const response = await fetch(`http://127.0.0.1:${port}/json/list`);
+      if (response.ok) {
+        const targets = await response.json();
+        const page = targets.find((item) => item.type === 'page' && item.webSocketDebuggerUrl);
+        if (page) return page;
+      }
+    } catch (error) {
+      lastError = error;
+    }
+    await wait(100);
+  }
+  throw new Error(`Chrome DevTools page target was unavailable. ${lastError?.message || ''}\n${stderr()}`);
+}
+
 async function launchBrowser(binary, profileDir) {
+  const port = await freePort();
   const processHandle = spawn(binary, [
     '--headless=new',
     '--disable-gpu',
     '--disable-dev-shm-usage',
     '--no-sandbox',
     '--hide-scrollbars',
-    '--remote-debugging-port=0',
+    '--no-first-run',
+    '--no-default-browser-check',
+    `--remote-debugging-port=${port}`,
     `--user-data-dir=${profileDir}`,
     'about:blank',
   ], { stdio: ['ignore', 'pipe', 'pipe'] });
-  let stderr = '';
-  processHandle.stderr.on('data', (chunk) => { stderr += chunk.toString(); });
-  const activePortFile = join(profileDir, 'DevToolsActivePort');
-  const file = await waitForFile(activePortFile);
-  const [port, browserPath] = file.split(/\r?\n/);
-  if (!port || !browserPath) throw new Error(`Invalid DevToolsActivePort contents: ${file}\n${stderr}`);
-  const browserClient = await connectCdp(`ws://127.0.0.1:${port}${browserPath}`);
-  const target = await browserClient.send('Target.createTarget', { url: 'about:blank' });
-  const targets = await fetch(`http://127.0.0.1:${port}/json/list`).then((response) => response.json());
-  const page = targets.find((item) => item.id === target.targetId);
-  if (!page?.webSocketDebuggerUrl) throw new Error('Unable to resolve page target WebSocket URL.');
+  let stderrText = '';
+  processHandle.stderr.on('data', (chunk) => { stderrText += chunk.toString(); });
+  const stderr = () => stderrText;
+  const page = await waitForPageTarget(port, processHandle, stderr);
   const pageClient = await connectCdp(page.webSocketDebuggerUrl);
-  return { processHandle, browserClient, pageClient, stderr: () => stderr };
+  return { processHandle, pageClient, stderr };
 }
 
 async function runScenario(client, origin, outputDir, definition) {
@@ -150,9 +171,7 @@ async function runScenario(client, origin, outputDir, definition) {
       screenWidth: definition.width,
       screenHeight: definition.height,
     }),
-    client.send('Emulation.setEmulatedMedia', {
-      features: [{ name: 'prefers-reduced-motion', value: 'reduce' }],
-    }),
+    client.send('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-reduced-motion', value: 'reduce' }] }),
   ]);
 
   const url = `${origin}/dashboard?scenario=${encodeURIComponent(definition.scenario)}`;
@@ -186,14 +205,9 @@ async function runScenario(client, origin, outputDir, definition) {
   assert.equal(runtimeErrors.length, 0, `${definition.name}: runtime errors: ${runtimeErrors.join(' | ')}`);
   assert.equal(consoleErrors.length, 0, `${definition.name}: console errors: ${consoleErrors.join(' | ')}`);
 
-  const screenshot = await client.send('Page.captureScreenshot', {
-    format: 'png',
-    captureBeyondViewport: true,
-    fromSurface: true,
-  });
+  const screenshot = await client.send('Page.captureScreenshot', { format: 'png', captureBeyondViewport: true, fromSurface: true });
   const screenshotPath = join(outputDir, `${definition.name}.png`);
   await import('node:fs/promises').then(({ writeFile }) => writeFile(screenshotPath, Buffer.from(screenshot.data, 'base64')));
-
   return { ...definition, url, screenshot: screenshotPath, audit };
 }
 
