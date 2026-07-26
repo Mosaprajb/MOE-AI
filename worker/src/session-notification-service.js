@@ -3,6 +3,8 @@ import { buildPushHTTPRequest } from '@pushforge/builder';
 const SUBSCRIPTIONS_KEY = 'subscriptions';
 const MAX_SUBSCRIPTIONS = 20;
 const TEST_COOLDOWN_MS = 20_000;
+const CURRENT_DASHBOARD_PATH = '/';
+const NOTIFICATION_ICON_PATH = '/icon-192.svg';
 
 export function validPushSubscription(subscription) {
   return Boolean(subscription)
@@ -111,16 +113,15 @@ export async function testSessionNotification(storage, endpoint, env = {}) {
     throw new Error('Please wait before sending another test notification');
   }
 
-  const appUrl = env.MOE_NOTIFICATION_APP_URL || env.APP_URL || '/';
   const response = await sendPush(record, {
     title: 'MOERAND · تنبيهات الجلسات مفعّلة',
     body: 'سيصلك تنبيه عند افتتاح وانتهاء جلسات الأوفرنايت، ما قبل السوق، السوق العادي، وما بعد السوق.',
-    icon: `${appUrl}icon-192.svg`,
-    badge: `${appUrl}icon-192.svg`,
+    icon: NOTIFICATION_ICON_PATH,
+    badge: NOTIFICATION_ICON_PATH,
     tag: `moerand-session-test-${id.slice(0, 12)}`,
     renotify: true,
     timestamp: now,
-    data: { url: appUrl, kind: 'SESSION_ALERT_TEST' },
+    data: { url: CURRENT_DASHBOARD_PATH, kind: 'SESSION_ALERT_TEST' },
   }, env);
 
   if (response.status === 404 || response.status === 410) {
