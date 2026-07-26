@@ -52,7 +52,7 @@ function isConfirmedEntry(trade = {}) {
   return trade.brokerPositionSeen === true
     || number(trade.filledQuantity, 0) > 0
     || ['FILLED', 'PARTIALLY_FILLED', 'EXECUTED'].includes(entryStatus)
-    || ['POSITION_OPEN', 'OPEN', 'ACTIVE', 'PROTECTED'].includes(lifecycle);
+    || ['POSITION_OPEN', 'PROTECTED'].includes(lifecycle);
 }
 
 function isConfirmedExit(trade = {}) {
@@ -76,11 +76,10 @@ async function endpointId(endpoint) {
 }
 
 function appTarget(env = {}) {
-  const configured = text(env.APP_URL, '/alerts');
+  const configured = text(env.MOE_NOTIFICATION_APP_URL);
+  if (!configured) return '/alerts';
   try {
-    const url = new URL(configured);
-    url.pathname = url.pathname.replace(/\/$/, '') + '/alerts';
-    return url.toString();
+    return new URL(configured).toString();
   } catch {
     return '/alerts';
   }
@@ -100,7 +99,12 @@ async function sendPush(subscription, payload, env = {}) {
   return fetch(endpoint, { method: 'POST', headers, body });
 }
 
+function deliveryList(item = {}) {
+  return Array.isArray(item.deliveries) ? item.deliveries : [];
+}
+
 function publicEvent(item = {}) {
+  const deliveries = deliveryList(item);
   return {
     notificationId: item.notificationId,
     eventKey: item.eventKey,
@@ -110,20 +114,21 @@ function publicEvent(item = {}) {
     executionPrice: item.executionPrice,
     tradingMode: item.tradingMode,
     createdAt: item.createdAt,
+    lastAttemptAt: item.lastAttemptAt || item.createdAt,
     deliveryStatus: item.deliveryStatus,
     notificationLanguage: item.notificationLanguage,
     retryCount: item.retryCount || 0,
-    targetDeviceCount: Array.isArray(item.deliveries) ? item.deliveries.length : 0,
-    deliveredCount: Array.isArray(item.deliveries) ? item.deliveries.filter((delivery) => delivery.status === 'DELIVERED').length : 0,
-    failedCount: Array.isArray(item.deliveries) ? item.deliveries.filter((delivery) => delivery.status === 'FAILED').length : 0,
-    deliveries: Array.isArray(item.deliveries) ? item.deliveries.map((delivery) => ({
+    targetDeviceCount: deliveries.length,
+    deliveredCount: deliveries.filter((delivery) => delivery.status === 'DELIVERED').length,
+    failedCount: deliveries.filter((delivery) => delivery.status === 'FAILED').length,
+    deliveries: deliveries.map((delivery) => ({
       targetDevice: delivery.targetDevice,
       status: delivery.status,
       statusCode: delivery.statusCode ?? null,
       language: delivery.language,
       attemptedAt: delivery.attemptedAt,
       error: delivery.error || null,
-    })) : [],
+    })),
   };
 }
 
@@ -214,6 +219,24 @@ export async function listTradeNotifications(storage, options = {}) {
     .map(publicEvent);
 }
 
+function mergedDeliveryMap(previous = null) {
+  return new Map(deliveryList(previous).map((delivery) => [delivery.targetDeviceId || `${delivery.targetDevice}:${delivery.language}`, delivery]));
+}
+
+function deliverySummary(devices, deliveries) {
+  if (!devices.length) {
+    const deliveredBefore = deliveries.some((item) => item.status === 'DELIVERED');
+    return deliveredBefore ? 'DELIVERED' : 'NO_REGISTERED_DEVICE';
+  }
+  const currentIds = new Set(devices.map((item) => item.id));
+  const relevant = deliveries.filter((item) => currentIds.has(item.targetDeviceId));
+  const delivered = relevant.filter((item) => item.status === 'DELIVERED').length;
+  const failed = relevant.filter((item) => item.status === 'FAILED').length;
+  if (delivered === devices.length) return 'DELIVERED';
+  if (delivered > 0 && failed > 0) return 'PARTIAL';
+  return 'FAILED';
+}
+
 export async function emitConfirmedTradeNotification(storage, trade = {}, eventType, env = {}, fallbackMode = 'demo') {
   const type = String(eventType || '').toLowerCase();
   if (!['entry', 'exit'].includes(type)) throw new Error('Notification event type must be entry or exit');
@@ -228,20 +251,36 @@ export async function emitConfirmedTradeNotification(storage, trade = {}, eventT
   const eventKey = `${tradeId}:${type}`;
   const storageKey = `${EVENT_PREFIX}${eventKey}`;
   const previous = await storage.get(storageKey);
-  if (previous && previous.deliveryStatus !== 'FAILED') {
+  if (previous?.deliveryStatus === 'DELIVERED') {
     return { sent: false, duplicate: true, event: publicEvent(previous) };
   }
-  const retryCount = previous ? Number(previous.retryCount || 0) + 1 : 0;
-  if (retryCount > MAX_RETRIES) return { sent: false, duplicate: true, retryLimitReached: true, event: publicEvent(previous) };
 
   const subscriptions = await readSubscriptions(storage);
   const devices = Object.values(subscriptions).filter((item) => item?.enabled && item?.subscription?.endpoint);
-  const tradingMode = modeFromTrade(trade, fallbackMode);
-  const createdAt = new Date().toISOString();
-  const notificationId = previous?.notificationId || crypto.randomUUID();
-  const deliveries = [];
+  if (!devices.length && previous?.deliveryStatus === 'NO_REGISTERED_DEVICE') {
+    return { sent: false, duplicate: true, waitingForDevice: true, event: publicEvent(previous) };
+  }
 
-  for (const device of devices) {
+  const deliveryMap = mergedDeliveryMap(previous);
+  const deliveredDeviceIds = new Set([...deliveryMap.values()]
+    .filter((item) => item.status === 'DELIVERED' && item.targetDeviceId)
+    .map((item) => item.targetDeviceId));
+  const pendingDevices = devices.filter((device) => !deliveredDeviceIds.has(device.id));
+  if (devices.length && !pendingDevices.length) {
+    return { sent: false, duplicate: true, event: publicEvent(previous) };
+  }
+
+  const retryCount = previous ? Number(previous.retryCount || 0) + 1 : 0;
+  if (previous && retryCount > MAX_RETRIES) {
+    return { sent: false, duplicate: true, retryLimitReached: true, event: publicEvent(previous) };
+  }
+
+  const tradingMode = modeFromTrade(trade, fallbackMode);
+  const createdAt = previous?.createdAt || new Date().toISOString();
+  const lastAttemptAt = new Date().toISOString();
+  const notificationId = previous?.notificationId || crypto.randomUUID();
+
+  for (const device of pendingDevices) {
     const locale = language(device.language);
     const attemptedAt = new Date().toISOString();
     const payload = {
@@ -258,25 +297,27 @@ export async function emitConfirmedTradeNotification(storage, trade = {}, eventT
         tradingMode,
       },
     };
+    let delivery;
     try {
       const response = await sendPush(device.subscription, payload, env);
       if (response.status === 404 || response.status === 410) {
         delete subscriptions[device.id];
-        deliveries.push({ targetDevice: device.deviceType || 'browser', language: locale, status: 'FAILED', statusCode: response.status, attemptedAt, error: 'DEVICE_SUBSCRIPTION_EXPIRED' });
+        delivery = { targetDeviceId: device.id, targetDevice: device.deviceType || 'browser', language: locale, status: 'FAILED', statusCode: response.status, attemptedAt, error: 'DEVICE_SUBSCRIPTION_EXPIRED' };
       } else if (!response.ok) {
-        deliveries.push({ targetDevice: device.deviceType || 'browser', language: locale, status: 'FAILED', statusCode: response.status, attemptedAt, error: `PUSH_HTTP_${response.status}` });
+        delivery = { targetDeviceId: device.id, targetDevice: device.deviceType || 'browser', language: locale, status: 'FAILED', statusCode: response.status, attemptedAt, error: `PUSH_HTTP_${response.status}` };
       } else {
-        deliveries.push({ targetDevice: device.deviceType || 'browser', language: locale, status: 'DELIVERED', statusCode: response.status, attemptedAt, error: null });
+        delivery = { targetDeviceId: device.id, targetDevice: device.deviceType || 'browser', language: locale, status: 'DELIVERED', statusCode: response.status, attemptedAt, error: null };
       }
     } catch (error) {
-      deliveries.push({ targetDevice: device.deviceType || 'browser', language: locale, status: 'FAILED', statusCode: null, attemptedAt, error: error instanceof Error ? error.message : 'PUSH_DELIVERY_FAILED' });
+      delivery = { targetDeviceId: device.id, targetDevice: device.deviceType || 'browser', language: locale, status: 'FAILED', statusCode: null, attemptedAt, error: error instanceof Error ? error.message : 'PUSH_DELIVERY_FAILED' };
     }
+    deliveryMap.set(device.id, delivery);
   }
   await storage.put(SUBSCRIPTIONS_KEY, subscriptions);
 
-  const delivered = deliveries.filter((item) => item.status === 'DELIVERED').length;
-  const failed = deliveries.filter((item) => item.status === 'FAILED').length;
-  const deliveryStatus = devices.length === 0 ? 'NO_REGISTERED_DEVICE' : delivered === devices.length ? 'DELIVERED' : delivered > 0 ? 'PARTIAL' : 'FAILED';
+  const deliveries = [...deliveryMap.values()];
+  const activeDevices = Object.values(subscriptions).filter((item) => item?.enabled && item?.subscription?.endpoint);
+  const deliveryStatus = deliverySummary(activeDevices, deliveries);
   const item = {
     notificationId,
     eventKey,
@@ -286,14 +327,17 @@ export async function emitConfirmedTradeNotification(storage, trade = {}, eventT
     executionPrice: price,
     tradingMode,
     createdAt,
+    lastAttemptAt,
     deliveryStatus,
-    targetDevice: devices.length === 1 ? devices[0].deviceType || 'browser' : 'multiple',
-    notificationLanguage: devices.length === 1 ? language(devices[0].language) : 'multiple',
+    targetDevice: activeDevices.length === 1 ? activeDevices[0].deviceType || 'browser' : activeDevices.length ? 'multiple' : 'none',
+    notificationLanguage: activeDevices.length === 1 ? language(activeDevices[0].language) : activeDevices.length ? 'multiple' : 'none',
     retryCount,
     deliveries,
   };
   await writeHistory(storage, item);
-  return { sent: delivered > 0, delivered, failed, event: publicEvent(item) };
+  const deliveredNow = pendingDevices.filter((device) => deliveryMap.get(device.id)?.status === 'DELIVERED').length;
+  const failedNow = pendingDevices.filter((device) => deliveryMap.get(device.id)?.status === 'FAILED').length;
+  return { sent: deliveredNow > 0, delivered: deliveredNow, failed: failedNow, event: publicEvent(item) };
 }
 
 export async function sendTestNotification(storage, options = {}, env = {}) {
@@ -313,11 +357,13 @@ export async function sendTestNotification(storage, options = {}, env = {}) {
     };
     try {
       const response = await sendPush(device.subscription, payload, env);
+      if (response.status === 404 || response.status === 410) delete subscriptions[device.id];
       deliveries.push({ deviceType: device.deviceType || 'browser', delivered: response.ok, status: response.status });
     } catch (error) {
       deliveries.push({ deviceType: device.deviceType || 'browser', delivered: false, error: error instanceof Error ? error.message : 'PUSH_DELIVERY_FAILED' });
     }
   }
+  await storage.put(SUBSCRIPTIONS_KEY, subscriptions);
   return {
     sent: deliveries.some((item) => item.delivered),
     registeredDevices: devices.length,
