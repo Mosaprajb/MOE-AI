@@ -97,5 +97,11 @@ jobs:
       - name: Test execution quality intelligence
         run: node --test --test-concurrency=1 worker/test/execution-quality.test.mjs
 
+      - name: Test portfolio capital risk intelligence
+        run: node --test --test-concurrency=1 worker/test/portfolio-risk-intelligence.test.mjs
+
+      - name: Test portfolio risk dashboard overlay
+        run: node --test --test-concurrency=1 worker/test/portfolio-risk-overlay.test.mjs
+
       - name: Run complete Worker safety suite
         run: npm run test:worker
