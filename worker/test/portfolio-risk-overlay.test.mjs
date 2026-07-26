@@ -19,6 +19,9 @@ test('portfolio risk overlay adds responsive read-only risk panel', async () => 
   assert.match(html, /Correlation exposure remains unavailable/);
   assert.match(html, /\/api\/trading-intelligence\/portfolio-risk/);
   assert.match(html, /setInterval\(refresh,60000\)/);
+  assert.match(html, /node\.id='portfolio-risk'/);
+  assert.match(html, /getElementById\('portfolio-risk'\)/);
+  assert.match(html, /scroll-margin-top:90px/);
   assert.equal(enhanced.headers.has('content-length'), false);
 });
 
