@@ -9,6 +9,20 @@ function positive(value, field) {
   return parsed;
 }
 
+function optionalPositive(value, fallback) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function assertLiveExecutionEnabled(env = {}) {
+  if (String(env.WEBULL_ENVIRONMENT || '').trim().toLowerCase() !== 'production') {
+    throw new Error('Live order submission requires WEBULL_ENVIRONMENT=production');
+  }
+  if (env.WEBULL_LIVE_ORDER_SUBMISSION !== 'true') {
+    throw new Error('Live order submission is disabled');
+  }
+}
+
 async function compactOrderIds(signalId) {
   const digest = await crypto.subtle.digest('SHA-256', encoder.encode(String(signalId || crypto.randomUUID())));
   const hex = [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, '0')).join('').toUpperCase();
@@ -20,7 +34,7 @@ async function compactOrderIds(signalId) {
   };
 }
 
-function validateProtectedLongOrder(order = {}) {
+function validateProtectedLongOrder(order = {}, env = {}) {
   const symbol = String(order.symbol || '').trim().toUpperCase();
   const side = String(order.side || '').trim().toUpperCase();
   const orderType = String(order.orderType || 'LIMIT').trim().toUpperCase();
@@ -30,6 +44,8 @@ function validateProtectedLongOrder(order = {}) {
   const referencePrice = limitPrice || positive(order.marketPrice, 'marketPrice');
   const stopLoss = positive(order.stopLoss, 'stopLoss');
   const takeProfit = positive(order.takeProfit, 'takeProfit');
+  const notional = quantity * referencePrice;
+  const maxNotional = optionalPositive(env.MOE_LIVE_MAX_ORDER_NOTIONAL, 25000);
 
   if (!/^[A-Z][A-Z0-9.-]{0,9}$/.test(symbol)) throw new Error('Invalid symbol');
   if (side !== 'BUY') throw new Error('Protected live execution currently supports BUY entries only');
@@ -37,13 +53,14 @@ function validateProtectedLongOrder(order = {}) {
   if (!['CORE', 'ALL'].includes(session)) throw new Error('Unsupported live trading session');
   if (stopLoss >= referencePrice) throw new Error('Live BUY stopLoss must be below the entry price');
   if (takeProfit <= referencePrice) throw new Error('Live BUY takeProfit must be above the entry price');
+  if (notional > maxNotional) throw new Error(`Live order notional exceeds the configured maximum of ${maxNotional}`);
 
-  return { symbol, side, orderType, session, quantity, limitPrice, referencePrice, stopLoss, takeProfit };
+  return { symbol, side, orderType, session, quantity, limitPrice, referencePrice, stopLoss, takeProfit, notional, maxNotional };
 }
 
-async function protectedPayload(accountId, order) {
+async function protectedPayload(accountId, order, env = {}) {
   if (!accountId) throw new Error('WEBULL_LIVE_ACCOUNT_ID is required');
-  const normalized = validateProtectedLongOrder(order);
+  const normalized = validateProtectedLongOrder(order, env);
   const ids = await compactOrderIds(order.signalId);
   const common = {
     instrument_type: 'EQUITY',
@@ -94,13 +111,14 @@ async function protectedPayload(accountId, order) {
 }
 
 export async function previewWebullLiveOrder(accountId, order, env = {}) {
-  const payload = await protectedPayload(accountId, order);
+  const payload = await protectedPayload(accountId, order, env);
   const response = await webullRequest('POST', '/openapi/trade/order/preview', { body: payload.previewBody }, env);
-  return { clientOrderId: payload.ids.entry, response };
+  return { clientOrderId: payload.ids.entry, normalized: payload.normalized, response };
 }
 
 export async function placeWebullLiveOrder(accountId, order, env = {}) {
-  const payload = await protectedPayload(accountId, order);
+  assertLiveExecutionEnabled(env);
+  const payload = await protectedPayload(accountId, order, env);
   const replayGuard = await reserveLiveExecution(order, env);
   if (!replayGuard.accepted) {
     throw new Error(`Live order blocked by execution replay guard: ${replayGuard.blockers.join('; ')}`);
@@ -112,7 +130,7 @@ export async function placeWebullLiveOrder(accountId, order, env = {}) {
       status: 'SUBMITTED',
       brokerOrderIds: payload.ids,
     }, env);
-    return { protected: true, clientOrderIds: payload.ids, replayGuard, executionState, response };
+    return { protected: true, normalized: payload.normalized, clientOrderIds: payload.ids, replayGuard, executionState, response };
   } catch (error) {
     await finalizeLiveExecution(order, {
       status: 'FAILED',
@@ -157,6 +175,7 @@ export function getWebullLiveOrderDetail(accountId, clientOrderId, env = {}) {
 }
 
 export function cancelWebullLiveOrder(accountId, clientOrderId, env = {}) {
+  assertLiveExecutionEnabled(env);
   if (!accountId) throw new Error('WEBULL_LIVE_ACCOUNT_ID is required');
   if (!clientOrderId) throw new Error('client_order_id is required');
   return webullRequest('POST', '/openapi/trade/order/cancel', {
@@ -165,6 +184,7 @@ export function cancelWebullLiveOrder(accountId, clientOrderId, env = {}) {
 }
 
 export function replaceWebullLiveOrder(accountId, clientOrderId, patch = {}, env = {}) {
+  assertLiveExecutionEnabled(env);
   if (!accountId) throw new Error('WEBULL_LIVE_ACCOUNT_ID is required');
   if (!clientOrderId) throw new Error('client_order_id is required');
   const modify = { client_order_id: clientOrderId };
