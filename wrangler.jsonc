@@ -1,7 +1,7 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "moerand-alerts",
-  "main": "worker/src/scanner-live-entry.js",
+  "main": "worker/src/scanner-progress-finalizer-entry.js",
   "compatibility_date": "2026-07-22",
   "observability": { "enabled": true },
   "triggers": { "crons": ["* * * * *"] },
