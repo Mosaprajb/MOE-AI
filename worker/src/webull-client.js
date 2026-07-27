@@ -19,6 +19,33 @@ function requireSecret(env, name) {
   return value;
 }
 
+function positive(value, field) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed <= 0) throw new Error(`${field} must be a positive number`);
+  return parsed;
+}
+
+function validateProtectedSandboxOrder(order = {}) {
+  const symbol = String(order.symbol || '').trim().toUpperCase();
+  const side = String(order.side || '').trim().toUpperCase();
+  const orderType = String(order.orderType || 'LIMIT').trim().toUpperCase();
+  const session = String(order.session || 'CORE').trim().toUpperCase();
+  const quantity = Math.floor(positive(order.quantity, 'quantity'));
+  const limitPrice = orderType === 'LIMIT' ? positive(order.limitPrice, 'limitPrice') : null;
+  const referencePrice = limitPrice || positive(order.marketPrice, 'marketPrice');
+  const stopLoss = positive(order.stopLoss, 'stopLoss');
+  const takeProfit = positive(order.takeProfit, 'takeProfit');
+
+  if (!/^[A-Z][A-Z0-9.-]{0,9}$/.test(symbol)) throw new Error('Invalid symbol');
+  if (side !== 'BUY') throw new Error('Protected sandbox submission currently supports BUY entries only');
+  if (!['LIMIT', 'MARKET'].includes(orderType)) throw new Error('Sandbox execution supports LIMIT and MARKET entries only');
+  if (!['CORE', 'ALL'].includes(session)) throw new Error('Unsupported sandbox trading session');
+  if (stopLoss >= referencePrice) throw new Error('Sandbox BUY stopLoss must be below the entry price');
+  if (takeProfit <= referencePrice) throw new Error('Sandbox BUY takeProfit must be above the entry price');
+
+  return { symbol, side, orderType, session, quantity, limitPrice, referencePrice, stopLoss, takeProfit };
+}
+
 function getBaseUrl(env) {
   const configured = String(env.WEBULL_API_BASE_URL || '').trim();
   if (configured) return configured.replace(/\/$/, '');
@@ -147,9 +174,8 @@ export async function placeWebullSandboxOrder(accountId, order, env = {}) {
   if (env.WEBULL_ENVIRONMENT === 'production') throw new Error('Sandbox order submission cannot use production environment');
   if (env.WEBULL_SANDBOX_ORDER_SUBMISSION !== 'true') throw new Error('Sandbox order submission is disabled');
   if (!accountId) throw new Error('account_id is required');
-  if (order.side !== 'BUY') throw new Error('Protected sandbox submission currently supports BUY entries only');
-  if (!order.stopLoss || !order.takeProfit) throw new Error('Protected order requires stopLoss and takeProfit');
 
+  const normalized = validateProtectedSandboxOrder(order);
   const replayGuard = await reserveSandboxExecution(order, env);
   if (!replayGuard.accepted) {
     throw new Error(`Sandbox order blocked by execution replay guard: ${replayGuard.blockers.join('; ')}`);
@@ -159,19 +185,19 @@ export async function placeWebullSandboxOrder(accountId, order, env = {}) {
   const common = {
     instrument_type: 'EQUITY',
     entrust_type: 'QTY',
-    support_trading_session: order.session,
-    symbol: order.symbol,
+    support_trading_session: normalized.session,
+    symbol: normalized.symbol,
     market: 'US',
     time_in_force: 'DAY',
-    quantity: String(order.quantity),
+    quantity: String(normalized.quantity),
   };
   const entry = {
     ...common,
     client_order_id: ids.entry,
     combo_type: 'MASTER',
     side: 'BUY',
-    order_type: order.orderType,
-    ...(order.limitPrice ? { limit_price: String(order.limitPrice) } : {}),
+    order_type: normalized.orderType,
+    ...(normalized.limitPrice ? { limit_price: String(normalized.limitPrice) } : {}),
   };
   const takeProfit = {
     ...common,
@@ -179,7 +205,7 @@ export async function placeWebullSandboxOrder(accountId, order, env = {}) {
     combo_type: 'STOP_PROFIT',
     side: 'SELL',
     order_type: 'LIMIT',
-    limit_price: String(order.takeProfit),
+    limit_price: String(normalized.takeProfit),
   };
   const stopLoss = {
     ...common,
@@ -187,7 +213,7 @@ export async function placeWebullSandboxOrder(accountId, order, env = {}) {
     combo_type: 'STOP_LOSS',
     side: 'SELL',
     order_type: 'STOP_LOSS',
-    stop_price: String(order.stopLoss),
+    stop_price: String(normalized.stopLoss),
   };
 
   try {
@@ -202,7 +228,7 @@ export async function placeWebullSandboxOrder(accountId, order, env = {}) {
       status: 'SUBMITTED',
       brokerOrderIds: ids,
     }, env);
-    return { protected: true, clientOrderIds: ids, replayGuard, executionState, response };
+    return { protected: true, normalized, clientOrderIds: ids, replayGuard, executionState, response };
   } catch (error) {
     await finalizeSandboxExecution(order, {
       status: 'FAILED',
