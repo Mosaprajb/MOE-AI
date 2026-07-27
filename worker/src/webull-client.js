@@ -1,3 +1,5 @@
+import { reserveSandboxExecution } from './execution-replay-guard.js';
+
 const encoder = new TextEncoder();
 
 function toBase64(buffer) {
@@ -42,7 +44,7 @@ function md5(input) {
     a = gg(a,b,c,d,block[5],5,-701558691); d = gg(d,a,b,c,block[10],9,38016083); c = gg(c,d,a,b,block[15],14,-660478335); b = gg(b,c,d,a,block[4],20,-405537848);
     a = gg(a,b,c,d,block[9],5,568446438); d = gg(d,a,b,c,block[14],9,-1019803690); c = gg(c,d,a,b,block[3],14,-187363961); b = gg(b,c,d,a,block[8],20,1163531501);
     a = gg(a,b,c,d,block[13],5,-1444681467); d = gg(d,a,b,c,block[2],9,-51403784); c = gg(c,d,a,b,block[7],14,1735328473); b = gg(b,c,d,a,block[12],20,-1926607734);
-    a = hh(a,b,c,d,block[5],4,-378558); d = hh(d,a,b,c,block[8],11,-2022574463); c = hh(c,d,a,b,block[11],16,1839030562); b = hh(b,c,d,a,block[14],23,-35309556);
+    a = hh(a,b,c,d,block[5],4,-378558); d = hh(d,a,b,c,block[8],11,-2022574463); c = hh(c,d,a,b,block[11],16,18399220562); b = hh(b,c,d,a,block[14],23,-35309556);
     a = hh(a,b,c,d,block[1],4,-1530992060); d = hh(d,a,b,c,block[4],11,1272893353); c = hh(c,d,a,b,block[7],16,-155497632); b = hh(b,c,d,a,block[10],23,-1094730640);
     a = hh(a,b,c,d,block[13],4,681279174); d = hh(d,a,b,c,block[0],11,-358537222); c = hh(c,d,a,b,block[3],16,-722521979); b = hh(b,c,d,a,block[6],23,76029189);
     a = hh(a,b,c,d,block[9],4,-640364487); d = hh(d,a,b,c,block[12],11,-421815835); c = hh(c,d,a,b,block[15],16,530742520); b = hh(b,c,d,a,block[2],23,-995338651);
@@ -148,6 +150,11 @@ export async function placeWebullSandboxOrder(accountId, order, env = {}) {
   if (order.side !== 'BUY') throw new Error('Protected sandbox submission currently supports BUY entries only');
   if (!order.stopLoss || !order.takeProfit) throw new Error('Protected order requires stopLoss and takeProfit');
 
+  const replayGuard = await reserveSandboxExecution(order, env);
+  if (!replayGuard.accepted) {
+    throw new Error(`Sandbox order blocked by execution replay guard: ${replayGuard.blockers.join('; ')}`);
+  }
+
   const ids = await compactOrderIds(order.signalId);
   const common = {
     instrument_type: 'EQUITY',
@@ -189,7 +196,7 @@ export async function placeWebullSandboxOrder(accountId, order, env = {}) {
       new_orders: [entry, takeProfit, stopLoss],
     },
   }, env);
-  return { protected: true, clientOrderIds: ids, response };
+  return { protected: true, clientOrderIds: ids, replayGuard, response };
 }
 
 export function getWebullAccounts(env) { return webullGet('/openapi/account/list', {}, env); }
