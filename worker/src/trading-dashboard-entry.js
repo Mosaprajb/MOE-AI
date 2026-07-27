@@ -9,7 +9,8 @@ import { getWebullLiveOpenOrders } from './webull-live-client.js';
 const DASHBOARD_PATH = '/api/trading/dashboard';
 const CONNECTION_PATH = '/api/trading/connection';
 const STREAM_PATH = '/api/trading/stream';
-const BUILD_ID = 'trading-dashboard-webull-cloudflare-v3-20260727';
+const PREFLIGHT_PATH = '/api/trading/preflight';
+const BUILD_ID = 'trading-dashboard-webull-cloudflare-v4-20260727';
 
 function enabled(value) {
   return String(value || '').trim().toLowerCase() === 'true';
@@ -47,6 +48,14 @@ function requireValue(env, key) {
   const value = String(env[key] || '').trim();
   if (!value) throw new Error(`${key} is not configured`);
   return value;
+}
+
+function withTimeout(promise, timeoutMs, label) {
+  let timer;
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`${label} timed out`)), timeoutMs);
+  });
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
 }
 
 function liveReadEnvironment(env) {
@@ -124,12 +133,20 @@ function connectionStatus(env = {}) {
     automationArmed: enabled(env.WEBULL_LIVE_AUTOMATION_ARMED),
     killSwitch: enabled(env.WEBULL_LIVE_KILL_SWITCH),
     readOnlyDashboard: enabled(env.WEBULL_DASHBOARD_READ_ONLY),
+    maximumQuantity: Number(env.WEBULL_LIVE_MAX_QUANTITY || 1),
+    maximumNotional: Number(env.WEBULL_LIVE_MAX_NOTIONAL || env.MOE_LIVE_MAX_ORDER_NOTIONAL || 100),
   };
   live.readReady = live.accountConfigured
     && live.appKeyConfigured
     && live.appSecretConfigured
-    && live.accessTokenConfigured;
+    && live.accessTokenConfigured
+    && live.readOnlyDashboard;
+  live.riskLimitsReady = Number.isFinite(live.maximumQuantity)
+    && live.maximumQuantity > 0
+    && Number.isFinite(live.maximumNotional)
+    && live.maximumNotional > 0;
   live.executionReady = live.readReady
+    && live.riskLimitsReady
     && live.tradingEnabled
     && live.submissionEnabled
     && live.automationArmed
@@ -143,6 +160,7 @@ function connectionStatus(env = {}) {
       durableObjectBound: Boolean(env.ALERT_COORDINATOR),
       environment: 'workers',
       streamingEnabled: true,
+      preflightEnabled: true,
     },
     webull: { sandbox, live },
     safety: {
@@ -215,6 +233,61 @@ async function getDashboard(mode, env) {
   return mode === 'live' ? liveDashboard(env) : sandboxDashboard(env);
 }
 
+async function preflightMode(mode, env) {
+  const startedAt = Date.now();
+  try {
+    const dashboard = await withTimeout(getDashboard(mode, env), 8000, `${mode} Webull preflight`);
+    return {
+      mode: mode.toUpperCase(),
+      ok: true,
+      providerReachable: true,
+      accountReadable: true,
+      positionsReadable: Array.isArray(dashboard.positions),
+      ordersReadable: Array.isArray(dashboard.orders),
+      readOnly: true,
+      latencyMs: Date.now() - startedAt,
+      checkedAt: new Date().toISOString(),
+    };
+  } catch (error) {
+    return {
+      mode: mode.toUpperCase(),
+      ok: false,
+      providerReachable: false,
+      accountReadable: false,
+      positionsReadable: false,
+      ordersReadable: false,
+      readOnly: true,
+      latencyMs: Date.now() - startedAt,
+      error: error instanceof Error ? error.message : 'Webull preflight failed',
+      checkedAt: new Date().toISOString(),
+    };
+  }
+}
+
+async function preflightStatus(env) {
+  const configuration = connectionStatus(env);
+  const [sandbox, live] = await Promise.all([
+    preflightMode('sandbox', env),
+    preflightMode('live', env),
+  ]);
+  const liveSafetyPassed = configuration.webull.live.riskLimitsReady
+    && configuration.webull.live.readOnlyDashboard;
+  return {
+    ok: sandbox.ok && live.ok && liveSafetyPassed,
+    build: BUILD_ID,
+    cloudflare: configuration.cloudflare,
+    checks: { sandbox, live },
+    safety: {
+      liveSafetyPassed,
+      liveExecutionLocked: configuration.safety.liveExecutionLocked,
+      killSwitch: configuration.webull.live.killSwitch,
+      riskLimitsReady: configuration.webull.live.riskLimitsReady,
+      readOnlyDashboard: configuration.webull.live.readOnlyDashboard,
+    },
+    checkedAt: new Date().toISOString(),
+  };
+}
+
 function streamDashboard(mode, env, origin) {
   const encoder = new TextEncoder();
   const stream = new ReadableStream({
@@ -264,7 +337,7 @@ export { AlertCoordinator };
 export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
-    if (![DASHBOARD_PATH, CONNECTION_PATH, STREAM_PATH].includes(url.pathname)) return worker.fetch(request, env, ctx);
+    if (![DASHBOARD_PATH, CONNECTION_PATH, STREAM_PATH, PREFLIGHT_PATH].includes(url.pathname)) return worker.fetch(request, env, ctx);
 
     const origin = allowedOrigin(request, env);
     if (!origin) return json({ ok: false, error: 'Origin not allowed' }, 403, '*');
@@ -273,6 +346,11 @@ export default {
 
     if (url.pathname === CONNECTION_PATH) {
       return json(connectionStatus(env), 200, origin);
+    }
+
+    if (url.pathname === PREFLIGHT_PATH) {
+      const result = await preflightStatus(env);
+      return json(result, result.ok ? 200 : 503, origin);
     }
 
     const mode = String(url.searchParams.get('mode') || 'sandbox').trim().toLowerCase();
