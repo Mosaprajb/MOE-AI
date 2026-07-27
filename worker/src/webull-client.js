@@ -25,7 +25,12 @@ function positive(value, field) {
   return parsed;
 }
 
-function validateProtectedSandboxOrder(order = {}) {
+function optionalPositive(value, fallback) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function validateProtectedSandboxOrder(order = {}, env = {}) {
   const symbol = String(order.symbol || '').trim().toUpperCase();
   const side = String(order.side || '').trim().toUpperCase();
   const orderType = String(order.orderType || 'LIMIT').trim().toUpperCase();
@@ -35,6 +40,8 @@ function validateProtectedSandboxOrder(order = {}) {
   const referencePrice = limitPrice || positive(order.marketPrice, 'marketPrice');
   const stopLoss = positive(order.stopLoss, 'stopLoss');
   const takeProfit = positive(order.takeProfit, 'takeProfit');
+  const notional = quantity * referencePrice;
+  const maxNotional = optionalPositive(env.MOE_SANDBOX_MAX_ORDER_NOTIONAL, 100000);
 
   if (!/^[A-Z][A-Z0-9.-]{0,9}$/.test(symbol)) throw new Error('Invalid symbol');
   if (side !== 'BUY') throw new Error('Protected sandbox submission currently supports BUY entries only');
@@ -42,8 +49,9 @@ function validateProtectedSandboxOrder(order = {}) {
   if (!['CORE', 'ALL'].includes(session)) throw new Error('Unsupported sandbox trading session');
   if (stopLoss >= referencePrice) throw new Error('Sandbox BUY stopLoss must be below the entry price');
   if (takeProfit <= referencePrice) throw new Error('Sandbox BUY takeProfit must be above the entry price');
+  if (notional > maxNotional) throw new Error(`Sandbox order notional exceeds the configured maximum of ${maxNotional}`);
 
-  return { symbol, side, orderType, session, quantity, limitPrice, referencePrice, stopLoss, takeProfit };
+  return { symbol, side, orderType, session, quantity, limitPrice, referencePrice, stopLoss, takeProfit, notional, maxNotional };
 }
 
 function getBaseUrl(env) {
@@ -67,7 +75,7 @@ function md5(input) {
     a = ff(a,b,c,d,block[4],7,-176418897); d = ff(d,a,b,c,block[5],12,1200080426); c = ff(c,d,a,b,block[6],17,-1473231341); b = ff(b,c,d,a,block[7],22,-45705983);
     a = ff(a,b,c,d,block[8],7,1770035416); d = ff(d,a,b,c,block[9],12,-1958414417); c = ff(c,d,a,b,block[10],17,-42063); b = ff(b,c,d,a,block[11],22,-1990404162);
     a = ff(a,b,c,d,block[12],7,1804603682); d = ff(d,a,b,c,block[13],12,-40341101); c = ff(c,d,a,b,block[14],17,-1502002290); b = ff(b,c,d,a,block[15],22,1236535329);
-    a = gg(a,b,c,d,block[1],5,-165796510); d = gg(d,a,b,c,block[6],9,-1069501632); c = gg(c,d,a,b,block[11],14,643717713); b = gg(b,c,d,a,block[0],20,-373897302);
+    a = gg(a,b,c,d,block[1],5,-165796510); d = gg(d,a,b,c,block[6],9,-1069501632); c = gg(c,d,a,block[11],14,643717713); b = gg(b,c,d,a,block[0],20,-373897302);
     a = gg(a,b,c,d,block[5],5,-701558691); d = gg(d,a,b,c,block[10],9,38016083); c = gg(c,d,a,b,block[15],14,-660478335); b = gg(b,c,d,a,block[4],20,-405537848);
     a = gg(a,b,c,d,block[9],5,568446438); d = gg(d,a,b,c,block[14],9,-1019803690); c = gg(c,d,a,b,block[3],14,-187363961); b = gg(b,c,d,a,block[8],20,1163531501);
     a = gg(a,b,c,d,block[13],5,-1444681467); d = gg(d,a,b,c,block[2],9,-51403784); c = gg(c,d,a,b,block[7],14,1735328473); b = gg(b,c,d,a,block[12],20,-1926607734);
@@ -128,6 +136,10 @@ async function compactOrderIds(signalId) {
   };
 }
 
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 export async function webullRequest(method, path, { query = {}, body = null, requiresAccessToken = true } = {}, env = {}) {
   if (!path.startsWith('/')) throw new Error('Webull path must start with /');
   const appKey = requireSecret(env, 'WEBULL_APP_KEY');
@@ -136,30 +148,58 @@ export async function webullRequest(method, path, { query = {}, body = null, req
   const url = new URL(path, `${getBaseUrl(env)}/`);
   for (const [key, value] of Object.entries(query)) if (value != null && value !== '') url.searchParams.set(key, String(value));
   const bodyText = body == null ? '' : JSON.stringify(body);
-  const timestamp = compactUtcTimestamp();
-  const nonce = crypto.randomUUID().replaceAll('-', '');
-  const signature = await createSignature({ path: url.pathname, query: url.searchParams, body: bodyText, appKey, appSecret, host: url.host, timestamp, nonce });
-  const response = await fetch(url, {
-    method,
-    headers: {
-      Accept: 'application/json',
-      ...(bodyText ? { 'content-type': 'application/json' } : {}),
-      'x-app-key': appKey,
-      'x-timestamp': timestamp,
-      'x-signature-version': '1.0',
-      'x-signature-algorithm': 'HMAC-SHA1',
-      'x-signature-nonce': nonce,
-      'x-version': 'v2',
-      'x-signature': signature,
-      ...(accessToken ? { 'x-access-token': accessToken } : {}),
-    },
-    ...(bodyText ? { body: bodyText } : {}),
-  });
-  const text = await response.text();
-  let data;
-  try { data = text ? JSON.parse(text) : null; } catch { data = { raw: text }; }
-  if (!response.ok) throw new Error(data?.message || data?.error || `Webull request failed with ${response.status}`);
-  return data;
+  const timeoutMs = Math.max(1000, Math.min(30000, Number(env.WEBULL_REQUEST_TIMEOUT_MS) || 10000));
+  const maxAttempts = method === 'GET' ? Math.max(1, Math.min(3, Number(env.WEBULL_GET_MAX_ATTEMPTS) || 2)) : 1;
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    const timestamp = compactUtcTimestamp();
+    const nonce = crypto.randomUUID().replaceAll('-', '');
+    const signature = await createSignature({ path: url.pathname, query: url.searchParams, body: bodyText, appKey, appSecret, host: url.host, timestamp, nonce });
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), timeoutMs);
+
+    try {
+      const response = await fetch(url, {
+        method,
+        signal: controller.signal,
+        headers: {
+          Accept: 'application/json',
+          ...(bodyText ? { 'content-type': 'application/json' } : {}),
+          'x-app-key': appKey,
+          'x-timestamp': timestamp,
+          'x-signature-version': '1.0',
+          'x-signature-algorithm': 'HMAC-SHA1',
+          'x-signature-nonce': nonce,
+          'x-version': 'v2',
+          'x-signature': signature,
+          ...(accessToken ? { 'x-access-token': accessToken } : {}),
+        },
+        ...(bodyText ? { body: bodyText } : {}),
+      });
+      const text = await response.text();
+      let data;
+      try { data = text ? JSON.parse(text) : null; } catch { data = { raw: text }; }
+      const retryable = method === 'GET' && [408, 429, 500, 502, 503, 504].includes(response.status);
+      if (!response.ok && retryable && attempt < maxAttempts) {
+        await sleep(250 * attempt);
+        continue;
+      }
+      if (!response.ok) throw new Error(data?.message || data?.error || `Webull request failed with ${response.status}`);
+      return data;
+    } catch (error) {
+      const timedOut = error instanceof Error && error.name === 'AbortError';
+      if (method === 'GET' && attempt < maxAttempts) {
+        await sleep(250 * attempt);
+        continue;
+      }
+      if (timedOut) throw new Error(`Webull request timed out after ${timeoutMs}ms`);
+      throw error;
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
+
+  throw new Error('Webull request failed after retry attempts');
 }
 
 export function createWebullAccessToken(env = {}) {
@@ -175,7 +215,7 @@ export async function placeWebullSandboxOrder(accountId, order, env = {}) {
   if (env.WEBULL_SANDBOX_ORDER_SUBMISSION !== 'true') throw new Error('Sandbox order submission is disabled');
   if (!accountId) throw new Error('account_id is required');
 
-  const normalized = validateProtectedSandboxOrder(order);
+  const normalized = validateProtectedSandboxOrder(order, env);
   const replayGuard = await reserveSandboxExecution(order, env);
   if (!replayGuard.accepted) {
     throw new Error(`Sandbox order blocked by execution replay guard: ${replayGuard.blockers.join('; ')}`);
