@@ -3,6 +3,7 @@ import { buildTradePlan } from './trade-engine.js';
 import { evaluatePortfolioRisk } from './portfolio-manager.js';
 import { evaluateBrainCandidate, MOE_AI_BRAIN_VERSION } from './moe-ai-brain.js';
 import { evaluateDecision } from './decision-engine.js';
+import { evaluateInstitutionalConsensus } from './institutional-consensus.js';
 import { getWebullAccountSnapshot, placeWebullSandboxOrder } from './webull-client.js';
 
 const ALLOWED_SIDES = new Set(['BUY', 'SELL']);
@@ -106,7 +107,6 @@ function buildAccountSyncState(env, accountId, accountSnapshot, warning = null) 
   else if (warning) status = 'WARNING';
   else if (accountSnapshot) status = 'SYNCED';
   else if (syncEnabled) status = 'SKIPPED';
-
   return {
     enabled: syncEnabled,
     status,
@@ -164,6 +164,16 @@ function applyDecisionEnforcement(plan, decision) {
   }
 }
 
+function applyConsensusEnforcement(plan, consensus) {
+  if (!consensus.enforce || consensus.accepted) return;
+  plan.evaluation.accepted = false;
+  const reasons = consensus.vetoes.length ? consensus.vetoes : [consensus.rationale];
+  for (const reason of reasons) {
+    const normalized = `Institutional consensus: ${reason}`;
+    if (!plan.evaluation.reasons.includes(normalized)) plan.evaluation.reasons.push(normalized);
+  }
+}
+
 function capitalContext(payload, context, quantity) {
   return {
     ...context,
@@ -209,6 +219,7 @@ export async function handleWebullSandboxOrder(request, env = {}) {
       marketPrice: payload.marketPrice ?? payload.context?.marketPrice,
       accountEquity: portfolioInput.accountEquity,
       riskPercent: payload.riskPercent ?? payload.context?.riskPercent,
+      sector: payload.sector ?? payload.context?.sector,
     };
     const brain = evaluateBrainCandidate({
       symbol: signal.symbol,
@@ -222,7 +233,7 @@ export async function handleWebullSandboxOrder(request, env = {}) {
       driftPercent: context.driftPercent,
       marketScore: context.marketScore,
       marketRegime: context.marketRegime,
-      sector: payload.sector || context.sector,
+      sector: context.sector,
       sectorScore: context.sectorScore,
     }, brainWindow(signal, context), env);
     const plan = buildTradePlan(signal, context, env);
@@ -230,12 +241,16 @@ export async function handleWebullSandboxOrder(request, env = {}) {
       plan.evaluation.accepted = false;
       plan.evaluation.reasons.push(...brain.rejectionReasons.filter((reason) => !plan.evaluation.reasons.includes(reason)));
     }
-    const portfolio = evaluatePortfolioRisk({ signal, plan, portfolio: portfolioInput, env });
+    const portfolio = evaluatePortfolioRisk({ signal, plan, portfolio: portfolioInput, context, env });
     if (!portfolio.accepted) {
       plan.evaluation.accepted = false;
       plan.evaluation.reasons.push(...portfolio.reasons.filter((reason) => !plan.evaluation.reasons.includes(reason)));
     }
-    const quantity = signal.requestedQuantity == null ? plan.sizing.quantity : Math.min(Math.floor(signal.requestedQuantity), plan.sizing.quantity);
+    const requestedQuantity = signal.requestedQuantity == null ? plan.sizing.quantity : Math.min(Math.floor(signal.requestedQuantity), plan.sizing.quantity);
+    const allocatedQuantity = Number.isFinite(Number(portfolio.allocation?.recommendedQuantity))
+      ? Number(portfolio.allocation.recommendedQuantity)
+      : requestedQuantity;
+    const quantity = Math.min(requestedQuantity, allocatedQuantity);
     const order = enforceRiskLimits({ symbol: signal.symbol, side: signal.side, orderType: signal.orderType, session: signal.session, quantity, limitPrice: signal.limitPrice, stopLoss: signal.stopLoss, takeProfit: signal.takeProfit, source: signal.source, signalId: signal.signalId }, env);
     if (quantity < 1) {
       plan.evaluation.accepted = false;
@@ -247,9 +262,10 @@ export async function handleWebullSandboxOrder(request, env = {}) {
       plan.evaluation.accepted = false;
       plan.evaluation.reasons.push(...accountSafety.reasons.filter((reason) => !plan.evaluation.reasons.includes(reason)));
     }
-
     const decision = evaluateDecision({ signal, context, plan, brain, portfolio, accountSafety }, env);
     applyDecisionEnforcement(plan, decision);
+    const consensus = evaluateInstitutionalConsensus({ signal, context, brain, plan, portfolio, accountSafety }, env);
+    applyConsensusEnforcement(plan, consensus);
     const policyContext = capitalContext(payload, context, quantity);
     const capitalPolicy = evaluateCapitalPolicy({
       signal: { ...signal, requestedQuantity: quantity },
@@ -269,6 +285,7 @@ export async function handleWebullSandboxOrder(request, env = {}) {
       }
     }
     const capitalPolicyMode = capitalPolicyEnforced ? 'ENFORCED' : 'SHADOW';
+    const consensusMode = consensus.enforce ? 'ENFORCED' : 'SHADOW';
 
     if (env.WEBULL_LIVE_TRADING === 'true' || env.WEBULL_ENVIRONMENT === 'production') return Response.json({ ok: false, blocked: true, error: 'Production trading is intentionally disabled' }, { status: 423 });
     const submissionEnabled = env.WEBULL_SANDBOX_ENABLED === 'true' && env.WEBULL_SANDBOX_ORDER_SUBMISSION === 'true';
@@ -287,6 +304,8 @@ export async function handleWebullSandboxOrder(request, env = {}) {
           plan,
           brain: { version: MOE_AI_BRAIN_VERSION, ...brain },
           decision,
+          consensus,
+          consensusMode,
           portfolio,
           accountSafety,
           capitalPolicy,
@@ -307,16 +326,20 @@ export async function handleWebullSandboxOrder(request, env = {}) {
           plan,
           brain: { version: MOE_AI_BRAIN_VERSION, ...brain },
           decision,
+          consensus,
+          consensusMode,
           portfolio,
           accountSafety,
           capitalPolicy,
           capitalPolicyMode,
           accountSync,
-          message: capitalPolicyEnforced && !capitalPolicy.accepted
-            ? 'Sandbox order was blocked by the shared cash and intraday-margin capital policy.'
-            : decision.enforce && !decision.accepted
-              ? 'Sandbox order was blocked by the explainable MOE Decision Engine.'
-              : 'Sandbox order was not submitted because the trade failed MOE AI or safety rules.',
+          message: consensus.enforce && !consensus.accepted
+            ? 'Sandbox order was blocked by the Institutional Consensus Engine.'
+            : capitalPolicyEnforced && !capitalPolicy.accepted
+              ? 'Sandbox order was blocked by the shared cash and intraday-margin capital policy.'
+              : decision.enforce && !decision.accepted
+                ? 'Sandbox order was blocked by the explainable MOE Decision Engine.'
+                : 'Sandbox order was not submitted because the trade failed MOE AI or safety rules.',
         }, { status: 422 });
       }
       submission = await placeWebullSandboxOrder(accountId, order, env);
@@ -332,19 +355,21 @@ export async function handleWebullSandboxOrder(request, env = {}) {
       plan,
       brain: { version: MOE_AI_BRAIN_VERSION, ...brain },
       decision,
+      consensus,
+      consensusMode,
       portfolio,
       accountSafety,
       capitalPolicy,
       capitalPolicyMode,
       submission,
       accountSync,
-      decisionPipeline: ['SIGNAL_VALIDATION', 'MOE_AI_BRAIN', 'WEBULL_ACCOUNT_SYNC', 'TRADE_ENGINE', 'POSITION_SIZING', 'PORTFOLIO_MANAGER', 'MARGIN_ACCOUNT_SAFETY', 'EXPLAINABLE_DECISION_ENGINE', capitalPolicyEnforced ? 'CAPITAL_POLICY_ENFORCED' : 'CAPITAL_POLICY_SHADOW', submitted ? 'SANDBOX_SUBMISSION' : 'ORDER_PREVIEW'],
+      decisionPipeline: ['SIGNAL_VALIDATION', 'MOE_AI_BRAIN', 'WEBULL_ACCOUNT_SYNC', 'TRADE_ENGINE', 'POSITION_SIZING', 'PORTFOLIO_INTELLIGENCE', 'MARGIN_ACCOUNT_SAFETY', 'EXPLAINABLE_DECISION_ENGINE', consensus.enforce ? 'INSTITUTIONAL_CONSENSUS_ENFORCED' : 'INSTITUTIONAL_CONSENSUS_SHADOW', capitalPolicyEnforced ? 'CAPITAL_POLICY_ENFORCED' : 'CAPITAL_POLICY_SHADOW', submitted ? 'SANDBOX_SUBMISSION' : 'ORDER_PREVIEW'],
       message: submitted
-        ? `Trade passed the active safety layers and was submitted to Webull Sandbox. Capital policy mode: ${capitalPolicyMode}.`
+        ? `Trade passed the active safety layers and was submitted to Webull Sandbox. Consensus mode: ${consensusMode}. Capital policy mode: ${capitalPolicyMode}.`
         : accountSyncWarning
           ? 'Dry run completed without submitting an order. Webull account sync was unavailable, so fallback context was used.'
           : plan.evaluation.accepted
-            ? `Trade accepted for preview. Capital policy mode: ${capitalPolicyMode}.`
+            ? `Trade accepted for preview. Consensus mode: ${consensusMode}. Capital policy mode: ${capitalPolicyMode}.`
             : 'Trade rejected by the MOE decision pipeline.',
       createdAt: new Date().toISOString(),
     }, { status: plan.evaluation.accepted ? 200 : 422 });
