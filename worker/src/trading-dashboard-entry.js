@@ -8,7 +8,8 @@ import { getWebullLiveOpenOrders } from './webull-live-client.js';
 
 const DASHBOARD_PATH = '/api/trading/dashboard';
 const CONNECTION_PATH = '/api/trading/connection';
-const BUILD_ID = 'trading-dashboard-webull-cloudflare-v2-20260727';
+const STREAM_PATH = '/api/trading/stream';
+const BUILD_ID = 'trading-dashboard-webull-cloudflare-v3-20260727';
 
 function enabled(value) {
   return String(value || '').trim().toLowerCase() === 'true';
@@ -141,6 +142,7 @@ function connectionStatus(env = {}) {
       connected: true,
       durableObjectBound: Boolean(env.ALERT_COORDINATOR),
       environment: 'workers',
+      streamingEnabled: true,
     },
     webull: { sandbox, live },
     safety: {
@@ -209,12 +211,60 @@ async function liveDashboard(env) {
   });
 }
 
+async function getDashboard(mode, env) {
+  return mode === 'live' ? liveDashboard(env) : sandboxDashboard(env);
+}
+
+function streamDashboard(mode, env, origin) {
+  const encoder = new TextEncoder();
+  const stream = new ReadableStream({
+    async start(controller) {
+      let closed = false;
+      const send = (event, payload) => {
+        if (closed) return;
+        controller.enqueue(encoder.encode(`event: ${event}\ndata: ${JSON.stringify(payload)}\n\n`));
+      };
+      const close = () => {
+        if (closed) return;
+        closed = true;
+        controller.close();
+      };
+      for (let index = 0; index < 12 && !closed; index += 1) {
+        try {
+          send('dashboard', await getDashboard(mode, env));
+        } catch (error) {
+          send('error', {
+            ok: false,
+            mode: mode.toUpperCase(),
+            readOnly: true,
+            error: error instanceof Error ? error.message : 'Streaming sync failed',
+            fetchedAt: new Date().toISOString(),
+          });
+        }
+        if (index < 11) await new Promise((resolve) => setTimeout(resolve, 5000));
+      }
+      close();
+    },
+    cancel() {},
+  });
+
+  return new Response(stream, {
+    status: 200,
+    headers: {
+      ...headers(origin),
+      'content-type': 'text/event-stream; charset=utf-8',
+      connection: 'keep-alive',
+      'x-accel-buffering': 'no',
+    },
+  });
+}
+
 export { AlertCoordinator };
 
 export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
-    if (![DASHBOARD_PATH, CONNECTION_PATH].includes(url.pathname)) return worker.fetch(request, env, ctx);
+    if (![DASHBOARD_PATH, CONNECTION_PATH, STREAM_PATH].includes(url.pathname)) return worker.fetch(request, env, ctx);
 
     const origin = allowedOrigin(request, env);
     if (!origin) return json({ ok: false, error: 'Origin not allowed' }, 403, '*');
@@ -230,9 +280,12 @@ export default {
       return json({ ok: false, error: 'mode must be sandbox or live' }, 400, origin);
     }
 
+    if (url.pathname === STREAM_PATH) {
+      return streamDashboard(mode, env, origin);
+    }
+
     try {
-      const dashboard = mode === 'live' ? await liveDashboard(env) : await sandboxDashboard(env);
-      return json(dashboard, 200, origin);
+      return json(await getDashboard(mode, env), 200, origin);
     } catch (error) {
       console.error(JSON.stringify({
         event: 'TRADING_DASHBOARD_SYNC_FAILED',
