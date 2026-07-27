@@ -1,9 +1,14 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import styles from './dashboard.module.css';
 
 const REFRESH_MS = 15000;
+const API_BASE = String(process.env.NEXT_PUBLIC_MOE_API_BASE_URL || '').replace(/\/$/, '');
+
+function apiUrl(path) {
+  return `${API_BASE}${path}`;
+}
 
 function money(value) {
   const number = Number(value);
@@ -42,7 +47,7 @@ function normalizePosition(position = {}) {
 
 function normalizeOrder(order = {}) {
   return {
-    id: order.id || order.orderId || order.clientOrderId || order.client_order_id || crypto.randomUUID(),
+    id: order.id || order.orderId || order.clientOrderId || order.client_order_id || `${order.symbol || 'order'}-${order.createdAt || order.created_at || Date.now()}`,
     symbol: String(order.symbol || '—').toUpperCase(),
     side: String(order.side || '—').toUpperCase(),
     type: String(order.type || order.orderType || order.order_type || '—').toUpperCase(),
@@ -69,6 +74,8 @@ function extractDashboard(payload = {}) {
     dayPnl: Number(account.dayPnl ?? account.dailyPnl ?? account.day_pnl ?? payload.dayPnl ?? computedPnl),
     positions,
     orders,
+    safety: payload.safety || {},
+    build: payload.build || null,
     updatedAt: payload.updatedAt || payload.fetchedAt || new Date().toISOString()
   };
 }
@@ -81,37 +88,98 @@ function Status({ value }) {
 export default function TradingDashboard() {
   const [mode, setMode] = useState('sandbox');
   const [data, setData] = useState(() => extractDashboard());
+  const [connection, setConnection] = useState(null);
+  const [transport, setTransport] = useState('polling');
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [lastSuccessfulUpdate, setLastSuccessfulUpdate] = useState(null);
+  const streamRef = useRef(null);
 
-  const endpoint = useMemo(() => `/api/trading/dashboard?mode=${mode}`, [mode]);
+  const endpoint = useMemo(() => apiUrl(`/api/trading/dashboard?mode=${mode}`), [mode]);
+  const streamEndpoint = useMemo(() => apiUrl(`/api/trading/stream?mode=${mode}`), [mode]);
+
+  const applyPayload = useCallback((payload) => {
+    setData(extractDashboard(payload));
+    setLastSuccessfulUpdate(new Date());
+    setError('');
+    setLoading(false);
+  }, []);
+
+  const loadConnection = useCallback(async () => {
+    try {
+      const response = await fetch(apiUrl('/api/trading/connection'), { cache: 'no-store' });
+      const payload = await response.json().catch(() => ({}));
+      if (response.ok) setConnection(payload);
+    } catch {
+      setConnection(null);
+    }
+  }, []);
 
   const loadDashboard = useCallback(async ({ silent = false } = {}) => {
     if (!silent) setLoading(true);
-    setError('');
-
     try {
       const response = await fetch(endpoint, { cache: 'no-store', headers: { Accept: 'application/json' } });
       const payload = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(payload.error || payload.message || `Dashboard request failed (${response.status})`);
-      setData(extractDashboard(payload));
-      setLastSuccessfulUpdate(new Date());
+      applyPayload(payload);
     } catch (requestError) {
       setError(requestError instanceof Error ? requestError.message : 'Could not load trading data');
-      setData(extractDashboard());
-    } finally {
       setLoading(false);
     }
-  }, [endpoint]);
+  }, [applyPayload, endpoint]);
 
   useEffect(() => {
+    loadConnection();
     loadDashboard();
-    const timer = window.setInterval(() => loadDashboard({ silent: true }), REFRESH_MS);
-    return () => window.clearInterval(timer);
-  }, [loadDashboard]);
+
+    if (typeof window === 'undefined' || typeof window.EventSource === 'undefined') {
+      const timer = window.setInterval(() => loadDashboard({ silent: true }), REFRESH_MS);
+      return () => window.clearInterval(timer);
+    }
+
+    let fallbackTimer;
+    const stream = new window.EventSource(streamEndpoint);
+    streamRef.current = stream;
+
+    stream.addEventListener('open', () => {
+      setTransport('streaming');
+      setError('');
+      if (fallbackTimer) window.clearInterval(fallbackTimer);
+    });
+
+    stream.addEventListener('dashboard', (event) => {
+      try {
+        applyPayload(JSON.parse(event.data));
+      } catch {
+        setError('تعذر قراءة تحديث التداول اللحظي');
+      }
+    });
+
+    stream.addEventListener('error', (event) => {
+      let message = 'انقطع البث اللحظي؛ تم التحويل إلى التحديث الدوري';
+      if (event?.data) {
+        try {
+          const payload = JSON.parse(event.data);
+          message = payload.error || message;
+        } catch {}
+      }
+      setTransport('polling');
+      setError(message);
+      if (!fallbackTimer) {
+        fallbackTimer = window.setInterval(() => loadDashboard({ silent: true }), REFRESH_MS);
+      }
+    });
+
+    return () => {
+      stream.close();
+      streamRef.current = null;
+      if (fallbackTimer) window.clearInterval(fallbackTimer);
+    };
+  }, [applyPayload, loadConnection, loadDashboard, streamEndpoint]);
 
   const positiveDay = Number(data.dayPnl) >= 0;
+  const activeStatus = mode === 'live' ? connection?.webull?.live : connection?.webull?.sandbox;
+  const modeReady = mode === 'live' ? activeStatus?.readReady : activeStatus?.ready;
 
   return (
     <main className={styles.page} dir="rtl">
@@ -132,8 +200,8 @@ export default function TradingDashboard() {
       <section className={`${styles.connection} ${error ? styles.connectionError : ''}`}>
         <span className={styles.connectionDot} />
         <div>
-          <b>{error ? 'تعذر الاتصال ببيانات التداول' : mode === 'live' ? 'التداول الحقيقي' : 'التداول التجريبي'}</b>
-          <small>{error || (lastSuccessfulUpdate ? `آخر تحديث: ${lastSuccessfulUpdate.toLocaleTimeString('ar-US')}` : 'جاري تحميل بيانات الحساب')}</small>
+          <b>{error ? 'تعذر الاتصال ببيانات التداول' : modeReady === false ? 'إعداد Webull غير مكتمل' : mode === 'live' ? 'Webull Live متصل عبر Cloudflare' : 'Webull Sandbox متصل عبر Cloudflare'}</b>
+          <small>{error || `${transport === 'streaming' ? 'بث لحظي' : 'تحديث دوري'}${lastSuccessfulUpdate ? ` · آخر تحديث: ${lastSuccessfulUpdate.toLocaleTimeString('ar-US')}` : ''}`}</small>
         </div>
       </section>
 
@@ -192,8 +260,8 @@ export default function TradingDashboard() {
       </section>
 
       <footer className={styles.footer}>
-        <span>تحديث تلقائي كل 15 ثانية</span>
-        <span>{mode === 'live' ? 'LIVE · أوامر حقيقية' : 'SANDBOX · محاكاة آمنة'}</span>
+        <span>{transport === 'streaming' ? 'Cloudflare SSE · تحديث كل 5 ثوانٍ' : 'Fallback · تحديث كل 15 ثانية'}</span>
+        <span>{mode === 'live' ? `LIVE · ${data.safety?.killSwitch ? 'Kill Switch مفعّل' : 'قراءة آمنة'}` : 'SANDBOX · محاكاة آمنة'}</span>
       </footer>
     </main>
   );
