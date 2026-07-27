@@ -1,4 +1,4 @@
-export const EXECUTION_REPLAY_GUARD_VERSION = '1.2.0';
+export const EXECUTION_REPLAY_GUARD_VERSION = '1.3.0';
 
 function positiveInteger(value, fallback) {
   const parsed = Number(value);
@@ -32,6 +32,10 @@ function keyFor(mode, signalId) {
 function getStore(env = {}) {
   const store = env.MOE_EXECUTION_GUARD;
   return store && typeof store.get === 'function' && typeof store.put === 'function' ? store : null;
+}
+
+function persistenceFailure(error) {
+  return String(error instanceof Error ? error.message : error || 'Execution state persistence failed').slice(0, 500);
 }
 
 export function evaluateExecutionReplayGuard({ mode, signalId, issuedAt, now = Date.now() } = {}, env = {}) {
@@ -79,25 +83,40 @@ export async function reserveExecution({ mode, signalId, issuedAt, now = Date.no
     };
   }
 
-  const existing = await store.get(evaluation.key);
-  if (existing) {
+  try {
+    const existing = await store.get(evaluation.key);
+    if (existing) {
+      return {
+        ...evaluation,
+        accepted: false,
+        reserved: false,
+        duplicate: true,
+        storage: 'KV',
+        blockers: ['This signalId has already been reserved or submitted in this execution mode'],
+      };
+    }
+
+    await store.put(evaluation.key, JSON.stringify({
+      mode: evaluation.mode,
+      signalId: evaluation.signalId,
+      issuedAt: evaluation.issuedAt,
+      status: 'RESERVED',
+      reservedAt: new Date(now).toISOString(),
+    }), { expirationTtl: ttlSeconds });
+  } catch (error) {
+    const required = evaluation.mode === 'LIVE'
+      ? env.MOE_EXECUTION_GUARD_REQUIRED_LIVE !== 'false'
+      : env.MOE_EXECUTION_GUARD_REQUIRED_SANDBOX === 'true';
     return {
       ...evaluation,
-      accepted: false,
+      accepted: !required,
       reserved: false,
-      duplicate: true,
-      storage: 'KV',
-      blockers: ['This signalId has already been reserved or submitted in this execution mode'],
+      duplicate: false,
+      storage: 'ERROR',
+      persistenceError: persistenceFailure(error),
+      blockers: required ? [`${evaluation.mode} execution replay storage failed`] : [],
     };
   }
-
-  await store.put(evaluation.key, JSON.stringify({
-    mode: evaluation.mode,
-    signalId: evaluation.signalId,
-    issuedAt: evaluation.issuedAt,
-    status: 'RESERVED',
-    reservedAt: new Date(now).toISOString(),
-  }), { expirationTtl: ttlSeconds });
 
   return {
     ...evaluation,
@@ -120,20 +139,33 @@ export async function finalizeExecution({ mode, signalId, status, brokerOrderIds
   if (!store) return { updated: false, storage: 'UNAVAILABLE', mode: normalizedMode, signalId: normalizedSignalId, status: normalizedStatus };
 
   const ttlSeconds = positiveInteger(env.MOE_EXECUTION_REPLAY_TTL_SECONDS, normalizedMode === 'LIVE' ? 900 : 600);
-  const existingText = await store.get(key);
-  let existing = {};
-  try { existing = existingText ? JSON.parse(existingText) : {}; } catch { existing = {}; }
-  const record = {
-    ...existing,
-    mode: normalizedMode,
-    signalId: normalizedSignalId,
-    status: normalizedStatus,
-    updatedAt: new Date(now).toISOString(),
-    ...(normalizedStatus === 'SUBMITTED' ? { submittedAt: new Date(now).toISOString(), brokerOrderIds } : {}),
-    ...(normalizedStatus === 'FAILED' ? { failedAt: new Date(now).toISOString(), error: String(error || 'Order submission failed').slice(0, 500) } : {}),
-  };
-  await store.put(key, JSON.stringify(record), { expirationTtl: ttlSeconds });
-  return { updated: true, storage: 'KV', key, ...record };
+  try {
+    const existingText = await store.get(key);
+    let existing = {};
+    try { existing = existingText ? JSON.parse(existingText) : {}; } catch { existing = {}; }
+    const record = {
+      ...existing,
+      mode: normalizedMode,
+      signalId: normalizedSignalId,
+      status: normalizedStatus,
+      updatedAt: new Date(now).toISOString(),
+      ...(normalizedStatus === 'SUBMITTED' ? { submittedAt: new Date(now).toISOString(), brokerOrderIds } : {}),
+      ...(normalizedStatus === 'FAILED' ? { failedAt: new Date(now).toISOString(), error: String(error || 'Order submission failed').slice(0, 500) } : {}),
+    };
+    await store.put(key, JSON.stringify(record), { expirationTtl: ttlSeconds });
+    return { updated: true, storage: 'KV', key, ...record };
+  } catch (persistenceError) {
+    return {
+      updated: false,
+      storage: 'ERROR',
+      key,
+      mode: normalizedMode,
+      signalId: normalizedSignalId,
+      status: normalizedStatus,
+      brokerOrderIds,
+      persistenceError: persistenceFailure(persistenceError),
+    };
+  }
 }
 
 export function reserveLiveExecution(order = {}, env = {}) {
