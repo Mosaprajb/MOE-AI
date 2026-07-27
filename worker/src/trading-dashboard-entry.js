@@ -2,14 +2,20 @@ import worker, { AlertCoordinator } from './scanner-operational-repair-entry.js'
 import {
   getWebullAccountSnapshot,
   getWebullOpenOrders,
+  webullRequest,
 } from './webull-client.js';
 import { getWebullLiveOpenOrders } from './webull-live-client.js';
-import { webullRequest } from './webull-client.js';
 
 const DASHBOARD_PATH = '/api/trading/dashboard';
+const CONNECTION_PATH = '/api/trading/connection';
+const BUILD_ID = 'trading-dashboard-webull-cloudflare-v2-20260727';
 
 function enabled(value) {
   return String(value || '').trim().toLowerCase() === 'true';
+}
+
+function present(value) {
+  return Boolean(String(value || '').trim());
 }
 
 function allowedOrigin(request, env) {
@@ -74,17 +80,75 @@ function objectFrom(payload, keys) {
     : payload;
 }
 
-function normalizeDashboard({ mode, accountId, balance, positions, orders, liveSafety }) {
+function normalizeDashboard({ mode, accountId, balance, positions, orders, safety }) {
   return {
     ok: true,
+    build: BUILD_ID,
+    provider: 'WEBULL',
+    runtime: 'CLOUDFLARE_WORKERS',
     mode,
     readOnly: true,
     accountIdMasked: accountId ? `***${accountId.slice(-4)}` : null,
     account: objectFrom(balance, ['balance', 'account', 'summary', 'asset']),
     positions: arrayFrom(positions, ['positions', 'position_list', 'items', 'list']),
     orders: arrayFrom(orders, ['orders', 'order_list', 'items', 'list']),
-    safety: liveSafety,
+    safety,
     fetchedAt: new Date().toISOString(),
+  };
+}
+
+function connectionStatus(env = {}) {
+  const sandbox = {
+    environment: String(env.WEBULL_ENVIRONMENT || 'sandbox').toLowerCase(),
+    accountConfigured: present(env.WEBULL_ACCOUNT_ID),
+    appKeyConfigured: present(env.WEBULL_APP_KEY),
+    appSecretConfigured: present(env.WEBULL_APP_SECRET),
+    accessTokenConfigured: present(env.WEBULL_ACCESS_TOKEN),
+    submissionEnabled: enabled(env.WEBULL_SANDBOX_ORDER_SUBMISSION),
+    automationArmed: enabled(env.WEBULL_AUTOMATION_ARMED),
+  };
+  sandbox.ready = sandbox.environment !== 'production'
+    && sandbox.accountConfigured
+    && sandbox.appKeyConfigured
+    && sandbox.appSecretConfigured
+    && sandbox.accessTokenConfigured;
+
+  const live = {
+    accountConfigured: present(env.WEBULL_LIVE_ACCOUNT_ID),
+    appKeyConfigured: present(env.WEBULL_LIVE_APP_KEY || env.WEBULL_APP_KEY),
+    appSecretConfigured: present(env.WEBULL_LIVE_APP_SECRET || env.WEBULL_APP_SECRET),
+    accessTokenConfigured: present(env.WEBULL_LIVE_ACCESS_TOKEN || env.WEBULL_ACCESS_TOKEN),
+    tradingEnabled: enabled(env.WEBULL_LIVE_TRADING),
+    submissionEnabled: enabled(env.WEBULL_LIVE_ORDER_SUBMISSION),
+    automationArmed: enabled(env.WEBULL_LIVE_AUTOMATION_ARMED),
+    killSwitch: enabled(env.WEBULL_LIVE_KILL_SWITCH),
+    readOnlyDashboard: enabled(env.WEBULL_DASHBOARD_READ_ONLY),
+  };
+  live.readReady = live.accountConfigured
+    && live.appKeyConfigured
+    && live.appSecretConfigured
+    && live.accessTokenConfigured;
+  live.executionReady = live.readReady
+    && live.tradingEnabled
+    && live.submissionEnabled
+    && live.automationArmed
+    && !live.killSwitch;
+
+  return {
+    ok: true,
+    build: BUILD_ID,
+    cloudflare: {
+      connected: true,
+      durableObjectBound: Boolean(env.ALERT_COORDINATOR),
+      environment: 'workers',
+    },
+    webull: { sandbox, live },
+    safety: {
+      liveExecutionLocked: !live.executionReady,
+      sandboxProtectedOrders: enabled(env.WEBULL_PROTECTED_ORDERS),
+      directionPolicy: String(env.MOE_DIRECTION_POLICY || 'LONG_ONLY').toUpperCase(),
+    },
+    checkedAt: new Date().toISOString(),
   };
 }
 
@@ -103,7 +167,7 @@ async function sandboxDashboard(env) {
     balance: snapshot.balance,
     positions: snapshot.positions,
     orders,
-    liveSafety: {
+    safety: {
       submissionEnabled: enabled(env.WEBULL_SANDBOX_ORDER_SUBMISSION),
       automationArmed: enabled(env.WEBULL_AUTOMATION_ARMED),
       protectedOrders: enabled(env.WEBULL_PROTECTED_ORDERS),
@@ -112,6 +176,9 @@ async function sandboxDashboard(env) {
 }
 
 async function liveDashboard(env) {
+  if (!enabled(env.WEBULL_DASHBOARD_READ_ONLY)) {
+    throw new Error('Live dashboard read-only sync is disabled');
+  }
   const accountId = requireValue(env, 'WEBULL_LIVE_ACCOUNT_ID');
   const liveEnv = liveReadEnvironment(env);
   requireValue(liveEnv, 'WEBULL_APP_KEY');
@@ -130,7 +197,7 @@ async function liveDashboard(env) {
     balance,
     positions,
     orders,
-    liveSafety: {
+    safety: {
       readOnlySync: true,
       liveTradingEnabled: enabled(env.WEBULL_LIVE_TRADING),
       submissionEnabled: enabled(env.WEBULL_LIVE_ORDER_SUBMISSION),
@@ -147,12 +214,16 @@ export { AlertCoordinator };
 export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
-    if (url.pathname !== DASHBOARD_PATH) return worker.fetch(request, env, ctx);
+    if (![DASHBOARD_PATH, CONNECTION_PATH].includes(url.pathname)) return worker.fetch(request, env, ctx);
 
     const origin = allowedOrigin(request, env);
     if (!origin) return json({ ok: false, error: 'Origin not allowed' }, 403, '*');
     if (request.method === 'OPTIONS') return new Response(null, { status: 204, headers: headers(origin) });
     if (request.method !== 'GET') return json({ ok: false, error: 'Method not allowed' }, 405, origin);
+
+    if (url.pathname === CONNECTION_PATH) {
+      return json(connectionStatus(env), 200, origin);
+    }
 
     const mode = String(url.searchParams.get('mode') || 'sandbox').trim().toLowerCase();
     if (!['sandbox', 'live'].includes(mode)) {
@@ -171,6 +242,7 @@ export default {
       }));
       return json({
         ok: false,
+        build: BUILD_ID,
         mode: mode.toUpperCase(),
         readOnly: true,
         error: error instanceof Error ? error.message : 'Trading dashboard sync failed',
