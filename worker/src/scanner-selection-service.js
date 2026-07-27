@@ -1,15 +1,16 @@
 const SETTINGS_KEY = 'scanner-selection-settings:v1';
+const DEFAULT_LEVEL = 'ACTIVE';
 
 export const SCANNER_SELECTION_LEVELS = Object.freeze({
-  DISCOVERY: Object.freeze({ level: 'DISCOVERY', minimumScore: 58, labelAr: 'استكشاف', descriptionAr: 'يوسّع البحث ويعرض فرصًا أولية أكثر، مع بقاء جميع فلاتر القرار والمخاطر.' }),
-  ACTIVE: Object.freeze({ level: 'ACTIVE', minimumScore: 65, labelAr: 'نشط', descriptionAr: 'بحث أوسع من الوضع المتوازن لزيادة عدد الأسهم التي تصل إلى التقييم المتقدم.' }),
-  BALANCED: Object.freeze({ level: 'BALANCED', minimumScore: 70, labelAr: 'متوازن', descriptionAr: 'الإعداد الافتراضي الحالي بين عدد الفرص وجودتها.' }),
+  DISCOVERY: Object.freeze({ level: 'DISCOVERY', minimumScore: 58, labelAr: 'استكشاف', descriptionAr: 'يوسّع الترشيح الأولي لأقصى درجة، مع بقاء MOE AI والمخاطر والسبريد والسوق والقطاع إلزامية.' }),
+  ACTIVE: Object.freeze({ level: 'ACTIVE', minimumScore: 65, labelAr: 'نشط', descriptionAr: 'الإعداد الافتراضي الجديد: بحث أوسع من المتوازن لزيادة الأسهم التي تصل إلى التقييم المتقدم.' }),
+  BALANCED: Object.freeze({ level: 'BALANCED', minimumScore: 70, labelAr: 'متوازن', descriptionAr: 'توازن أكثر تحفظًا بين عدد المرشحين وجودة الإشارة الأولية.' }),
   CONSERVATIVE: Object.freeze({ level: 'CONSERVATIVE', minimumScore: 75, labelAr: 'حذر', descriptionAr: 'يركز على الإشارات الأعلى درجة ويقلل عدد المرشحين.' }),
 });
 
 function normalizeLevel(value) {
-  const level = String(value || 'BALANCED').trim().toUpperCase();
-  return SCANNER_SELECTION_LEVELS[level] ? level : 'BALANCED';
+  const level = String(value || DEFAULT_LEVEL).trim().toUpperCase();
+  return SCANNER_SELECTION_LEVELS[level] ? level : DEFAULT_LEVEL;
 }
 
 function publicSettings(record = {}) {
@@ -26,7 +27,7 @@ function publicSettings(record = {}) {
 
 export async function getScannerSelectionSettings(storage) {
   const stored = await storage.get(SETTINGS_KEY);
-  return publicSettings(stored || { level: 'BALANCED' });
+  return publicSettings(stored || { level: DEFAULT_LEVEL });
 }
 
 export async function updateScannerSelectionSettings(storage, patch = {}) {
