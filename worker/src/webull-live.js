@@ -3,6 +3,8 @@ import { buildTradePlan } from './trade-engine.js';
 import { evaluatePortfolioRisk } from './portfolio-manager.js';
 import { evaluateBrainCandidate, MOE_AI_BRAIN_VERSION } from './moe-ai-brain.js';
 import { evaluateDecision } from './decision-engine.js';
+import { evaluateInstitutionalConsensus } from './institutional-consensus.js';
+import { evaluateLiveTradingGuard } from './live-trading-guard.js';
 import { getWebullAccountSnapshot } from './webull-client.js';
 import { placeWebullLiveOrder, previewWebullLiveOrder } from './webull-live-client.js';
 import { enforceRiskLimits, normalizeWebullSignal } from './webull-sandbox.js';
@@ -178,6 +180,7 @@ export async function handleWebullLiveOrder(request, env = {}) {
       session: signal.session,
       quantity,
       limitPrice: signal.limitPrice,
+      marketPrice: context.marketPrice,
       stopLoss: signal.stopLoss,
       takeProfit: signal.takeProfit,
       source: signal.source,
@@ -187,10 +190,25 @@ export async function handleWebullLiveOrder(request, env = {}) {
       WEBULL_MAX_QUANTITY: env.WEBULL_LIVE_MAX_QUANTITY || 1,
       WEBULL_MAX_NOTIONAL: env.WEBULL_LIVE_MAX_NOTIONAL || 100,
     });
-    const decision = evaluateDecision({ signal, context, plan, brain, portfolio, accountSafety: { accepted: true, reasons: [], metrics: {} } }, env);
+    const accountSafety = { accepted: true, reasons: [], metrics: { source: 'LIVE_GUARD' } };
+    const decision = evaluateDecision({ signal, context, plan, brain, portfolio, accountSafety }, env);
     if (decision.enforce && !decision.accepted) {
       plan.evaluation.accepted = false;
       plan.evaluation.reasons.push(...decision.hardBlocks.filter((reason) => !plan.evaluation.reasons.includes(reason)));
+    }
+
+    const consensus = evaluateInstitutionalConsensus({ signal, context, brain, plan, portfolio, accountSafety }, {
+      ...env,
+      MOE_CONSENSUS_ENFORCED_SANDBOX: 'true',
+      MOE_CONSENSUS_MIN_SCORE: env.MOE_CONSENSUS_MIN_SCORE_LIVE || env.MOE_CONSENSUS_MIN_SCORE || 72,
+    });
+    if (!consensus.accepted) {
+      plan.evaluation.accepted = false;
+      const reasons = consensus.vetoes.length ? consensus.vetoes : [consensus.rationale];
+      for (const reason of reasons) {
+        const normalized = `Institutional consensus: ${reason}`;
+        if (!plan.evaluation.reasons.includes(normalized)) plan.evaluation.reasons.push(normalized);
+      }
     }
 
     const policyContext = capitalContext(payload, context, quantity);
@@ -211,6 +229,27 @@ export async function handleWebullLiveOrder(request, env = {}) {
       }
     }
 
+    const liveGuard = evaluateLiveTradingGuard({
+      order,
+      brain,
+      decision,
+      portfolio,
+      consensus,
+      capitalPolicy,
+      accountSafety,
+      accountSnapshot: {
+        openPositions: portfolioInput.openPositions,
+        dailyPnl: payload.dailyPnl ?? context.dailyPnl ?? accountSnapshot.dailyPnl,
+      },
+    }, env);
+    if (!liveGuard.accepted) {
+      plan.evaluation.accepted = false;
+      for (const reason of liveGuard.blockers) {
+        const normalized = `Live guard: ${reason}`;
+        if (!plan.evaluation.reasons.includes(normalized)) plan.evaluation.reasons.push(normalized);
+      }
+    }
+
     if (!plan.evaluation.accepted) {
       return secureJson({
         ok: false,
@@ -222,10 +261,16 @@ export async function handleWebullLiveOrder(request, env = {}) {
         brain: { version: MOE_AI_BRAIN_VERSION, ...brain },
         decision,
         portfolio,
+        consensus,
         capitalPolicy,
-        message: !capitalPolicy.accepted
-          ? 'Live order was blocked by the shared cash and intraday-margin capital policy.'
-          : 'Live order was rejected by MOERAND safety rules.',
+        liveGuard,
+        message: !liveGuard.accepted
+          ? 'Live order was blocked by the final live trading guard.'
+          : !consensus.accepted
+            ? 'Live order was blocked by Institutional Consensus.'
+            : !capitalPolicy.accepted
+              ? 'Live order was blocked by the shared cash and intraday-margin capital policy.'
+              : 'Live order was rejected by MOERAND safety rules.',
       }, 422);
     }
 
@@ -243,7 +288,9 @@ export async function handleWebullLiveOrder(request, env = {}) {
         brain: { version: MOE_AI_BRAIN_VERSION, ...brain },
         decision,
         portfolio,
+        consensus,
         capitalPolicy,
+        liveGuard,
         readiness,
         message: `Live order passed all checks and broker preview but was not submitted. Capital source: ${capitalPolicy.capitalSource}.`,
       });
@@ -263,9 +310,11 @@ export async function handleWebullLiveOrder(request, env = {}) {
       brain: { version: MOE_AI_BRAIN_VERSION, ...brain },
       decision,
       portfolio,
+      consensus,
       capitalPolicy,
+      liveGuard,
       readiness,
-      decisionPipeline: ['SIGNAL_VALIDATION','MOE_AI_BRAIN','LIVE_ACCOUNT_SYNC','TRADE_ENGINE','POSITION_SIZING','PORTFOLIO_MANAGER','EXPLAINABLE_DECISION_ENGINE','CAPITAL_POLICY_ENFORCED','BROKER_PREVIEW','LIVE_SUBMISSION'],
+      decisionPipeline: ['SIGNAL_VALIDATION','MOE_AI_BRAIN','LIVE_ACCOUNT_SYNC','TRADE_ENGINE','POSITION_SIZING','PORTFOLIO_MANAGER','EXPLAINABLE_DECISION_ENGINE','INSTITUTIONAL_CONSENSUS_ENFORCED','CAPITAL_POLICY_ENFORCED','FINAL_LIVE_TRADING_GUARD','BROKER_PREVIEW','LIVE_SUBMISSION'],
       message: `Protected live order was submitted after all safety checks. Capital source: ${capitalPolicy.capitalSource}.`,
       createdAt: new Date().toISOString(),
     });
