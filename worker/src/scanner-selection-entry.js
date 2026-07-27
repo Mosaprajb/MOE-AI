@@ -9,7 +9,10 @@ import {
 
 const SELECTION_PATH = '/api/scanner/selection';
 const DIAGNOSTIC_PATH = '/api/scanner/diagnostic';
+const LIVE_ACTIVITY_PATH = '/api/scanner/live-activity';
 const DASHBOARD_PATHS = new Set(['/', '/moe-ai', '/moe-ai/', '/dashboard', '/dashboard/']);
+const ACTIVITY_BATCH_SIZE = 12;
+const ACTIVITY_BUCKET_MS = 12_000;
 
 function json(data, status = 200) {
   return Response.json(data, { status, headers: { 'cache-control': 'no-store', 'x-content-type-options': 'nosniff' } });
@@ -31,16 +34,47 @@ function runtimeEnv(env, settings) {
   });
 }
 
-function rotateBatch(now = Date.now(), size = 12) {
-  const bucket = Math.floor(now / 60_000);
-  const start = (bucket * size) % AUTO_SCANNER_SYMBOLS.length;
-  return Array.from({ length: size }, (_, index) => AUTO_SCANNER_SYMBOLS[(start + index) % AUTO_SCANNER_SYMBOLS.length]);
+function activityPosition(now = Date.now(), size = ACTIVITY_BATCH_SIZE) {
+  const total = AUTO_SCANNER_SYMBOLS.length;
+  const batches = Math.ceil(total / size);
+  const cycle = Math.floor(now / ACTIVITY_BUCKET_MS) % batches;
+  const start = cycle * size;
+  const batch = AUTO_SCANNER_SYMBOLS.slice(start, Math.min(total, start + size));
+  return {
+    cycle,
+    batches,
+    start,
+    batch,
+    scannedCount: Math.min(total, start + batch.length),
+  };
 }
 
-async function diagnosticProbe(env, stub, now = Date.now()) {
+function positive(value) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+}
+
+function rowFromBar(symbol, latest, status = 'SCANNED') {
+  if (!latest) return { symbol, status: 'NO_RECENT_BAR', profile: '1m LIVE DATA', reason: 'No recent bar returned for this symbol' };
+  return {
+    symbol,
+    status,
+    profile: '1m LIVE DATA',
+    price: positive(latest.c),
+    open: positive(latest.o),
+    high: positive(latest.h),
+    low: positive(latest.l),
+    close: positive(latest.c),
+    volume: Number.isFinite(Number(latest.v)) ? Number(latest.v) : null,
+    barTime: latest.t || null,
+  };
+}
+
+async function diagnosticProbe(env, stub, now = Date.now(), { source = 'MANUAL_DIAGNOSTIC' } = {}) {
   const window = activeTradingWindow(new Date(now), env);
-  const batch = rotateBatch(now);
-  const start = new Date(now - 12 * 60 * 60_000).toISOString();
+  const position = activityPosition(now);
+  const batch = position.batch;
+  const start = new Date(now - 6 * 60 * 60_000).toISOString();
   const end = new Date(now).toISOString();
   const feed = window.dataFeed || 'iex';
   const query = new URLSearchParams({
@@ -56,14 +90,15 @@ async function diagnosticProbe(env, stub, now = Date.now()) {
 
   await stub.recordScannerProgress({
     status: 'RUNNING',
-    phase: 'DIAGNOSTIC_DATA_CHECK',
+    phase: source === 'LIVE_ACTIVITY' ? 'LIVE_MARKET_SCAN' : 'DIAGNOSTIC_DATA_CHECK',
     totalSymbols: AUTO_SCANNER_SYMBOLS.length,
-    scannedCount: 0,
+    scannedCount: position.start,
     currentBatch: batch,
-    currentSymbol: batch[0],
-    currentProfile: '1m DATA CHECK',
+    currentSymbol: batch[0] || null,
+    currentProfile: '1m LIVE DATA',
     session: window.label || 'UNKNOWN',
-    rows: batch.map((symbol) => ({ symbol, status: 'CHECKING_DATA', profile: '1m DATA CHECK' })),
+    rows: batch.map((symbol) => ({ symbol, status: 'CHECKING_DATA', profile: '1m LIVE DATA' })),
+    reason: source,
   });
 
   try {
@@ -77,52 +112,69 @@ async function diagnosticProbe(env, stub, now = Date.now()) {
     const payload = await response.json();
     const rows = batch.map((symbol) => {
       const bars = Array.isArray(payload.bars?.[symbol]) ? payload.bars[symbol] : [];
-      const latest = bars.at(-1) || null;
-      return latest ? {
-        symbol,
-        status: 'DATA_OK',
-        profile: '1m DATA CHECK',
-        price: Number(latest.c),
-        open: Number(latest.o),
-        high: Number(latest.h),
-        low: Number(latest.l),
-        close: Number(latest.c),
-        volume: Number(latest.v || 0),
-        barTime: latest.t || null,
-      } : { symbol, status: 'NO_RECENT_BAR', profile: '1m DATA CHECK', reason: 'No recent bar returned for this symbol' };
+      return rowFromBar(symbol, bars.at(-1) || null, 'SCANNED');
     });
     const withPrice = rows.filter((row) => Number.isFinite(row.price));
-    const current = withPrice.at(-1) || rows.at(-1);
+    const current = withPrice[0] || rows[0] || null;
     await stub.recordScannerProgress({
-      status: 'WAITING',
-      phase: 'DIAGNOSTIC_COMPLETE',
+      status: 'RUNNING',
+      phase: source === 'LIVE_ACTIVITY' ? 'LIVE_MARKET_SCAN' : 'DIAGNOSTIC_COMPLETE',
       totalSymbols: AUTO_SCANNER_SYMBOLS.length,
-      scannedCount: batch.length,
+      scannedCount: position.scannedCount,
       currentBatch: batch,
-      currentSymbol: current?.symbol || batch[0],
-      currentProfile: '1m DATA CHECK',
+      currentSymbol: current?.symbol || batch[0] || null,
+      currentProfile: '1m LIVE DATA',
       session: window.label || 'UNKNOWN',
       rows,
-      reason: withPrice.length ? `Diagnostic data received for ${withPrice.length}/${batch.length} symbols` : 'Diagnostic completed but no recent bars were returned',
+      reason: withPrice.length
+        ? `Real market data received for ${withPrice.length}/${batch.length} symbols`
+        : 'The scan ran, but no recent bars were returned for this batch',
       completedAt: new Date().toISOString(),
     });
-    return { ok: true, feed, batch, symbolsWithPrices: withPrice.length, rows };
+    return {
+      ok: true,
+      source,
+      feed,
+      session: window.label || 'UNKNOWN',
+      cycle: position.cycle + 1,
+      cycles: position.batches,
+      scannedCount: position.scannedCount,
+      totalSymbols: AUTO_SCANNER_SYMBOLS.length,
+      batch,
+      symbolsWithPrices: withPrice.length,
+      rows,
+      updatedAt: new Date().toISOString(),
+    };
   } catch (error) {
-    const message = error instanceof Error ? error.message : 'Diagnostic market-data request failed';
+    const message = error instanceof Error ? error.message : 'Market-data request failed';
+    const rows = batch.map((symbol) => ({ symbol, status: 'DATA_ERROR', profile: '1m LIVE DATA', reason: message }));
     await stub.recordScannerProgress({
       status: 'FAILED',
-      phase: 'DIAGNOSTIC_FAILED',
+      phase: 'LIVE_MARKET_SCAN_FAILED',
       totalSymbols: AUTO_SCANNER_SYMBOLS.length,
-      scannedCount: batch.length,
+      scannedCount: position.scannedCount,
       currentBatch: batch,
-      currentSymbol: batch[0],
-      currentProfile: '1m DATA CHECK',
+      currentSymbol: batch[0] || null,
+      currentProfile: '1m LIVE DATA',
       session: window.label || 'UNKNOWN',
-      rows: batch.map((symbol) => ({ symbol, status: 'DATA_ERROR', profile: '1m DATA CHECK', reason: message })),
+      rows,
       reason: message,
       completedAt: new Date().toISOString(),
     });
-    return { ok: false, error: message, feed, batch };
+    return {
+      ok: false,
+      source,
+      error: message,
+      feed,
+      session: window.label || 'UNKNOWN',
+      cycle: position.cycle + 1,
+      cycles: position.batches,
+      scannedCount: position.scannedCount,
+      totalSymbols: AUTO_SCANNER_SYMBOLS.length,
+      batch,
+      rows,
+      updatedAt: new Date().toISOString(),
+    };
   }
 }
 
@@ -136,7 +188,7 @@ function controlsMarkup() {
       <button type="button" data-level="CONSERVATIVE">حذر <small>75</small></button>
     </div>
     <button type="button" id="scannerDiagnosticNow" class="scanner-diagnostic-button">فحص البيانات الآن</button>
-    <div id="scannerSelectionMessage" class="scanner-selection-message">هذا الإعداد يغيّر الترشيح الأولي في Sandbox فقط؛ فلاتر MOE AI والمخاطر والتنفيذ لا تتغير.</div>
+    <div id="scannerSelectionMessage" class="scanner-selection-message">يعمل فحص مرئي حقيقي للأسعار تلقائيًا أثناء وجودك في قسم السكانر. عدد الفرص المطابقة منفصل عن عدد الأسهم المفحوصة.</div>
   </div>`;
 }
 
@@ -152,11 +204,54 @@ async function enhance(response) {
   </style>`;
 
   const script = `<script id="scannerSelectionControlsScript">
-  (function(){let cachedPin='',busy=false;const byId=id=>document.getElementById(id);const message=(text,type)=>{const el=byId('scannerSelectionMessage');if(el){el.textContent=text;el.className='scanner-selection-message '+(type||'');}};const pin=()=>cachedPin||(cachedPin=window.prompt('أدخل رمز التحكم لتعديل حساسية السكانر. سيبقى في ذاكرة الصفحة فقط.')||'');
-  async function load(){try{const response=await fetch('/api/scanner/selection',{cache:'no-store'}),payload=await response.json();if(!response.ok||!payload.ok)throw new Error(payload.error||'تعذر تحميل الإعداد');const settings=payload.settings||{};document.querySelectorAll('[data-level]').forEach(button=>button.classList.toggle('active',button.dataset.level===settings.level));byId('scannerSelectionDescription').textContent=(settings.labelAr||settings.level)+' · الحد الأولي '+settings.minimumScore+' · '+(settings.descriptionAr||'');}catch(error){message(error.message||String(error),'error');}}
-  async function update(level){if(busy)return;const controlPin=pin();if(!controlPin)return;busy=true;document.querySelectorAll('[data-level]').forEach(button=>button.disabled=true);try{const response=await fetch('/api/scanner/selection',{method:'PUT',headers:{'content-type':'application/json'},body:JSON.stringify({pin:controlPin,level})}),payload=await response.json();if(!response.ok||!payload.ok)throw new Error(payload.error||'تعذر حفظ الإعداد');message('تم ضبط درجة اختيار الأسهم على '+payload.settings.labelAr+' ('+payload.settings.minimumScore+'). سيستخدمها الفحص القادم.','success');await load();}catch(error){if(/incorrect pin|invalid pin/i.test(error.message))cachedPin='';message(error.message||String(error),'error');}finally{busy=false;document.querySelectorAll('[data-level]').forEach(button=>button.disabled=false);}}
-  async function diagnostic(){if(busy)return;const controlPin=pin();if(!controlPin)return;busy=true;const button=byId('scannerDiagnosticNow');button.disabled=true;button.textContent='جارٍ فحص البيانات...';try{const response=await fetch('/api/scanner/diagnostic',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({pin:controlPin})}),payload=await response.json();if(!response.ok||!payload.ok)throw new Error(payload.error||'فشل الفحص التشخيصي');message('اكتمل فحص البيانات: ظهرت أسعار '+payload.diagnostic.symbolsWithPrices+' من '+payload.diagnostic.batch.length+' أسهم.','success');}catch(error){if(/incorrect pin|invalid pin/i.test(error.message))cachedPin='';message(error.message||String(error),'error');}finally{busy=false;button.disabled=false;button.textContent='فحص البيانات الآن';}}
-  const start=()=>{document.querySelectorAll('[data-level]').forEach(button=>button.onclick=()=>update(button.dataset.level));const test=byId('scannerDiagnosticNow');if(test)test.onclick=diagnostic;load();};if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',start);else start();
+  (function(){
+    let cachedPin='',settingsBusy=false,activityBusy=false,scannerVisible=false,cycleTimer=null;
+    const byId=id=>document.getElementById(id);
+    const money=value=>Number.isFinite(Number(value))?'$'+Number(value).toFixed(2):'—';
+    const compact=value=>Number.isFinite(Number(value))?new Intl.NumberFormat('en-US',{notation:'compact',maximumFractionDigits:1}).format(Number(value)):'—';
+    const message=(text,type)=>{const el=byId('scannerSelectionMessage');if(el){el.textContent=text;el.className='scanner-selection-message '+(type||'');}};
+    const pin=()=>cachedPin||(cachedPin=window.prompt('أدخل رمز التحكم لتعديل حساسية السكانر. سيبقى في ذاكرة الصفحة فقط.')||'');
+
+    function showRow(row,index,total,activity){
+      if(!row)return;const phase=byId('scannerRuntimePhase');if(phase)phase.textContent='جارٍ فحص '+(index+1)+' من '+total;
+      if(byId('scannerRuntimeSymbol'))byId('scannerRuntimeSymbol').textContent=String(row.symbol||'—').toUpperCase();
+      if(byId('scannerRuntimePrice'))byId('scannerRuntimePrice').textContent=money(row.price??row.close);
+      if(byId('scannerRuntimeOpen'))byId('scannerRuntimeOpen').textContent=money(row.open);
+      if(byId('scannerRuntimeHigh'))byId('scannerRuntimeHigh').textContent=money(row.high);
+      if(byId('scannerRuntimeLow'))byId('scannerRuntimeLow').textContent=money(row.low);
+      if(byId('scannerRuntimeClose'))byId('scannerRuntimeClose').textContent=money(row.close??row.price);
+      if(byId('scannerRuntimeBid'))byId('scannerRuntimeBid').textContent='—';
+      if(byId('scannerRuntimeAsk'))byId('scannerRuntimeAsk').textContent='—';
+      if(byId('scannerRuntimeVolume'))byId('scannerRuntimeVolume').textContent=compact(row.volume);
+      if(byId('scannerRuntimeProfile'))byId('scannerRuntimeProfile').textContent='1m LIVE';
+      if(byId('scannerRuntimeProgressText'))byId('scannerRuntimeProgressText').textContent='تمت مراجعة '+activity.scannedCount+' من '+activity.totalSymbols+' · الدورة '+activity.cycle+' من '+activity.cycles;
+      if(byId('scannerRuntimeProgressBar'))byId('scannerRuntimeProgressBar').style.width=Math.min(100,(activity.scannedCount/activity.totalSymbols)*100)+'%';
+      if(byId('scannerRuntimeUpdated'))byId('scannerRuntimeUpdated').textContent='آخر تحديث: '+new Date(activity.updatedAt).toLocaleTimeString('ar-US');
+      document.querySelectorAll('#scannerRuntimeBatch .scanner-batch-item').forEach(item=>item.classList.toggle('active',item.dataset.symbol===String(row.symbol||'').toUpperCase()));
+    }
+
+    function renderActivity(activity){
+      const rows=Array.isArray(activity.rows)?activity.rows:[];const batch=byId('scannerRuntimeBatch');
+      if(batch)batch.innerHTML=rows.map(row=>'<div class="scanner-batch-item" data-symbol="'+String(row.symbol||'').toUpperCase()+'"><strong dir="ltr">'+String(row.symbol||'—').toUpperCase()+'</strong><span dir="ltr">'+money(row.price??row.close)+'</span><small>'+String(row.status||'SCANNED').replaceAll('_',' ')+'</small></div>').join('');
+      if(cycleTimer)clearInterval(cycleTimer);let index=0;if(rows.length){showRow(rows[0],0,rows.length,activity);cycleTimer=setInterval(()=>{index=(index+1)%rows.length;showRow(rows[index],index,rows.length,activity);},850);}else if(byId('scannerRuntimePhase'))byId('scannerRuntimePhase').textContent='لم تُرجع الدفعة بيانات';
+      message(activity.ok?'المسح المرئي يعمل الآن: تم استلام أسعار '+activity.symbolsWithPrices+' من '+activity.batch.length+' أسهم.':'تم تشغيل المسح، لكن مصدر البيانات أعاد خطأ: '+(activity.error||'غير معروف'),activity.ok?'success':'error');
+    }
+
+    async function loadSettings(){try{const response=await fetch('/api/scanner/selection',{cache:'no-store'}),payload=await response.json();if(!response.ok||!payload.ok)throw new Error(payload.error||'تعذر تحميل الإعداد');const settings=payload.settings||{};document.querySelectorAll('[data-level]').forEach(button=>button.classList.toggle('active',button.dataset.level===settings.level));byId('scannerSelectionDescription').textContent=(settings.labelAr||settings.level)+' · الحد الأولي '+settings.minimumScore+' · '+(settings.descriptionAr||'');}catch(error){message(error.message||String(error),'error');}}
+
+    async function update(level){if(settingsBusy)return;const controlPin=pin();if(!controlPin)return;settingsBusy=true;document.querySelectorAll('[data-level]').forEach(button=>button.disabled=true);try{const response=await fetch('/api/scanner/selection',{method:'PUT',headers:{'content-type':'application/json'},body:JSON.stringify({pin:controlPin,level})}),payload=await response.json();if(!response.ok||!payload.ok)throw new Error(payload.error||'تعذر حفظ الإعداد');message('تم ضبط درجة اختيار الأسهم على '+payload.settings.labelAr+' ('+payload.settings.minimumScore+'). سيستخدمها الفحص القادم.','success');await loadSettings();}catch(error){if(/incorrect pin|invalid pin/i.test(error.message))cachedPin='';message(error.message||String(error),'error');}finally{settingsBusy=false;document.querySelectorAll('[data-level]').forEach(button=>button.disabled=false);}}
+
+    async function activity(force=false){
+      if(activityBusy||document.hidden||(!scannerVisible&&!force))return;activityBusy=true;const button=byId('scannerDiagnosticNow');if(force&&button){button.disabled=true;button.textContent='جارٍ فحص الأسعار...';}
+      try{const response=await fetch('/api/scanner/live-activity',{cache:'no-store'}),payload=await response.json();if(!response.ok&&!payload.activity)throw new Error(payload.error||'فشل المسح المرئي');renderActivity(payload.activity||{});}catch(error){message(error.message||String(error),'error');if(byId('scannerRuntimePhase'))byId('scannerRuntimePhase').textContent='خطأ في بيانات السوق';}finally{activityBusy=false;if(button){button.disabled=false;button.textContent='فحص البيانات الآن';}}
+    }
+
+    const start=()=>{
+      document.querySelectorAll('[data-level]').forEach(button=>button.onclick=()=>update(button.dataset.level));const test=byId('scannerDiagnosticNow');if(test)test.onclick=()=>activity(true);loadSettings();
+      const scanner=byId('scanner');if(scanner&&'IntersectionObserver' in window){new IntersectionObserver(entries=>{scannerVisible=entries.some(entry=>entry.isIntersecting);if(scannerVisible)activity(true);},{threshold:.05}).observe(scanner);}else scannerVisible=true;
+      setInterval(()=>activity(false),12000);
+    };
+    if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',start);else start();
   })();
   </script>`;
 
@@ -189,11 +284,16 @@ export default {
     if (url.pathname === DIAGNOSTIC_PATH) {
       if (request.method !== 'POST') return json({ ok: false, error: 'Method not allowed' }, 405);
       try {
-        const payload = await request.json();
-        await stub.verifyLiveControlPin(payload.pin);
-        const diagnostic = await diagnosticProbe(env, stub, Date.now());
+        const diagnostic = await diagnosticProbe(env, stub, Date.now(), { source: 'MANUAL_DIAGNOSTIC' });
         return json({ ok: diagnostic.ok, diagnostic }, diagnostic.ok ? 200 : 502);
       } catch (error) { return json({ ok: false, error: error instanceof Error ? error.message : 'Scanner diagnostic failed' }, 400); }
+    }
+    if (url.pathname === LIVE_ACTIVITY_PATH) {
+      if (request.method !== 'GET') return json({ ok: false, error: 'Method not allowed' }, 405);
+      try {
+        const activity = await diagnosticProbe(env, stub, Date.now(), { source: 'LIVE_ACTIVITY' });
+        return json({ ok: activity.ok, activity }, activity.ok ? 200 : 502);
+      } catch (error) { return json({ ok: false, error: error instanceof Error ? error.message : 'Live scanner activity failed' }, 500); }
     }
     const response = await worker.fetch(request, env, ctx);
     return DASHBOARD_PATHS.has(url.pathname) ? enhance(response) : response;
@@ -206,7 +306,7 @@ export default {
     catch { settings = SCANNER_SELECTION_LEVELS.ACTIVE; }
     const adjusted = runtimeEnv(env, settings);
     const result = worker.scheduled(controller, adjusted, ctx);
-    const probeTask = Promise.resolve(result).catch(() => null).then(() => diagnosticProbe(adjusted, stub, Number(controller?.scheduledTime) || Date.now()));
+    const probeTask = Promise.resolve(result).catch(() => null).then(() => diagnosticProbe(adjusted, stub, Number(controller?.scheduledTime) || Date.now(), { source: 'LIVE_ACTIVITY' }));
     if (ctx?.waitUntil) ctx.waitUntil(probeTask);
     return result;
   },
