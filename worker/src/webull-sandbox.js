@@ -220,6 +220,10 @@ export async function handleWebullSandboxOrder(request, env = {}) {
       atr: context.atr,
       spreadPercent: context.spreadPercent,
       driftPercent: context.driftPercent,
+      marketScore: context.marketScore,
+      marketRegime: context.marketRegime,
+      sector: payload.sector || context.sector,
+      sectorScore: context.sectorScore,
     }, brainWindow(signal, context), env);
     const plan = buildTradePlan(signal, context, env);
     if (!brain.accepted) {
