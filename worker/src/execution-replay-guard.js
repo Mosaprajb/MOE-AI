@@ -1,4 +1,4 @@
-export const EXECUTION_REPLAY_GUARD_VERSION = '1.0.0';
+export const EXECUTION_REPLAY_GUARD_VERSION = '1.1.0';
 
 function positiveInteger(value, fallback) {
   const parsed = Number(value);
@@ -61,14 +61,16 @@ export async function reserveExecution({ mode, signalId, issuedAt, now = Date.no
   const ttlSeconds = positiveInteger(env.MOE_EXECUTION_REPLAY_TTL_SECONDS, evaluation.mode === 'LIVE' ? 900 : 600);
   const store = env.MOE_EXECUTION_GUARD;
   if (!store || typeof store.get !== 'function' || typeof store.put !== 'function') {
-    const required = evaluation.mode === 'LIVE' && env.MOE_EXECUTION_GUARD_REQUIRED_LIVE !== 'false';
+    const required = evaluation.mode === 'LIVE'
+      ? env.MOE_EXECUTION_GUARD_REQUIRED_LIVE !== 'false'
+      : env.MOE_EXECUTION_GUARD_REQUIRED_SANDBOX === 'true';
     return {
       ...evaluation,
       accepted: !required,
       reserved: false,
       duplicate: false,
       storage: 'UNAVAILABLE',
-      blockers: required ? ['Live execution replay storage is unavailable'] : [],
+      blockers: required ? [`${evaluation.mode} execution replay storage is unavailable`] : [],
     };
   }
 
@@ -99,4 +101,20 @@ export async function reserveExecution({ mode, signalId, issuedAt, now = Date.no
     storage: 'KV',
     ttlSeconds,
   };
+}
+
+export function reserveLiveExecution(order = {}, env = {}) {
+  return reserveExecution({
+    mode: 'LIVE',
+    signalId: order.signalId,
+    issuedAt: order.issuedAt,
+  }, env);
+}
+
+export function reserveSandboxExecution(order = {}, env = {}) {
+  return reserveExecution({
+    mode: 'SANDBOX',
+    signalId: order.signalId,
+    issuedAt: order.issuedAt,
+  }, env);
 }
