@@ -1,7 +1,7 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "moerand-alerts",
-  "main": "worker/src/scanner-operational-repair-entry.js",
+  "main": "worker/src/trading-dashboard-entry.js",
   "compatibility_date": "2026-07-22",
   "observability": { "enabled": true },
   "triggers": { "crons": ["* * * * *"] },
@@ -32,6 +32,7 @@
     "WEBULL_AUTOMATION_ARMED": "true",
     "WEBULL_PROTECTED_ORDERS": "true",
     "WEBULL_READ_ONLY_SYNC": "true",
+    "WEBULL_DASHBOARD_READ_ONLY": "true",
     "WEBULL_LIVE_API_BASE_URL": "https://api.webull.com",
     "WEBULL_LIVE_TRADING": "false",
     "WEBULL_LIVE_ORDER_SUBMISSION": "false",
