@@ -1,3 +1,4 @@
+import { reserveLiveExecution } from './execution-replay-guard.js';
 import { webullRequest } from './webull-client.js';
 
 const encoder = new TextEncoder();
@@ -100,8 +101,12 @@ export async function previewWebullLiveOrder(accountId, order, env = {}) {
 
 export async function placeWebullLiveOrder(accountId, order, env = {}) {
   const payload = await protectedPayload(accountId, order);
+  const replayGuard = await reserveLiveExecution(order, env);
+  if (!replayGuard.accepted) {
+    throw new Error(`Live order blocked by execution replay guard: ${replayGuard.blockers.join('; ')}`);
+  }
   const response = await webullRequest('POST', '/openapi/trade/order/place', { body: payload.body }, env);
-  return { protected: true, clientOrderIds: payload.ids, response };
+  return { protected: true, clientOrderIds: payload.ids, replayGuard, response };
 }
 
 export function getWebullLiveOpenOrders(accountId, options = {}, env = {}) {
