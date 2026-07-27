@@ -1,6 +1,11 @@
 import { evaluateInstitutionalFlowScannerBatch } from '../institutional-flow/scanner-adapter.js';
 import { buildTradingIntelligenceSnapshot } from '../trading-intelligence/gauge-adapter.js';
 import { comparisonSymbolFor, createSmtDivergenceConfig, evaluateSmtDivergence } from '../trading-intelligence/smt-divergence.js';
+import {
+  lifecycleStateCounts,
+  observationLifecycleState,
+  observationRunState,
+} from './lifecycle-state.js';
 
 const SUPPORTED_TIMEFRAMES = Object.freeze({
   '1m': { minutes: 1, alpaca: '1Min', lookbackDays: 3 },
@@ -143,7 +148,21 @@ function compactOpportunity(item, smtDivergence = null) {
     observationOnly: true,
     executionAllowed: false,
   };
-  return Object.freeze({ ...compact, tradingIntelligence: buildTradingIntelligenceSnapshot(compact) });
+  const lifecycleState = observationLifecycleState(compact);
+  const enriched = { ...compact, lifecycleState };
+  return Object.freeze({ ...enriched, tradingIntelligence: buildTradingIntelligenceSnapshot(enriched) });
+}
+
+function skippedResult(base, { ok = true, skipped }) {
+  const topOpportunities = [];
+  return Object.freeze({
+    ...base,
+    ok,
+    skipped,
+    lifecycleState: observationRunState({ enabled: base.enabled, skipped, topOpportunities }),
+    lifecycleStateCounts: lifecycleStateCounts(topOpportunities),
+    topOpportunities,
+  });
 }
 
 export async function runSmartMoneyObservation({
@@ -172,16 +191,18 @@ export async function runSmartMoneyObservation({
     liveExecutionAllowed: false,
   };
 
-  if (!base.enabled) return Object.freeze({ ...base, ok: true, skipped: 'SMART_MONEY_OBSERVATION_DISABLED', topOpportunities: [] });
+  if (!base.enabled) return skippedResult(base, { skipped: 'SMART_MONEY_OBSERVATION_DISABLED' });
   if (String(env.WEBULL_LIVE_TRADING || '').toLowerCase() === 'true') {
-    return Object.freeze({ ...base, ok: false, skipped: 'LIVE_TRADING_SAFETY_LOCK', topOpportunities: [] });
+    return skippedResult(base, { ok: false, skipped: 'LIVE_TRADING_SAFETY_LOCK' });
   }
-  if (!window.open) return Object.freeze({ ...base, ok: true, skipped: 'NO_ACTIVE_MARKET_SESSION', topOpportunities: [] });
-  if (!smartMoneyObservationDue(now, timeframe)) return Object.freeze({ ...base, ok: true, skipped: 'WAITING_FOR_COMPLETED_OBSERVATION_CANDLE', topOpportunities: [] });
+  if (!window.open) return skippedResult(base, { skipped: 'NO_ACTIVE_MARKET_SESSION' });
+  if (!smartMoneyObservationDue(now, timeframe)) {
+    return skippedResult(base, { skipped: 'WAITING_FOR_COMPLETED_OBSERVATION_CANDLE' });
+  }
   if (!env.ALPACA_KEY_ID || !env.ALPACA_SECRET_KEY) {
-    return Object.freeze({ ...base, ok: false, skipped: 'ALPACA_MARKET_DATA_SECRETS_MISSING', topOpportunities: [] });
+    return skippedResult(base, { ok: false, skipped: 'ALPACA_MARKET_DATA_SECRETS_MISSING' });
   }
-  if (!symbols.length) return Object.freeze({ ...base, ok: false, skipped: 'OBSERVATION_UNIVERSE_EMPTY', topOpportunities: [] });
+  if (!symbols.length) return skippedResult(base, { ok: false, skipped: 'OBSERVATION_UNIVERSE_EMPTY' });
 
   const marketDataBySymbol = await fetchObservationBars({ env, now, window, symbols: dataSymbols, timeframe, fetchImpl });
   const batch = await evaluator({ symbols, marketDataBySymbol, timeframe, now, limit: symbols.length });
@@ -191,10 +212,13 @@ export async function runSmartMoneyObservation({
     .filter((item) => Number(item.pipelineScore || 0) > 0)
     .slice(0, topLimit)
     .map((item) => compactOpportunity(item, smtBySymbol[item.symbol] || null));
+  const lifecycleStateCountsResult = lifecycleStateCounts(topOpportunities);
 
   return Object.freeze({
     ...base,
     ok: true,
+    lifecycleState: observationRunState({ enabled: base.enabled, topOpportunities }),
+    lifecycleStateCounts: lifecycleStateCountsResult,
     requestedSymbols: symbols.length,
     marketDataSymbols: dataSymbols.length,
     evaluatedSymbols: batch.observations.length,
