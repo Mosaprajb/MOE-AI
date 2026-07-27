@@ -8,7 +8,7 @@ import {
 const Arabic = getDashboardMessages('ar');
 const English = getDashboardMessages('en');
 
-const staticTextPairs = Object.freeze([
+export const staticTextPairs = Object.freeze([
   [Arabic.overview, English.overview],
   [Arabic.activeTrade, English.activeTrade],
   [Arabic.scanner, English.scanner],
@@ -82,36 +82,53 @@ export function dashboardLocalizationRuntimeScript() {
     if (!i18n) return;
     const ArabicToEnglish = new Map(pairs);
     const EnglishToArabic = new Map(pairs.map(([ar, en]) => [en, ar]));
+    let applying = false;
+    let scheduled = false;
     const translateText = (value, locale) => {
-      const trimmed = String(value || '').trim();
-      if (!trimmed) return value;
+      const source = String(value || '');
+      const trimmed = source.trim();
+      if (!trimmed) return source;
       const translated = locale === 'en' ? ArabicToEnglish.get(trimmed) : EnglishToArabic.get(trimmed);
-      if (!translated) return value;
-      const leading = String(value).match(/^\\s*/)?.[0] || '';
-      const trailing = String(value).match(/\\s*$/)?.[0] || '';
+      if (!translated) return source;
+      const leading = source.match(/^\\s*/)?.[0] || '';
+      const trailing = source.match(/\\s*$/)?.[0] || '';
       return leading + translated + trailing;
     };
     const applyLocale = () => {
+      if (applying) return;
+      applying = true;
       const locale = i18n.locale();
       document.querySelectorAll('body *').forEach(element => {
-        if (element.id === 'languageToggle') return;
+        if (element.id === 'languageToggle' || ['SCRIPT', 'STYLE'].includes(element.tagName)) return;
         [...element.childNodes].forEach(node => {
-          if (node.nodeType === Node.TEXT_NODE) node.nodeValue = translateText(node.nodeValue, locale);
+          if (node.nodeType !== Node.TEXT_NODE) return;
+          const translated = translateText(node.nodeValue, locale);
+          if (translated !== node.nodeValue) node.nodeValue = translated;
         });
       });
       const toggle = document.getElementById('languageToggle');
       if (toggle) {
-        toggle.textContent = i18n.t('switchLabel');
+        const label = i18n.t('switchLabel');
+        if (toggle.textContent !== label) toggle.textContent = label;
         toggle.setAttribute('aria-label', locale === 'ar' ? 'Switch to English' : 'التبديل إلى العربية');
       }
       const nav = document.querySelector('.terminal-nav');
       if (nav) nav.setAttribute('aria-label', i18n.t('mainNavigation'));
+      applying = false;
+    };
+    const scheduleApply = () => {
+      if (scheduled) return;
+      scheduled = true;
+      queueMicrotask(() => {
+        scheduled = false;
+        applyLocale();
+      });
     };
     const toggle = document.getElementById('languageToggle');
     if (toggle) toggle.addEventListener('click', () => i18n.setLocale(i18n.locale() === 'ar' ? 'en' : 'ar'));
-    window.addEventListener('moerand:locale-change', applyLocale);
-    const observer = new MutationObserver(() => applyLocale());
-    observer.observe(document.body, { childList: true, subtree: true });
+    window.addEventListener('moerand:locale-change', scheduleApply);
+    const observer = new MutationObserver(scheduleApply);
+    observer.observe(document.body, { childList: true, subtree: true, characterData: true });
     applyLocale();
   })();`;
 }
