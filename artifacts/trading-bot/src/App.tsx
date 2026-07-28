@@ -1,693 +1,336 @@
-// @ts-nocheck
-import { useEffect, useMemo, useRef, useState } from 'react';
-import { Home, ScanLine, Bell, Settings } from 'lucide-react';
-import { MOE_VERSION } from './lib/moeEngine.js';
-import { createCustomStock, stocks } from './lib/stocks.js';
-import { ALERT_TIMEFRAMES, timeframeLabel, useFinnhubMarket } from './lib/useFinnhubMarket.js';
-import {
-  getBackgroundAlertStatus,
-  getBackgroundSubscription,
-  sendBackgroundAlertTest,
-  subscribeBackgroundAlerts,
-  syncBackgroundAlerts,
-  unsubscribeBackgroundAlerts
-} from './lib/backgroundAlerts.js';
-import DecisionsPage from './pages/Decisions';
+// MOE-AI Personal Trading Platform — App Shell
+import { useCallback, useEffect, useState } from 'react';
+import { LS_MODE } from './lib/config';
+import type { TradingMode } from './lib/config';
+import { isSessionValid, createSession, clearSession, hasPinSet, setPin, verifyPin } from './lib/auth';
 
-const serviceWorkerPath = '/sw.js';
-const symbolsStorageKey = 'moerand-symbols-v1';
-const alertPreferencesStorageKey = 'moerand-alert-preferences-v1';
-const signalTypeOptions = ['BUY NOW', 'BUY AGAIN', 'SELL NOW'];
-const scoreOptions = [70, 80, 90];
-const cooldownOptions = [
-  { value: 0, label: 'Off' },
-  { value: 15, label: '15m' },
-  { value: 30, label: '30m' },
-  { value: 60, label: '1h' },
-  { value: 240, label: '4h' }
+// ── Pages (lazy imports for now, inline components) ──────────────────────────
+import DashboardPage  from './pages/Dashboard';
+import ScannerPage    from './pages/Scanner';
+import PositionsPage  from './pages/Positions';
+import OrdersPage     from './pages/Orders';
+import RiskPage       from './pages/Risk';
+import SettingsPage   from './pages/Settings';
+import TradesPage     from './pages/Trades';
+import SystemPage     from './pages/System';
+
+type Page = 'dashboard' | 'scanner' | 'positions' | 'orders' | 'risk' | 'settings' | 'trades' | 'system';
+
+const NAV_ITEMS: { id: Page; icon: string; label: string }[] = [
+  { id: 'dashboard',  icon: '⬡',  label: 'لوحة القيادة' },
+  { id: 'scanner',    icon: '⌕',  label: 'الماسح'       },
+  { id: 'positions',  icon: '◈',  label: 'الصفقات'      },
+  { id: 'orders',     icon: '≡',  label: 'الأوامر'      },
+  { id: 'risk',       icon: '⚠',  label: 'إدارة المخاطر' },
+  { id: 'trades',     icon: '⟳',  label: 'السجل'        },
+  { id: 'system',     icon: '◎',  label: 'حالة النظام'  },
+  { id: 'settings',   icon: '⚙',  label: 'الإعدادات'   },
 ];
-const defaultAlertPreferences = {
-  scope: 'all',
-  minScore: 70,
-  signalTypes: signalTypeOptions,
-  cooldownMinutes: 60
-};
-const filters = ['ALL', 'BUY NOW', 'BUY AGAIN', 'HOLD / ADD READY', 'WATCH NOW', 'SELL NOW'];
 
-function Badge({ signal }) {
-  if (!signal) return null;
-  const className = signal.toLowerCase().replaceAll(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '');
-  return <span className={`badge ${className}`}>{signal}</span>;
-}
+// ── PIN Login ────────────────────────────────────────────────────────────────
+function LoginScreen({ onAuth }: { onAuth: () => void }) {
+  const [pin, setPin_]     = useState('');
+  const [mode, setMode]    = useState<'enter' | 'set' | 'confirm'>('enter');
+  const [confirm, setConf] = useState('');
+  const [error, setError]  = useState('');
+  const [shaking, setShake]= useState(false);
 
-function formatScore(score) {
-  return Number.isFinite(score) ? score : '—';
-}
+  const noPinSet = !hasPinSet();
 
-function normalizeAlertPreferences(value = {}) {
-  const scope = value.scope === 'watchlist' ? 'watchlist' : 'all';
-  const minScore = scoreOptions.includes(Number(value.minScore)) ? Number(value.minScore) : 70;
-  const requestedSignals = Array.isArray(value.signalTypes)
-    ? value.signalTypes.filter((type) => signalTypeOptions.includes(type))
-    : [];
-  const cooldownMinutes = cooldownOptions.some((option) => option.value === Number(value.cooldownMinutes))
-    ? Number(value.cooldownMinutes)
-    : 60;
-  return {
-    scope,
-    minScore,
-    signalTypes: requestedSignals.length ? [...new Set(requestedSignals)] : signalTypeOptions,
-    cooldownMinutes
+  useEffect(() => {
+    if (!noPinSet) setMode('enter');
+    else           setMode('set');
+  }, [noPinSet]);
+
+  const shake = () => {
+    setShake(true);
+    setTimeout(() => { setShake(false); setPin_(''); setError(''); }, 600);
   };
-}
 
-function TradeMetrics({ stock }) {
+  const handleDigit = async (d: string) => {
+    if (d === 'DEL') { setPin_(p => p.slice(0, -1)); return; }
+    const next = pin + d;
+    setPin_(next);
+
+    if (next.length < 6) return;
+
+    if (mode === 'enter') {
+      const ok = await verifyPin(next);
+      if (ok) { createSession(); onAuth(); }
+      else    { setError('رمز PIN غير صحيح'); shake(); }
+    } else if (mode === 'set') {
+      setConf('');
+      setMode('confirm');
+      setPin_('');
+    } else if (mode === 'confirm') {
+      if (next === confirm || (confirm === '' && pin === next)) {
+        // confirm was set as pin from previous step
+        await setPin(confirm || next);
+        createSession();
+        onAuth();
+      } else {
+        setError('رمزا PIN غير متطابقَين'); shake();
+        setMode('set'); setConf('');
+      }
+    }
+  };
+
+  // When first entering confirm mode, store the pin
+  useEffect(() => {
+    if (mode === 'confirm' && confirm === '' && pin === '') {
+      // The pin was stored when transitioning; we need to capture it
+    }
+  }, [mode, confirm, pin]);
+
+  const handleSetTransition = async (next: string) => {
+    setConf(next);
+    setMode('confirm');
+    setPin_('');
+  };
+
+  const handleKey = async (d: string) => {
+    if (d === 'DEL') { setPin_(p => p.slice(0, -1)); return; }
+    const next = pin + d;
+    setPin_(next);
+    if (next.length < 6) return;
+
+    if (mode === 'enter') {
+      const ok = await verifyPin(next);
+      if (ok) { createSession(); onAuth(); }
+      else    { setError('رمز PIN غير صحيح'); shake(); }
+    } else if (mode === 'set') {
+      await handleSetTransition(next);
+    } else if (mode === 'confirm') {
+      if (next === confirm) { await setPin(confirm); createSession(); onAuth(); }
+      else { setError('رمزا PIN غير متطابقَين'); shake(); setMode('set'); setConf(''); }
+    }
+  };
+
+  const digits = ['1','2','3','4','5','6','7','8','9','','0','DEL'];
+
   return (
-    <div className="tradeGrid">
-      <div><small>ENTRY</small><b>{stock?.entry ? `$${stock.entry.toFixed(2)}` : '—'}</b></div>
-      <div><small>STOP</small><b>{stock?.stop ? `$${stock.stop.toFixed(2)}` : '—'}</b></div>
-      <div><small>TARGET</small><b>{stock?.target ? `$${stock.target.toFixed(2)}` : '—'}</b></div>
-      <div><small>TIMEFRAME</small><b>{stock?.timeframe || '—'}</b></div>
+    <div className="login-screen">
+      <div className={`login-card ${shaking ? 'shake' : ''}`} style={shaking ? { animation: 'shake .4s ease' } : {}}>
+        <div className="login-logo">M</div>
+        <div style={{ fontSize: 22, fontWeight: 800 }}>MOE-AI</div>
+        <div style={{ fontSize: 12, color: 'var(--muted)', marginTop: 4 }}>
+          منصة التداول الشخصية · {mode === 'enter' ? 'أدخل رمز PIN' : mode === 'set' ? 'اضبط رمز PIN جديداً (٦ أرقام)' : 'أعد إدخال رمز PIN للتأكيد'}
+        </div>
+        {error && <div style={{ color: 'var(--red)', fontSize: 12, marginTop: 10, fontWeight: 700 }}>{error}</div>}
+        <div className="pin-dots">
+          {[0,1,2,3,4,5].map(i => (
+            <div key={i} className={`pin-dot ${pin.length > i ? 'filled' : ''}`} />
+          ))}
+        </div>
+        <div className="pin-pad">
+          {digits.map((d, i) => (
+            <button key={i} className={`pin-key ${d === 'DEL' ? 'del' : ''}`}
+              onClick={() => d !== '' && handleKey(d)}
+              disabled={d === ''}
+              style={d === '' ? { visibility: 'hidden' } : {}}>
+              {d === 'DEL' ? '⌫' : d}
+            </button>
+          ))}
+        </div>
+      </div>
     </div>
   );
 }
 
-export default function App() {
-  const [trackedStocks, setTrackedStocks] = useState(stocks);
-  const [tab, setTab] = useState('home');
-  const [filter, setFilter] = useState('ALL');
-  const [query, setQuery] = useState('');
-  const [selectedSymbol, setSelectedSymbol] = useState(stocks[0].symbol);
-  const [alerts, setAlerts] = useState(false);
-  const [backgroundStatus, setBackgroundStatus] = useState('checking');
-  const [backgroundMessage, setBackgroundMessage] = useState('Checking cloud connection…');
-  const [backgroundHealth, setBackgroundHealth] = useState(null);
-  const [alertPreferences, setAlertPreferences] = useState(defaultAlertPreferences);
-  const [watchlist, setWatchlist] = useState([]);
-  const [toast, setToast] = useState('');
-  const [marketToken, setMarketToken] = useState('');
-  const [alpacaKey, setAlpacaKey] = useState('');
-  const [alpacaSecret, setAlpacaSecret] = useState('');
-  const [symbolInput, setSymbolInput] = useState('');
-
-  const {
-    marketStocks,
-    status: marketStatus,
-    statusMessage: marketStatusMessage,
-    engineStatus,
-    engineMessage,
-    candleProvider,
-    selectedTimeframe,
-    setAlertTimeframe,
-    signalHistory,
-    newSignalBatch,
-    clearSignalHistory,
-    hasAlpacaCredentials,
-    saveAlpacaCredentials,
-    removeAlpacaCredentials,
-    lastUpdated,
-    hasToken,
-    connect: connectMarket,
-    disconnect: disconnectMarket
-  } = useFinnhubMarket(trackedStocks);
-
-  useEffect(() => {
-    try {
-      const saved = localStorage.getItem(symbolsStorageKey);
-      if (saved) setTrackedStocks(JSON.parse(saved));
-    } catch {}
-    try {
-      const savedWatch = localStorage.getItem('moerand-watchlist-v1');
-      if (savedWatch) setWatchlist(JSON.parse(savedWatch));
-    } catch {}
-    try {
-      const savedPrefs = localStorage.getItem(alertPreferencesStorageKey);
-      if (savedPrefs) setAlertPreferences(normalizeAlertPreferences(JSON.parse(savedPrefs)));
-    } catch {}
-    
-    async function checkAlerts() {
-      try {
-        const status = await getBackgroundAlertStatus(serviceWorkerPath);
-        setAlerts(status.connected);
-        setBackgroundStatus(status.connected ? 'connected' : 'disconnected');
-        setBackgroundMessage(status.connected ? 'Push alerts active' : 'Alerts disconnected');
-        setBackgroundHealth(status);
-      } catch (err) {
-        setBackgroundStatus('error');
-        setBackgroundMessage(err.message || 'Alert service unavailable');
-      }
-    }
-    checkAlerts();
-  }, []);
-
-  useEffect(() => {
-    if (toast) {
-      const timer = setTimeout(() => setToast(''), 3000);
-      return () => clearTimeout(timer);
-    }
-  }, [toast]);
-
-  const rankedStocks = useMemo(() => {
-    return [...marketStocks].sort((a, b) => {
-      if (a.score !== b.score) return (b.score || 0) - (a.score || 0);
-      return a.symbol.localeCompare(b.symbol);
-    });
-  }, [marketStocks]);
-
-  const filteredStocks = useMemo(() => {
-    return rankedStocks.filter(stock => {
-      if (filter !== 'ALL' && !stock.signal.includes(filter) && stock.signal !== filter) return false;
-      if (query) {
-        const lower = query.toLowerCase();
-        return stock.symbol.toLowerCase().includes(lower) || stock.company.toLowerCase().includes(lower);
-      }
-      return true;
-    });
-  }, [rankedStocks, filter, query]);
-
-  const selectedStock = useMemo(() => {
-    return marketStocks.find(s => s.symbol === selectedSymbol) || marketStocks[0];
-  }, [marketStocks, selectedSymbol]);
-
-  const watchlistStocks = useMemo(() => {
-    return marketStocks.filter(s => watchlist.includes(s.symbol));
-  }, [marketStocks, watchlist]);
-
-  const bestStock = rankedStocks[0] || marketStocks[0];
-
-  const buyCount = marketStocks.filter(s => s.signal.includes('BUY')).length;
-  const sellCount = marketStocks.filter(s => s.signal.includes('SELL')).length;
-
-  const toggleWatchlist = (symbol) => {
-    setWatchlist(prev => {
-      const next = prev.includes(symbol) ? prev.filter(s => s !== symbol) : [...prev, symbol];
-      localStorage.setItem('moerand-watchlist-v1', JSON.stringify(next));
-      return next;
-    });
-  };
-
-  const addSymbol = () => {
-    if (!symbolInput) return;
-    const symbols = symbolInput.split(',').map(s => s.trim().toUpperCase()).filter(s => s);
-    const newStocks = [...trackedStocks];
-    symbols.forEach(sym => {
-      if (!newStocks.find(s => s.symbol === sym)) {
-        newStocks.push(createCustomStock(sym));
-      }
-    });
-    setTrackedStocks(newStocks);
-    localStorage.setItem(symbolsStorageKey, JSON.stringify(newStocks));
-    setSymbolInput('');
-  };
-
-  const removeSymbol = (symbol) => {
-    const newStocks = trackedStocks.filter(s => s.symbol !== symbol);
-    setTrackedStocks(newStocks);
-    localStorage.setItem(symbolsStorageKey, JSON.stringify(newStocks));
-  };
-
-  const restoreDefaultSymbols = () => {
-    setTrackedStocks(stocks);
-    localStorage.removeItem(symbolsStorageKey);
-  };
-
-  const toggleAlerts = async () => {
-    try {
-      if (alerts) {
-        await unsubscribeBackgroundAlerts(serviceWorkerPath);
-        setAlerts(false);
-        setToast('Alerts disabled');
-      } else {
-        await subscribeBackgroundAlerts({
-          serviceWorkerPath,
-          symbols: alertPreferences.scope === 'watchlist' ? watchlist : trackedStocks.map(s => s.symbol),
-          timeframe: selectedTimeframe,
-          preferences: alertPreferences
-        });
-        setAlerts(true);
-        setToast('Alerts enabled');
-      }
-    } catch (err) {
-      setToast(err.message || 'Failed to toggle alerts');
-    }
-  };
-
-  const updateAlertPref = async (key, value) => {
-    const next = { ...alertPreferences, [key]: value };
-    setAlertPreferences(next);
-    localStorage.setItem(alertPreferencesStorageKey, JSON.stringify(next));
-    if (alerts) {
-      try {
-        await syncBackgroundAlerts({
-           serviceWorkerPath,
-           symbols: next.scope === 'watchlist' ? watchlist : trackedStocks.map(s => s.symbol),
-           timeframe: selectedTimeframe,
-           preferences: next
-        });
-      } catch {}
-    }
-  };
-
-  const toggleAlertSignal = (sig) => {
-    const current = alertPreferences.signalTypes;
-    const next = current.includes(sig) ? current.filter(s => s !== sig) : [...current, sig];
-    updateAlertPref('signalTypes', next);
-  };
-
-  const testNotification = async () => {
-    try {
-      await sendBackgroundAlertTest(serviceWorkerPath);
-      setToast('Test alert sent!');
-    } catch (e) {
-      setToast(e.message || 'Test failed');
-    }
-  };
-
-  if (tab === 'decisions') {
-    return <DecisionsPage onBack={() => setTab('home')} />;
-  }
+// ── Top Bar ───────────────────────────────────────────────────────────────────
+function TopBar({
+  mode, onModeChange, killSwitch, onKillSwitch, connected, onLogout,
+}: {
+  mode: TradingMode;
+  onModeChange: (m: TradingMode) => void;
+  killSwitch: boolean;
+  onKillSwitch: (v: boolean) => void;
+  connected: boolean;
+  onLogout: () => void;
+}) {
+  const [confirmLive, setConfirmLive] = useState(false);
 
   return (
-    <>
-      <main>
-        <div className="topbar">
-          <button className="brand brandButton" onClick={() => setTab('home')}>
-            <div className="logo">M</div>
-            <div>
-              <strong>MOERAND</strong>
-              <small>v{MOE_VERSION} COMMAND CENTER</small>
-            </div>
-          </button>
-          
-          <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
-            <button className="secondary compact" onClick={() => setTab('decisions')} style={{ padding: '6px 10px', fontSize: '11px', borderRadius: '12px' }}>
-              Decisions
-            </button>
-            {tab !== 'settings' && (
-              <button className={`alertBtn ${alerts ? 'on' : ''}`} onClick={() => setTab('settings')}>
-                <span className="statusDot"></span>
-                {alerts ? 'ALERTS ON' : 'ALERTS OFF'}
-              </button>
-            )}
-          </div>
+    <header className="topbar">
+      <div className="brand">
+        <div className="logo">M</div>
+        <div>
+          <div className="brand-name">MOE-AI</div>
+          <div className="brand-sub">منصة التداول الشخصية</div>
         </div>
+      </div>
 
-        {tab === 'home' && (
-          <div>
-            {bestStock && (
-              <div className="card hero">
-                <div>
-                  <p className="eyebrow">TOP OPPORTUNITY</p>
-                  <h1>
-                    {bestStock.symbol} <Badge signal={bestStock.signal} />
-                  </h1>
-                  <p className="company">{bestStock.company}</p>
-                  <p className="subtitle">{bestStock.reason}</p>
-                </div>
-                <div className="heroScore">
-                  <span>{formatScore(bestStock.score)}</span>
-                  <small>SCORE</small>
-                </div>
-                <TradeMetrics stock={bestStock} />
-                <div className="heroActions">
-                  <button className="primary" onClick={() => { setSelectedSymbol(bestStock.symbol); setTab('scanner'); }}>
-                    Analyze {bestStock.symbol}
-                  </button>
-                </div>
-              </div>
-            )}
+      <div className="topbar-spacer" />
 
-            <div className="stats">
-              <button className="stat" onClick={() => { setFilter('BUY NOW'); setTab('scanner'); }}>
-                <small>BUY READY</small>
-                <b>{buyCount}</b>
-              </button>
-              <button className="stat" onClick={() => { setFilter('SELL NOW'); setTab('scanner'); }}>
-                <small>SELL NOW</small>
-                <b>{sellCount}</b>
-              </button>
-              <button className="stat" onClick={() => setTab('alerts')}>
-                <small>WATCHING</small>
-                <b>{watchlist.length}</b>
-              </button>
-              <button className="stat" onClick={() => setTab('settings')}>
-                <small>FEED</small>
-                <b className={marketStatus === 'live' ? 'liveText' : 'demoText'}>
-                  {marketStatus === 'live' ? 'LIVE' : 'DEMO'}
-                </b>
-              </button>
+      {/* Connection pill */}
+      <div className="conn-pill">
+        <span className={`conn-dot ${connected ? 'live' : 'error'}`} />
+        {connected ? 'Cloudflare متصل' : 'غير متصل'}
+      </div>
+
+      {/* Mode switch */}
+      <div className="mode-switch">
+        <button
+          className={mode === 'SANDBOX' ? 'active-sandbox' : ''}
+          onClick={() => onModeChange('SANDBOX')}>
+          SANDBOX
+        </button>
+        <button
+          className={mode === 'LIVE' ? 'active-live' : ''}
+          onClick={() => { if (mode !== 'LIVE') setConfirmLive(true); }}>
+          LIVE
+        </button>
+      </div>
+
+      {/* Kill switch */}
+      <button
+        className={`kill-switch-btn ${killSwitch ? 'engaged' : ''}`}
+        onClick={() => onKillSwitch(!killSwitch)}
+        title={killSwitch ? 'Kill Switch مفعّل — انقر للإيقاف' : 'Kill Switch معطّل — انقر للتفعيل'}>
+        {killSwitch ? '🔴 KILL' : '🟢 ARM'}
+      </button>
+
+      {/* Logout */}
+      <button className="btn btn-ghost btn-sm" onClick={onLogout}>خروج</button>
+
+      {/* Live mode confirmation modal */}
+      {confirmLive && (
+        <div className="modal-overlay" onClick={() => setConfirmLive(false)}>
+          <div className="modal" onClick={e => e.stopPropagation()}>
+            <div className="modal-title" style={{ color: 'var(--red)' }}>⚠ تفعيل وضع التداول الحقيقي</div>
+            <div className="modal-body">
+              أنت على وشك التبديل إلى <b>LIVE MODE</b>. سيتم تنفيذ الأوامر على الحساب الحقيقي في Webull.<br /><br />
+              تأكد من أن جميع متطلبات الأمان مستوفاة وأن Kill Switch في الوضع الصحيح.
             </div>
-
-            <div className="card quickList">
-              <div className="sectionHead">
-                <h2>Top Ranked</h2>
-                <button className="textButton" onClick={() => { setFilter('ALL'); setTab('scanner'); }}>View All</button>
-              </div>
-              <div style={{ marginTop: '14px' }}>
-                {rankedStocks.slice(0, 4).map((stock, i) => (
-                  <button key={stock.symbol} className="quickRow" onClick={() => { setSelectedSymbol(stock.symbol); setTab('scanner'); }}>
-                    <span className="rank">{i + 1}</span>
-                    <span className="symbol">
-                      {stock.symbol}
-                      <small>{stock.company}</small>
-                    </span>
-                    <span className="score">{formatScore(stock.score)}</span>
-                    <Badge signal={stock.signal} />
-                  </button>
-                ))}
-              </div>
-            </div>
-
-            <div className="card signalHistoryCard" style={{ marginTop: '14px' }}>
-              <div className="sectionHead">
-                <h2>Recent Signals</h2>
-                <button className="textButton" onClick={() => setTab('alerts')}>View All</button>
-              </div>
-              <div style={{ marginTop: '14px' }}>
-                {signalHistory.length === 0 ? (
-                  <div className="empty" style={{ padding: '10px 0' }}>No recent signals</div>
-                ) : (
-                  signalHistory.slice(0, 3).map(event => (
-                    <div key={event.id} className="signalEvent">
-                      <span className="signalEventTime">{new Date(event.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
-                      <span className="symbol">{event.symbol}</span>
-                      <Badge signal={event.type} />
-                      <span className="signalReason">{event.reason}</span>
-                    </div>
-                  ))
-                )}
-              </div>
+            <div className="modal-actions">
+              <button className="btn btn-ghost" onClick={() => setConfirmLive(false)}>إلغاء</button>
+              <button className="btn btn-danger" onClick={() => { onModeChange('LIVE'); setConfirmLive(false); }}>
+                تأكيد الدخول للـ LIVE
+              </button>
             </div>
           </div>
-        )}
-
-        {tab === 'scanner' && (
-          <div className="scanner" style={{ padding: 0 }}>
-            <div className="filterRow">
-              {filters.map(f => (
-                <button key={f} className={filter === f ? 'active' : ''} onClick={() => setFilter(f)}>{f}</button>
-              ))}
-            </div>
-            <input 
-              type="search" 
-              className="search" 
-              placeholder="Search symbols or companies..." 
-              value={query} 
-              onChange={e => setQuery(e.target.value)} 
-            />
-            
-            <div className="workspace">
-              <div className="stockList">
-                {filteredStocks.map((stock, i) => (
-                  <button 
-                    key={stock.symbol} 
-                    className={`stockRow ${selectedSymbol === stock.symbol ? 'selected' : ''}`} 
-                    onClick={() => setSelectedSymbol(stock.symbol)}
-                  >
-                    <span className="rank">{i + 1}</span>
-                    <span className="symbol">
-                      {stock.symbol}
-                      <small>{stock.company}</small>
-                    </span>
-                    <span className={`change ${stock.change >= 0 ? 'up' : 'down'}`}>
-                      {stock.change >= 0 ? '+' : ''}{stock.change?.toFixed(2)}%
-                    </span>
-                    <span className="score">{formatScore(stock.score)}</span>
-                    <span
-                      role="button"
-                      tabIndex={0}
-                      className={`starButton ${watchlist.includes(stock.symbol) ? 'watched' : ''}`}
-                      onClick={(e) => { e.stopPropagation(); toggleWatchlist(stock.symbol); }}
-                      onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.stopPropagation(); toggleWatchlist(stock.symbol); } }}
-                    >
-                      ★
-                    </span>
-                  </button>
-                ))}
-                {filteredStocks.length === 0 && (
-                  <div className="empty">No stocks match your filters.</div>
-                )}
-              </div>
-              
-              {selectedStock && (
-                <div className="card detail">
-                  <div className="detailTitle">
-                    <div className="brand">
-                      <strong>{selectedStock.symbol}</strong>
-                      <small>{selectedStock.company}</small>
-                    </div>
-                    <button 
-                      className={`starButton ${watchlist.includes(selectedStock.symbol) ? 'watched' : ''}`} 
-                      onClick={() => toggleWatchlist(selectedStock.symbol)}
-                    >
-                      ★
-                    </button>
-                  </div>
-                  
-                  <div className="price">
-                    ${selectedStock.price?.toFixed(2) || '—'}
-                    <span className={selectedStock.change >= 0 ? 'up' : 'down'} style={{ marginLeft: '12px' }}>
-                      {selectedStock.change >= 0 ? '+' : ''}{selectedStock.change?.toFixed(2)}%
-                    </span>
-                  </div>
-                  
-                  <div style={{ display: 'flex', gap: '10px', alignItems: 'center', marginBottom: '20px' }}>
-                    <Badge signal={selectedStock.signal} />
-                    <div className="score" style={{ fontWeight: 900, color: 'var(--cyan)' }}>Score: {formatScore(selectedStock.score)}</div>
-                  </div>
-                  
-                  <div className="analysis">
-                    <small>ENGINE ANALYSIS</small>
-                    <p style={{ marginTop: '8px' }}>{selectedStock.reason}</p>
-                  </div>
-                  
-                  <TradeMetrics stock={selectedStock} />
-                  
-                  {(selectedStock.entryCount > 0 || selectedStock.suggestedShares > 0) && (
-                    <div className="tradePlan">
-                      {selectedStock.entryCount > 0 && <p>Entry Count: <b style={{ color: 'var(--text)' }}>{selectedStock.entryCount}</b></p>}
-                      {selectedStock.suggestedShares > 0 && <p>Suggested Shares: <b style={{ color: 'var(--text)' }}>{selectedStock.suggestedShares}</b></p>}
-                    </div>
-                  )}
-                </div>
-              )}
-            </div>
-          </div>
-        )}
-
-        {tab === 'alerts' && (
-          <div className="singleColumn">
-            <div className="card watchCard">
-              <h2>Watchlist</h2>
-              {watchlist.length === 0 ? (
-                <div className="empty">Your watchlist is empty.</div>
-              ) : (
-                <div style={{ marginTop: '14px' }}>
-                  {watchlistStocks.map(stock => (
-                    <div key={stock.symbol} className="watchRow">
-                      <button className="watchMain" onClick={() => { setSelectedSymbol(stock.symbol); setTab('scanner'); }}>
-                        <span className="symbol"><b>{stock.symbol}</b></span>
-                        <Badge signal={stock.signal} />
-                        <span className="score" style={{ marginLeft: 'auto', paddingRight: '8px' }}>{formatScore(stock.score)}</span>
-                      </button>
-                      <button className="remove" onClick={() => toggleWatchlist(stock.symbol)}>×</button>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-
-            <div className="card signalHistoryCard">
-              <div className="sectionHead">
-                <h2>Signal History</h2>
-                {signalHistory.length > 0 && (
-                  <button className="textButton" onClick={clearSignalHistory}>Clear</button>
-                )}
-              </div>
-              <div style={{ marginTop: '14px' }}>
-                {signalHistory.length === 0 ? (
-                  <div className="empty" style={{ padding: '20px 0' }}>No recent signals.</div>
-                ) : (
-                  signalHistory.map(event => (
-                    <div key={event.id} className="signalEvent">
-                      <span className="signalEventTime">{new Date(event.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
-                      <span className="symbol"><b>{event.symbol}</b></span>
-                      <Badge signal={event.type} />
-                      <span className="signalReason">{event.reason}</span>
-                    </div>
-                  ))
-                )}
-              </div>
-            </div>
-          </div>
-        )}
-
-        {tab === 'settings' && (
-          <div className="singleColumn">
-            <div className="card settingsCard marketConnectCard">
-              <h2>Market Connection</h2>
-              <p className="subtitle">Connect Finnhub to receive live prices.</p>
-              
-              <div className={`connectionState ${marketStatus}`} style={{ marginTop: '14px', marginBottom: '14px', display: 'inline-flex', alignItems: 'center' }}>
-                <span className={`statusDot ${marketStatus}`}></span>
-                {marketStatusMessage}
-              </div>
-              
-              <label className="apiKeyLabel">FINNHUB API KEY</label>
-              <input className="search apiKeyInput" value={marketToken} onChange={e => setMarketToken(e.target.value)} type="password" placeholder="Enter key..." />
-              
-              <div className="connectionActions">
-                {hasToken ? (
-                  <button className="secondary dangerButton compact" onClick={() => { disconnectMarket(true); setMarketToken(''); }}>Disconnect</button>
-                ) : (
-                  <button className="primary" onClick={() => connectMarket(marketToken)}>Connect Live Feed</button>
-                )}
-              </div>
-            </div>
-
-            <div className="card settingsCard marketConnectCard">
-              <h2>Candle History</h2>
-              <p className="subtitle">Alpaca keys are needed to build charts.</p>
-              
-              <label className="apiKeyLabel">ALPACA API KEY ID</label>
-              <input className="search apiKeyInput" value={alpacaKey} onChange={e => setAlpacaKey(e.target.value)} type="password" placeholder="Enter key..." />
-              
-              <label className="apiKeyLabel alpacaSecretLabel">ALPACA SECRET KEY</label>
-              <input className="search apiKeyInput" value={alpacaSecret} onChange={e => setAlpacaSecret(e.target.value)} type="password" placeholder="Enter secret..." />
-              
-              <div className="connectionActions" style={{ marginTop: '14px' }}>
-                {hasAlpacaCredentials ? (
-                  <button className="secondary dangerButton compact" onClick={() => { removeAlpacaCredentials(); setAlpacaKey(''); setAlpacaSecret(''); }}>Remove Keys</button>
-                ) : (
-                  <button className="primary" onClick={() => saveAlpacaCredentials(alpacaKey, alpacaSecret)}>Save Alpaca Keys</button>
-                )}
-              </div>
-            </div>
-
-            <div className="card settingsCard">
-              <h2>Alert Timeframe</h2>
-              <div className="timeframePicker">
-                {ALERT_TIMEFRAMES.map(tf => (
-                  <button key={tf} className={selectedTimeframe === tf ? 'active' : ''} onClick={() => setAlertTimeframe(tf)}>
-                    {timeframeLabel(tf)}
-                  </button>
-                ))}
-              </div>
-            </div>
-
-            <div className="card settingsCard symbolManagerCard">
-              <h2>Managed Symbols</h2>
-              <p className="subtitle">Add or remove symbols to track.</p>
-              
-              <div className="symbolAddRow">
-                <input className="search" style={{ marginBottom: 0 }} value={symbolInput} onChange={e => setSymbolInput(e.target.value.toUpperCase())} placeholder="AAPL, TSLA..." />
-                <button className="primary" onClick={addSymbol}>Add</button>
-              </div>
-              
-              <div className="managedSymbols">
-                {trackedStocks.map(stock => (
-                  <div key={stock.symbol} className="managedSymbol">
-                    <span>{stock.symbol}</span>
-                    <button className="removeSymbol" onClick={() => removeSymbol(stock.symbol)}>Remove</button>
-                  </div>
-                ))}
-              </div>
-              
-              <button className="secondary restoreButton compact" onClick={restoreDefaultSymbols}>Restore Defaults</button>
-            </div>
-
-            <div className="card settingsCard">
-              <h2>Cloud Push Alerts</h2>
-              <div className="smartAlertControls">
-                <div className="smartAlertTitle">
-                  <div>
-                    <p className="eyebrow">BACKGROUND</p>
-                    <b>Push Notifications</b>
-                  </div>
-                  <button className={`switch ${alerts ? 'on' : ''}`} onClick={toggleAlerts}>
-                    <span></span>
-                  </button>
-                </div>
-                
-                <div className="alertPreference" style={{ marginTop: '10px' }}>
-                  <b>Alert Scope</b>
-                  <div className="preferencePicker two">
-                    <button className={alertPreferences.scope === 'all' ? 'active' : ''} onClick={() => updateAlertPref('scope', 'all')}>All Tracked</button>
-                    <button className={alertPreferences.scope === 'watchlist' ? 'active' : ''} onClick={() => updateAlertPref('scope', 'watchlist')}>Watchlist Only</button>
-                  </div>
-                </div>
-                
-                <div className="alertPreference">
-                  <b>Minimum Score</b>
-                  <div className="preferencePicker three">
-                    {scoreOptions.map(score => (
-                      <button key={score} className={alertPreferences.minScore === score ? 'active' : ''} onClick={() => updateAlertPref('minScore', score)}>{score}+</button>
-                    ))}
-                  </div>
-                </div>
-                
-                <div className="alertPreference">
-                  <b>Signal Types</b>
-                  <div className="preferencePicker three signalPicker">
-                    {signalTypeOptions.map(sig => (
-                      <button key={sig} className={alertPreferences.signalTypes.includes(sig) ? 'active' : ''} onClick={() => toggleAlertSignal(sig)}>{sig}</button>
-                    ))}
-                  </div>
-                </div>
-                
-                <div className="alertPreference">
-                  <b>Cooldown</b>
-                  <div className="preferencePicker five">
-                    {cooldownOptions.map(opt => (
-                      <button key={opt.value} className={alertPreferences.cooldownMinutes === opt.value ? 'active' : ''} onClick={() => updateAlertPref('cooldownMinutes', opt.value)}>{opt.label}</button>
-                    ))}
-                  </div>
-                </div>
-                
-                {alerts && (
-                  <button className="secondary compact alertTestButton" onClick={testNotification}>Send Test Alert</button>
-                )}
-              </div>
-            </div>
-            
-            <div className="card settingsCard">
-               <h2>System Health</h2>
-               <div className="cloudHealthPanel">
-                  <div className="smartAlertTitle">
-                     <div>
-                        <p className="eyebrow">ENGINE</p>
-                        <b>MOE v{MOE_VERSION}</b>
-                     </div>
-                     <span className={`pill ${engineStatus === 'live' ? 'green' : engineStatus === 'partial' ? 'amber' : ''}`}>{engineStatus.toUpperCase()}</span>
-                  </div>
-                  <p className="subtitle" style={{marginTop: 8}}>{engineMessage}</p>
-               </div>
-            </div>
-          </div>
-        )}
-      </main>
-
-      <nav className="bottomNav">
-        <button className={tab === 'home' ? 'active' : ''} onClick={() => setTab('home')}>
-          <span><Home size={19} /></span>Home
-        </button>
-        <button className={tab === 'scanner' ? 'active' : ''} onClick={() => setTab('scanner')}>
-          <span><ScanLine size={19} /></span>Scanner
-        </button>
-        <button className={tab === 'alerts' ? 'active' : ''} onClick={() => setTab('alerts')}>
-          <span><Bell size={19} /></span>Alerts
-          {watchlist.length > 0 && <i>{watchlist.length}</i>}
-        </button>
-        <button className={tab === 'settings' ? 'active' : ''} onClick={() => setTab('settings')}>
-          <span><Settings size={19} /></span>Settings
-        </button>
-      </nav>
-      
-      {toast && (
-        <div className="toast">
-          {toast}
         </div>
       )}
-    </>
+    </header>
+  );
+}
+
+// ── Side Nav ──────────────────────────────────────────────────────────────────
+function SideNav({ page, onChange }: { page: Page; onChange: (p: Page) => void }) {
+  return (
+    <nav className="sidenav">
+      <div className="nav-section-label">التداول</div>
+      {NAV_ITEMS.slice(0, 5).map(item => (
+        <button key={item.id} className={`nav-item ${page === item.id ? 'active' : ''}`}
+          onClick={() => onChange(item.id)}>
+          <span className="nav-icon">{item.icon}</span>
+          {item.label}
+        </button>
+      ))}
+      <div className="nav-divider" />
+      <div className="nav-section-label">النظام</div>
+      {NAV_ITEMS.slice(5).map(item => (
+        <button key={item.id} className={`nav-item ${page === item.id ? 'active' : ''}`}
+          onClick={() => onChange(item.id)}>
+          <span className="nav-icon">{item.icon}</span>
+          {item.label}
+        </button>
+      ))}
+    </nav>
+  );
+}
+
+// ── Bottom Nav (mobile) ───────────────────────────────────────────────────────
+function BottomNav({ page, onChange }: { page: Page; onChange: (p: Page) => void }) {
+  const items = NAV_ITEMS.slice(0, 5);
+  return (
+    <nav className="bottom-nav">
+      <div className="bottom-nav-items">
+        {items.map(item => (
+          <button key={item.id} className={`bottom-nav-item ${page === item.id ? 'active' : ''}`}
+            onClick={() => onChange(item.id)}>
+            <span className="nav-icon">{item.icon}</span>
+            {item.label}
+          </button>
+        ))}
+      </div>
+    </nav>
+  );
+}
+
+// ── App Root ──────────────────────────────────────────────────────────────────
+export default function App() {
+  const [authed, setAuthed]           = useState(() => isSessionValid());
+  const [mode, setMode]               = useState<TradingMode>(
+    () => (localStorage.getItem(LS_MODE) as TradingMode) ?? 'SANDBOX'
+  );
+  const [page, setPage]               = useState<Page>('dashboard');
+  const [killSwitch, setKillSwitch]   = useState(true); // default engaged
+  const [connected, setConnected]     = useState(false);
+  const [toast, setToast]             = useState<{ msg: string; type?: 'success' | 'error' } | null>(null);
+
+  // Ping the Cloudflare Worker to check connectivity
+  useEffect(() => {
+    const check = async () => {
+      try {
+        const r = await fetch(`${import.meta.env.VITE_MOE_API_BASE_URL ?? 'https://moerand-alerts.mosaprajb.workers.dev'}/`, { mode: 'cors', cache: 'no-store' });
+        setConnected(r.ok || r.status === 404); // 404 = worker is up but no root route
+      } catch { setConnected(false); }
+    };
+    check();
+    const t = setInterval(check, 30_000);
+    return () => clearInterval(t);
+  }, []);
+
+  const handleModeChange = useCallback((m: TradingMode) => {
+    setMode(m);
+    localStorage.setItem(LS_MODE, m);
+    showToast(`تم التبديل إلى ${m === 'LIVE' ? 'التداول الحقيقي ⚠' : 'وضع Sandbox ✓'}`, m === 'LIVE' ? 'error' : 'success');
+  }, []);
+
+  const handleLogout = useCallback(() => {
+    clearSession();
+    setAuthed(false);
+  }, []);
+
+  const showToast = (msg: string, type?: 'success' | 'error') => {
+    setToast({ msg, type });
+    setTimeout(() => setToast(null), 3200);
+  };
+
+  if (!authed) return <LoginScreen onAuth={() => setAuthed(true)} />;
+
+  const sharedProps = { mode, showToast };
+
+  return (
+    <div className="app-shell" dir="rtl">
+      <TopBar
+        mode={mode}
+        onModeChange={handleModeChange}
+        killSwitch={killSwitch}
+        onKillSwitch={setKillSwitch}
+        connected={connected}
+        onLogout={handleLogout}
+      />
+      <div className="layout">
+        <SideNav page={page} onChange={setPage} />
+        <main className="main-content">
+          {page === 'dashboard' && <DashboardPage {...sharedProps} />}
+          {page === 'scanner'   && <ScannerPage   {...sharedProps} />}
+          {page === 'positions' && <PositionsPage  {...sharedProps} />}
+          {page === 'orders'    && <OrdersPage     {...sharedProps} />}
+          {page === 'risk'      && <RiskPage        {...sharedProps} />}
+          {page === 'trades'    && <TradesPage     {...sharedProps} />}
+          {page === 'system'    && <SystemPage     {...sharedProps} />}
+          {page === 'settings'  && <SettingsPage   {...sharedProps} />}
+        </main>
+      </div>
+      <BottomNav page={page} onChange={setPage} />
+      {toast && (
+        <div className="toast-container">
+          <div className={`toast ${toast.type ?? ''}`}>{toast.msg}</div>
+        </div>
+      )}
+    </div>
   );
 }

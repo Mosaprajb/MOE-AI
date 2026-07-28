@@ -1,45 +1,43 @@
-# [Project name]
+# MOE-AI Personal Trading Platform
 
-_Replace the heading above with the project's name, and this line with one sentence describing what this app does for users._
+## Overview
+Single-owner, institutional-grade automated trading system connected to Webull (paper + live). Private use only — no SaaS, no multi-user, no subscriptions.
 
-## Run & Operate
+## Architecture
 
-- `pnpm --filter @workspace/api-server run dev` — run the API server (port 5000)
-- `pnpm run typecheck` — full typecheck across all packages
-- `pnpm run build` — typecheck + build all packages
-- `pnpm --filter @workspace/api-spec run codegen` — regenerate API hooks and Zod schemas from the OpenAPI spec
-- `pnpm --filter @workspace/db run push` — push DB schema changes (dev only)
-- Required env: `DATABASE_URL` — Postgres connection string
+### Frontend (`artifacts/trading-bot/`)
+- React + Vite SPA with Arabic RTL UI
+- PIN-based auth (SHA-256, localStorage session, 8hr TTL)
+- Pages: Dashboard, Scanner, Positions, Orders, Risk, Trades, System, Settings
+- CSS design system in `src/index.css` (no Tailwind utility classes used)
+- API client in `src/lib/api.ts` connecting to Cloudflare Worker
 
-## Stack
+### Backend (Cloudflare Worker)
+- Deployed at: `https://moerand-alerts.mosaprajb.workers.dev`
+- Handles: Webull sandbox/live connectivity, push alerts, decisions, trade history
+- CORS: Worker must allow the Replit dev domain and the production domain
 
-- pnpm workspaces, Node.js 24, TypeScript 5.9
-- API: Express 5
-- DB: PostgreSQL + Drizzle ORM
-- Validation: Zod (`zod/v4`), `drizzle-zod`
-- API codegen: Orval (from OpenAPI spec)
-- Build: esbuild (CJS bundle)
+### Signal Engine
+- MOE v6.3.1 scoring engine (0–100 scale)
+- Scanner watchlist: 20 tickers in `src/lib/stocks.ts`
+- Fallback: deterministic demo data when Worker is unreachable
 
-## Where things live
+## Key URLs
+- CF Worker: `https://moerand-alerts.mosaprajb.workers.dev`
+- GitHub: `Mosaprajb/MOE-AI` (main branch)
+- Frontend env: `VITE_MOE_API_BASE_URL` in `artifacts/trading-bot/.env`
 
-_Populate as you build — short repo map plus pointers to the source-of-truth file for DB schema, API contracts, theme files, etc._
+## Safety Design
+- Kill Switch always visible in topbar (defaults ON)
+- Sandbox mode is default; Live mode requires explicit modal confirmation
+- LIVE automation requires 12 safety gates (see Risk page)
 
-## Architecture decisions
+## Credentials Required (in Cloudflare Secrets, NOT here)
+- `WEBULL_LIVE_APP_KEY`, `WEBULL_LIVE_APP_SECRET`
+- `WEBULL_LIVE_ACCESS_TOKEN`, `WEBULL_LIVE_ACCOUNT_ID`
+- `MOE_WEBHOOK_SECRET`
 
-_Populate as you build — non-obvious choices a reader couldn't infer from the code (3-5 bullets)._
-
-## Product
-
-_Describe the high-level user-facing capabilities of this app once they exist._
-
-## User preferences
-
-_Populate as you build — explicit user instructions worth remembering across sessions._
-
-## Gotchas
-
-_Populate as you build — sharp edges, "always run X before Y" rules._
-
-## Pointers
-
-- See the `pnpm-workspace` skill for workspace structure, TypeScript setup, and package details
+## User Preferences
+- Arabic RTL UI throughout
+- Dark institutional design (`#071018` background)
+- No console.log spam — use structured error boundaries

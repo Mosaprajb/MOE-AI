@@ -1,1 +1,1 @@
-- [MOERAND project](moerand-project.md) — trading signal PWA ported from Next.js (GitHub: Mosaprajb/MOE-AI, branch feature/moe-core-domain-v2) into artifacts/trading-bot React+Vite artifact.
+- [MOE-AI Trading Platform](moerand-project.md) — full React+Vite trading SPA built in artifacts/trading-bot; PIN auth, 8 pages, CF Worker backend, Arabic RTL dark theme.
