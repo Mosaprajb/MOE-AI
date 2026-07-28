@@ -29,11 +29,12 @@ compatibility_flags = ["nodejs_compat"]
 # WEBULL_LIVE_ACCOUNT_ID         — live trading account ID
 # MOE_WEBHOOK_SECRET             — shared secret for TradingView webhook validation
 
-# ── Durable Objects (stub — kept to satisfy Cloudflare export contract) ───────
-# Remove once a clean deploy with the stub has succeeded.
-[[durable_objects.bindings]]
-name       = "ALERT_COORDINATOR"
-class_name = "AlertCoordinator"
+# ── Durable Objects cleanup migration ─────────────────────────────────────────
+# Deletes the legacy AlertCoordinator DO namespace from the old Worker.
+# Safe to remove from wrangler.toml after first successful deploy.
+[[migrations]]
+tag             = "v2-cleanup"
+deleted_classes = ["AlertCoordinator"]
 
 [vars]
 WORKER_VERSION      = "5.0.0"
