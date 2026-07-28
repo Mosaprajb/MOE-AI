@@ -29,6 +29,11 @@ compatibility_flags = ["nodejs_compat"]
 # WEBULL_LIVE_ACCOUNT_ID         — live trading account ID
 # MOE_WEBHOOK_SECRET             — shared secret for TradingView webhook validation
 
+# ── Migrations (removes legacy Durable Objects from old Worker) ───────────────
+[[migrations]]
+tag = "v1"
+deleted_classes = ["AlertCoordinator"]
+
 [vars]
 WORKER_VERSION      = "5.0.0"
 MAX_OPEN_POSITIONS  = "4"
