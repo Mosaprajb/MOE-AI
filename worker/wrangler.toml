@@ -29,10 +29,15 @@ compatibility_flags = ["nodejs_compat"]
 # WEBULL_LIVE_ACCOUNT_ID         — live trading account ID
 # MOE_WEBHOOK_SECRET             — shared secret for TradingView webhook validation
 
-# ── Migrations (removes legacy Durable Objects from old Worker) ───────────────
+# ── Durable Objects (stub — kept to satisfy Cloudflare export contract) ───────
+# Remove once a clean deploy with the stub has succeeded.
+[[durable_objects.bindings]]
+name       = "ALERT_COORDINATOR"
+class_name = "AlertCoordinator"
+
 [[migrations]]
-tag = "v1"
-deleted_classes = ["AlertCoordinator"]
+tag          = "v1"
+new_classes  = ["AlertCoordinator"]
 
 [vars]
 WORKER_VERSION      = "5.0.0"

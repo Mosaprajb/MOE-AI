@@ -46,3 +46,12 @@ app.onError((err, c) => {
 });
 
 export default app;
+
+// ── Legacy stub — satisfies Cloudflare's export contract for the old
+// AlertCoordinator Durable Object. Safe to remove after first clean deploy.
+export class AlertCoordinator {
+  constructor(state: DurableObjectState, env: Env) {}
+  async fetch(request: Request): Promise<Response> {
+    return new Response('stub', { status: 200 });
+  }
+}
