@@ -1,5 +1,5 @@
 // MOE-AI — Scanner Page
-import { useState } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import type { TradingMode } from '../lib/config';
 import { useScanner } from '../hooks/useScanner';
 import type { ScanCandidate, ScannerPosition } from '../hooks/useScanner';
@@ -134,15 +134,44 @@ export default function ScannerPage({ mode, showToast }: Props) {
           error, runScan, updateWatchlist } = useScanner(mode);
   const [newSymbol, setNewSymbol] = useState('');
   const [tab, setTab] = useState<'positions' | 'candidates' | 'watchlist' | 'runs'>('positions');
+  const [nextScanIn, setNextScanIn] = useState(0);
+  const scanIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const countdownRef    = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const handleScan = async () => {
-    await runScan();
+    const result = await runScan();
     showToast(
-      lastResult
-        ? `✅ فحص مكتمل — ${lastResult.candidates.length} مرشح، ${lastResult.ordersPlaced} أوامر`
-        : '🔍 جارٍ الفحص…',
+      result
+        ? `✅ فحص مكتمل — ${result.candidates?.length ?? 0} مرشح، ${result.ordersPlaced} أوامر`
+        : '❌ فشل الفحص — تحقق من الاتصال',
+      result ? 'success' : 'error',
     );
   };
+
+  // Auto-scan: run immediately on mount, then every 5 minutes
+  const INTERVAL_MS = 5 * 60 * 1000; // 5 min
+  useEffect(() => {
+    // Run immediately on page open
+    handleScan();
+    setNextScanIn(INTERVAL_MS / 1000);
+
+    // Countdown ticker
+    countdownRef.current = setInterval(() => {
+      setNextScanIn(prev => (prev <= 1 ? INTERVAL_MS / 1000 : prev - 1));
+    }, 1000);
+
+    // Auto-scan every 5 min
+    scanIntervalRef.current = setInterval(() => {
+      handleScan();
+      setNextScanIn(INTERVAL_MS / 1000);
+    }, INTERVAL_MS);
+
+    return () => {
+      if (scanIntervalRef.current) clearInterval(scanIntervalRef.current);
+      if (countdownRef.current)    clearInterval(countdownRef.current);
+    };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const handleAddSymbol = async () => {
     const sym = newSymbol.trim().toUpperCase();
@@ -159,14 +188,16 @@ export default function ScannerPage({ mode, showToast }: Props) {
         <div>
           <h1 className="page-title" style={{ marginBottom: 2 }}>📡 الماسح الذكي</h1>
           <div style={{ fontSize: 12, color: 'var(--muted)' }}>
-            MOE Scalp v1 · {watchlist.length} سهم · كل 5 دقائق تلقائياً
+            MOE Scalp v1 · {watchlist.length} سهم · {scanning
+              ? '⏳ جارٍ الفحص الآن…'
+              : `⏱ فحص تلقائي بعد ${Math.floor(nextScanIn / 60)}:${String(nextScanIn % 60).padStart(2, '0')}`}
           </div>
         </div>
         <button
           className="btn btn-primary"
           onClick={handleScan}
           disabled={scanning}
-          style={{ minWidth: 120 }}>
+          style={{ minWidth: 130 }}>
           {scanning ? '⏳ جارٍ الفحص…' : '🔍 فحص الآن'}
         </button>
       </div>

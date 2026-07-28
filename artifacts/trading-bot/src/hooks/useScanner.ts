@@ -105,14 +105,15 @@ export function useScanner(mode: TradingMode) {
 
   useEffect(() => { load(); }, [load]);
 
-  const runScan = useCallback(async () => {
+  const runScan = useCallback(async (): Promise<ScanResult | null> => {
     setScanning(true);
     try {
       const res  = await fetch(`${API_BASE}/api/scanner/run`, { method: 'POST', mode: 'cors' });
       const data = await res.json() as ScanResult;
       setLastResult(data);
       await load(); // refresh positions + runs
-    } catch (e) { setError(String(e)); }
+      return data;
+    } catch (e) { setError(String(e)); return null; }
     finally { setScanning(false); }
   }, [load]);
 
