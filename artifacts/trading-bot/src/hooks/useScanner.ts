@@ -1,7 +1,20 @@
 // MOE-AI — Scanner data hook
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { API_BASE } from '../lib/config';
 import type { TradingMode } from '../lib/config';
+
+export interface LiveQuote {
+  symbol:    string;
+  price:     number;
+  open:      number;
+  high:      number;
+  low:       number;
+  volume:    number;
+  prevClose: number;
+  changeAmt: number;
+  changePct: number;
+  fetchedAt: string;
+}
 
 export interface ScanCandidate {
   symbol:      string;
@@ -82,9 +95,23 @@ export function useScanner(mode: TradingMode) {
   const [runs,        setRuns]        = useState<ScanRun[]>([]);
   const [config,      setConfig]      = useState<ScannerConfig | null>(null);
   const [watchlist,   setWatchlist]   = useState<string[]>([]);
+  const [quotes,      setQuotes]      = useState<LiveQuote[]>([]);
+  const [quotesAt,    setQuotesAt]    = useState<string>('');
   const [scanning,    setScanning]    = useState(false);
   const [loading,     setLoading]     = useState(true);
   const [error,       setError]       = useState('');
+  const quotesTimer   = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  const loadQuotes = useCallback(async () => {
+    try {
+      const res = await fetch(`${API_BASE}/api/scanner/quotes`, { mode: 'cors' });
+      if (res.ok) {
+        const d = await res.json() as { quotes?: LiveQuote[]; fetchedAt?: string };
+        setQuotes(d.quotes ?? []);
+        setQuotesAt(d.fetchedAt ?? new Date().toISOString());
+      }
+    } catch { /* non-fatal */ }
+  }, []);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -106,7 +133,13 @@ export function useScanner(mode: TradingMode) {
     finally { setLoading(false); }
   }, []);
 
-  useEffect(() => { load(); }, [load]);
+  // Initial load + start quotes polling every 30 s
+  useEffect(() => {
+    load();
+    loadQuotes();
+    quotesTimer.current = setInterval(loadQuotes, 30_000);
+    return () => { if (quotesTimer.current) clearInterval(quotesTimer.current); };
+  }, [load, loadQuotes]);
 
   const runScan = useCallback(async (): Promise<ScanResult | null> => {
     setScanning(true);
@@ -129,5 +162,5 @@ export function useScanner(mode: TradingMode) {
     await load();
   }, [load]);
 
-  return { positions, history, lastResult, runs, config, watchlist, scanning, loading, error, runScan, reload: load, updateWatchlist };
+  return { positions, history, quotes, quotesAt, lastResult, runs, config, watchlist, scanning, loading, error, runScan, reload: load, loadQuotes, updateWatchlist };
 }

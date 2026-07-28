@@ -75,29 +75,68 @@ export async function fetchQuote(symbol: string): Promise<Quote> {
   };
 }
 
-/** Fetch quotes for multiple symbols (sequential with concurrency limit) */
+/** Fetch live quotes for multiple symbols in ONE request (Yahoo Finance v7 batch) */
+export async function fetchLivePrices(symbols: string[]): Promise<Quote[]> {
+  if (symbols.length === 0) return [];
+  const fields = [
+    'regularMarketPrice', 'regularMarketChange', 'regularMarketChangePercent',
+    'regularMarketVolume', 'regularMarketDayHigh', 'regularMarketDayLow',
+    'regularMarketOpen', 'regularMarketPreviousClose',
+  ].join(',');
+  const syms = symbols.map(encodeURIComponent).join(',');
+  const url  = `https://query1.finance.yahoo.com/v7/finance/quote?symbols=${syms}&fields=${fields}`;
+
+  try {
+    const res  = await fetch(url, {
+      headers: { 'User-Agent': 'Mozilla/5.0' },
+      cf: { cacheTtl: 30 },
+    } as RequestInit);
+    if (!res.ok) throw new Error(`YF batch HTTP ${res.status}`);
+
+    const json   = await res.json() as Record<string, unknown>;
+    const result = ((json?.quoteResponse as Record<string, unknown>)?.result as Record<string, unknown>[]) ?? [];
+    const now    = new Date().toISOString();
+
+    return result.map(r => ({
+      symbol:    String(r.symbol ?? ''),
+      price:     Number(r.regularMarketPrice     ?? 0),
+      open:      Number(r.regularMarketOpen      ?? 0),
+      high:      Number(r.regularMarketDayHigh   ?? 0),
+      low:       Number(r.regularMarketDayLow    ?? 0),
+      volume:    Number(r.regularMarketVolume    ?? 0),
+      prevClose: Number(r.regularMarketPreviousClose ?? 0),
+      changeAmt: Number(r.regularMarketChange   ?? 0),
+      changePct: Number(r.regularMarketChangePercent ?? 0),
+      fetchedAt: now,
+    }));
+  } catch {
+    // fallback: fetch individually in small batches
+    return fetchBatchQuotesFallback(symbols);
+  }
+}
+
+async function fetchBatchQuotesFallback(symbols: string[]): Promise<Quote[]> {
+  const CONCURRENCY = 8;
+  const results: Quote[] = [];
+  for (let i = 0; i < symbols.length; i += CONCURRENCY) {
+    const settled = await Promise.allSettled(
+      symbols.slice(i, i + CONCURRENCY).map(sym => fetchQuote(sym))
+    );
+    for (const r of settled) {
+      if (r.status === 'fulfilled') results.push(r.value);
+    }
+  }
+  return results;
+}
+
+/** Fetch quotes for scan cycle (filters by price range) */
 export async function fetchBatchQuotes(
   symbols: string[],
   priceMin: number,
   priceMax: number,
 ): Promise<{ symbol: string; price: number; error?: string }[]> {
-  const CONCURRENCY = 5;
-  const results: { symbol: string; price: number; error?: string }[] = [];
-
-  for (let i = 0; i < symbols.length; i += CONCURRENCY) {
-    const batch = symbols.slice(i, i + CONCURRENCY);
-    const settled = await Promise.allSettled(
-      batch.map(async (sym) => {
-        const q = await fetchQuote(sym);
-        return { symbol: sym, price: q.price };
-      })
-    );
-    for (const r of settled) {
-      if (r.status === 'fulfilled') results.push(r.value);
-      else results.push({ symbol: batch[settled.indexOf(r)], price: 0, error: String(r.reason) });
-    }
-  }
-
-  // filter by price range
-  return results.filter(r => !r.error && r.price >= priceMin && r.price <= priceMax);
+  const quotes = await fetchLivePrices(symbols);
+  return quotes
+    .filter(q => q.price >= priceMin && q.price <= priceMax)
+    .map(q => ({ symbol: q.symbol, price: q.price }));
 }

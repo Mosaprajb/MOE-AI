@@ -8,6 +8,7 @@ import { loadWatchlist, ensureWatchlistTable, addToWatchlist, removeFromWatchlis
 import { ensureScannerTables, savePosition, managePositions, loadOpenPositions } from '../lib/position-manager';
 import { getKillSwitch, getTradingMode } from '../lib/risk';
 import { WebullClient } from '../lib/webull';
+import { fetchLivePrices } from '../lib/market-data';
 
 const scanner = new Hono<{ Bindings: Env }>();
 
@@ -178,6 +179,19 @@ scanner.get('/runs', async (c) => {
     ).bind(limit).all<Record<string, unknown>>();
     return c.json({ data: rows?.results ?? [] });
   } catch { return c.json({ data: [] }); }
+});
+
+/** GET /api/scanner/quotes — live prices for entire watchlist (one batch request) */
+scanner.get('/quotes', async (c) => {
+  await ensureWatchlistTable(c.env);
+  const mode    = (await getTradingMode(c.env)) as TradingMode;
+  const symbols = await loadWatchlist(c.env, mode);
+  try {
+    const quotes = await fetchLivePrices(symbols);
+    return c.json({ quotes, count: quotes.length, fetchedAt: new Date().toISOString() });
+  } catch (e) {
+    return c.json({ quotes: [], count: 0, error: String(e) });
+  }
 });
 
 /** GET /api/scanner/config */
