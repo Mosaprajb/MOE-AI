@@ -53,23 +53,19 @@ export async function runScanCycle(env: Env): Promise<{
   const inRange   = await fetchBatchQuotes(watchlist, cfg.priceMin, cfg.priceMax);
   const symbols   = inRange.map(q => q.symbol);
 
-  // 3. Score each stock
+  // 3. Score each stock — all in parallel (Cloudflare handles concurrent fetches well)
   const candidates: ScanCandidate[] = [];
-  const BATCH = 8;
-  for (let i = 0; i < symbols.length; i += BATCH) {
-    const batch = symbols.slice(i, i + BATCH);
-    const scored = await Promise.allSettled(
-      batch.map(async (sym) => {
-        const candles = await fetchCandles(sym, 30);
-        return scoreStock(sym, candles, cfg);
-      })
-    );
-    for (const r of scored) {
-      if (r.status === 'fulfilled' && r.value && r.value.confidence !== 'NONE') {
-        candidates.push(r.value);
-      } else if (r.status === 'rejected') {
-        errors.push(String(r.reason).slice(0, 100));
-      }
+  const scored = await Promise.allSettled(
+    symbols.map(async (sym) => {
+      const candles = await fetchCandles(sym, 30);
+      return scoreStock(sym, candles, cfg);
+    })
+  );
+  for (const r of scored) {
+    if (r.status === 'fulfilled' && r.value && r.value.confidence !== 'NONE') {
+      candidates.push(r.value);
+    } else if (r.status === 'rejected') {
+      errors.push(String(r.reason).slice(0, 100));
     }
   }
 
