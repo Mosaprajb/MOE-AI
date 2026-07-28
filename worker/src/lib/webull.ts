@@ -2,22 +2,25 @@
 // Implements Webull Paper Trading and Live Trading APIs
 import type { Env, TradingMode, WebullCredentials, AccountData, Position, Order, OrderSide, OrderType } from './types';
 
-const WEBULL_BASE_PAPER = 'https://ustrade.webullfinance.com/api';
-const WEBULL_BASE_LIVE  = 'https://ustrade.webullfintech.com/api';
+const WEBULL_BASE_PAPER_DEFAULT = 'https://act.webullfintech.com/api';
+const WEBULL_BASE_LIVE_DEFAULT  = 'https://api.webull.com/api';
 
 export class WebullClient {
   private creds: WebullCredentials;
   private base: string;
 
-  constructor(creds: WebullCredentials) {
-    this.creds  = creds;
-    this.base   = creds.mode === 'LIVE' ? WEBULL_BASE_LIVE : WEBULL_BASE_PAPER;
+  constructor(creds: WebullCredentials, baseUrl?: string) {
+    this.creds = creds;
+    this.base  = baseUrl ?? (creds.mode === 'LIVE' ? WEBULL_BASE_LIVE_DEFAULT : WEBULL_BASE_PAPER_DEFAULT);
   }
 
   static fromEnv(env: Env, mode: TradingMode): WebullClient | null {
     if (mode === 'LIVE') {
       if (!env.WEBULL_LIVE_APP_KEY || !env.WEBULL_LIVE_APP_SECRET || !env.WEBULL_LIVE_ACCESS_TOKEN || !env.WEBULL_LIVE_ACCOUNT_ID)
         return null;
+      const baseUrl = env.WEBULL_LIVE_API_BASE_URL
+        ? env.WEBULL_LIVE_API_BASE_URL.replace(/\/$/, '') + '/api'
+        : undefined;
       return new WebullClient({
         appKey:       env.WEBULL_LIVE_APP_KEY,
         appSecret:    env.WEBULL_LIVE_APP_SECRET,
@@ -25,7 +28,7 @@ export class WebullClient {
         refreshToken: env.WEBULL_LIVE_REFRESH_TOKEN,
         accountId:    env.WEBULL_LIVE_ACCOUNT_ID,
         mode:         'LIVE',
-      });
+      }, baseUrl);
     }
     // Sandbox: accept WEBULL_SANDBOX_* (new) or WEBULL_* (legacy fallback)
     const appKey      = env.WEBULL_SANDBOX_APP_KEY      ?? env.WEBULL_APP_KEY;
@@ -33,7 +36,10 @@ export class WebullClient {
     const accessToken = env.WEBULL_SANDBOX_ACCESS_TOKEN ?? env.WEBULL_ACCESS_TOKEN;
     const accountId   = env.WEBULL_SANDBOX_ACCOUNT_ID   ?? env.WEBULL_ACCOUNT_ID;
     if (!appKey || !appSecret || !accessToken || !accountId) return null;
-    return new WebullClient({ appKey, appSecret, accessToken, accountId, mode: 'SANDBOX' });
+    const baseUrl = env.WEBULL_SANDBOX_API_BASE_URL
+      ? env.WEBULL_SANDBOX_API_BASE_URL.replace(/\/$/, '') + '/api'
+      : undefined;
+    return new WebullClient({ appKey, appSecret, accessToken, accountId, mode: 'SANDBOX' }, baseUrl);
   }
 
   private async req<T>(path: string, init: RequestInit = {}): Promise<T> {
@@ -41,10 +47,9 @@ export class WebullClient {
     const res = await fetch(url, {
       ...init,
       headers: {
-        'Content-Type':  'application/json',
-        'Authorization': `Bearer ${this.creds.accessToken}`,
-        'App-Key':       this.creds.appKey,
-        'Account-ID':    this.creds.accountId,
+        'Content-Type': 'application/json',
+        'app-key':      this.creds.appKey,
+        'access-token': this.creds.accessToken,
         ...(init.headers as Record<string, string> ?? {}),
       },
     });

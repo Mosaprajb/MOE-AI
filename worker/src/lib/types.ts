@@ -5,6 +5,9 @@ export interface Env {
   CONFIG?: KVNamespace;
   // D1 (optional until database is created)
   DB?: D1Database;
+  // API base URLs (optional — falls back to defaults)
+  WEBULL_LIVE_API_BASE_URL?:   string;
+  WEBULL_SANDBOX_API_BASE_URL?:string;
   // Secrets — LIVE
   WEBULL_LIVE_APP_KEY?:        string;
   WEBULL_LIVE_APP_SECRET?:     string;
