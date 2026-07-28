@@ -1,77 +1,73 @@
 ---
 name: MOE-AI Trading Platform
-description: Architecture decisions, key URLs, and lessons for the MOE-AI personal trading platform.
+description: TradingView → Cloudflare Worker → Webull automated trading bridge. React+Vite frontend, Hono Worker backend.
 ---
 
-## Core Architecture
+## Architecture (v5.0)
 
-- **Frontend**: React+Vite SPA in `artifacts/trading-bot/` — Arabic RTL, dark institutional theme
-- **Backend**: Cloudflare Worker — source in `worker/src/`, deployed to `moerand-alerts.mosaprajb.workers.dev`
-- **Auth**: PIN-based, SHA-256 hashed, localStorage session (8hr TTL) — `src/lib/auth.ts`
-- **API client**: `src/lib/api.ts` — fetches from CF Worker, CORS-dependent
-- **Scanner**: Uses CF Worker decisions endpoint; falls back to deterministic demo data when offline
+**Flow:** TradingView alert → POST /api/tradingview/webhook → Worker validates secret + checks kill switch → executes on SANDBOX or LIVE Webull
 
-## Key File Locations
+**Frontend:** `artifacts/trading-bot/` — React+Vite, dark theme, English UI, PIN auth (6-digit SHA-256, 8hr session)
+- 6 pages: Dashboard, Positions, Orders, History, System, Settings
+- DEMO/LIVE toggle syncs to Worker KV via POST /api/trading/mode
+- Kill switch toggle syncs to Worker KV via POST /api/trading/kill-switch
+- Kill switch defaults to FALSE (disengaged) — trading allowed by default
 
-### Frontend (`artifacts/trading-bot/`)
-- Design system: `src/index.css` (pure CSS custom properties, no Tailwind utilities)
-- Stocks watchlist: `src/lib/stocks.ts` (20 tickers)
-- Market hook: `src/lib/useFinnhubMarket.ts`
-- App shell + routing: `src/App.tsx`
-- Pages: `src/pages/` (Dashboard, Scanner, Positions, Orders, Risk, Trades, System, Settings)
+**Worker:** `worker/src/` — Hono on Cloudflare Workers
+- `index.ts` — main entry, routes registered
+- `lib/cors.ts` — wildcard pattern CORS (*.replit.dev, *.replit.app)
+- `lib/risk.ts` — kill switch, trading mode, risk state, safety gates
+- `lib/types.ts` — all TypeScript types including TVWebhookPayload
+- `lib/webull.ts` — Webull API client, fromEnv() picks SANDBOX or LIVE creds
+- `routes/health.ts` — GET /api/health, GET /api/system/health
+- `routes/webhook.ts` — POST /api/tradingview/webhook (main bridge)
+- `routes/trading.ts` — dashboard, positions, orders, trades, mode, kill-switch
 
-### Worker (`worker/`)
-- Entry: `src/index.ts` (Hono app)
-- Webull adapter: `src/lib/webull.ts`
-- Risk engine: `src/lib/risk.ts`
-- Routes: `src/routes/{health,trading,webhook}.ts`
-- Schema: `src/db/schema.sql` (D1 — decisions, trades, orders, alerts tables)
-- Config: `wrangler.toml`
+**Worker URL:** https://moerand-alerts.mosaprajb.workers.dev
+**Webhook URL:** https://moerand-alerts.mosaprajb.workers.dev/api/tradingview/webhook
 
-### CI/CD (`.github/workflows/`)
-- `deploy-cloudflare-worker.yml` — deploys Worker on push to `main`
-- `deploy-cloudflare-sandbox.yml` — deploys sandbox on `develop`
-- `worker-safety-tests.yml` — safety checks on PRs
-- `deploy-pages.yml` — verifies frontend build
+**GitHub repo:** Mosaprajb/MOE-AI, branch: main (via feature/moe-ai-v4-platform)
 
-## CF Worker Endpoints
-- `GET /` — worker info + route list
-- `GET /api/health` or `/api/system/health`
-- `POST /api/tradingview/webhook` — TradingView signals
-- `GET /api/tradingview/decisions?limit=N`
-- `GET /api/trading/sandbox/dashboard` or `/live/dashboard`
-- `GET /api/trading/live/readiness` — 12-gate safety check
-- `POST /api/trading/orders` — order placement with idempotency
-- `GET /api/trading/trades?limit=N&mode=`
-- `GET|POST /api/trading/kill-switch`
+## Key Decisions
 
-## Safety Design Rules
-- Kill Switch defaults to **engaged** (true) on app load and Worker startup
-- Sandbox is always the default mode
-- Live mode requires modal confirmation + all 12 safety gates
-- All orders use idempotency keys to prevent duplicates
-- No credentials stored in frontend — Cloudflare Secrets only
+- **Kill switch default OFF** — `getKillSwitch()` returns false when KV key is absent (was `val !== 'false'`, now `val === 'true'`)
+- **Trading mode in KV** — `getTradingMode()` reads `trading_mode` key from CONFIG KV, defaults SANDBOX
+- **Worker excludes pnpm workspace** — `pnpm-workspace.yaml` excludes `worker/`; all worker CI uses `npm ci`
+- **`package-lock.json` committed** for `npm ci --ignore-scripts` + npm cache in GitHub Actions
+- **CORS uses regex** — `DEFAULT_PATTERNS` in cors.ts handles `*.replit.dev` and `*.replit.app` wildcards
+- **KV/D1 bindings optional** — deploy workflow strips `[[kv_namespaces]]` and `[[d1_databases]]` blocks if secrets not set
+- **No scanner, no Yahoo Finance proxy** — signals come exclusively from TradingView webhooks
+- **preinstall guard is a warning** (not exit 1) — Replit deployment infrastructure uses npm directly
 
-**Why:** Single-owner platform; catastrophic loss from accidental live order is the main risk.
+## TradingView Alert Payload
+```json
+{
+  "secret":  "your-MOE_WEBHOOK_SECRET",
+  "symbol":  "{{ticker}}",
+  "action":  "{{strategy.order.action}}",
+  "qty":     10,
+  "price":   "{{close}}",
+  "stop":    "{{low}}",
+  "target":  0
+}
+```
 
-## CORS Issue
-The CF Worker blocks `http://127.0.0.1` (Replit dev). The app falls back gracefully to demo data.
-After deployment, add the `*.replit.app` production URL to `ALLOWED_ORIGINS` in `wrangler.toml` and redeploy Worker.
+## Required Cloudflare Secrets
+- `MOE_WEBHOOK_SECRET`
+- `WEBULL_SANDBOX_APP_KEY/APP_SECRET/ACCESS_TOKEN/ACCOUNT_ID`
+- `WEBULL_LIVE_APP_KEY/APP_SECRET/ACCESS_TOKEN/ACCOUNT_ID` (when ready for live)
+- `CLOUDFLARE_API_TOKEN` + `CLOUDFLARE_ACCOUNT_ID` (GitHub Secrets for deploy workflow)
 
-**How to apply:** `wrangler.toml` → `[vars]` → `ALLOWED_ORIGINS` → add the Replit production domain → `pnpm deploy`.
+## Current Status (as of rebuild)
+- Frontend: ✅ Running, English, 6 pages
+- Worker: ✅ TypeScript compiles clean, pushed to main
+- Worker Deploy: ⏳ Awaiting CLOUDFLARE_API_TOKEN + CLOUDFLARE_ACCOUNT_ID GitHub Secrets
+- KV/D1: ⏳ Not created yet — Worker runs without them (all calls use optional chaining)
+- Webull credentials: ⏳ Not set yet — Worker returns "credentials not configured" gracefully
 
-## Build Quirk
-`vite.config.ts` originally threw if `PORT`/`BASE_PATH` env vars were missing. Fixed to use defaults (`3000` / `/`) so `vite build` works without env vars set.
-
-**Why:** Cloudflare Pages / CI environments don't inject these at build time.
-
-## GitHub Secrets Required
-- `CLOUDFLARE_API_TOKEN` + `CLOUDFLARE_ACCOUNT_ID` — for GitHub Actions → Wrangler deploy
-
-## Cloudflare Secrets Required (via Wrangler)
-- `WEBULL_SANDBOX_*` (4 keys) — for sandbox mode
-- `WEBULL_LIVE_*` (4 keys) — for live mode
-- `MOE_WEBHOOK_SECRET` — for TradingView webhook auth
-
-## Worker Not in pnpm Workspace
-The `worker/` directory is intentionally excluded from `pnpm-workspace.yaml`. It uses its own `pnpm install` via GitHub Actions (`cd worker && pnpm install`). This avoids Cloudflare Workers types conflicting with Node types in the monorepo.
+## Remaining Setup Steps
+1. Add `CLOUDFLARE_API_TOKEN` + `CLOUDFLARE_ACCOUNT_ID` as GitHub Secrets → Worker deploys
+2. Set Webull sandbox secrets via `wrangler secret put` in `worker/` directory
+3. Test webhook on demo: send test POST to webhook URL from curl or TradingView
+4. When demo validated → set live credentials + toggle LIVE in frontend
+5. User will send TradingView indicator code for review/improvement
