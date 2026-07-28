@@ -3,24 +3,20 @@ main = "src/index.ts"
 compatibility_date = "2024-11-01"
 compatibility_flags = ["nodejs_compat"]
 
-# ── KV Namespace ───────────────────────────────────────────────────────────────
-# Stores: kill_switch, trading_mode, live_automation_armed
-# Create: wrangler kv namespace create "CONFIG"
-# Then add KV_NAMESPACE_ID as a GitHub Secret.
-# The deploy workflow strips this block if the secret is not set.
-[[kv_namespaces]]
-binding = "CONFIG"
-id = "placeholder"
+# ── KV Namespace (optional — add later for persistent kill-switch/mode) ───────
+# To enable: wrangler kv namespace create "CONFIG"
+# Then replace the id below and uncomment:
+# [[kv_namespaces]]
+# binding = "CONFIG"
+# id = "your-kv-namespace-id-here"
 
-# ── D1 Database ────────────────────────────────────────────────────────────────
-# Stores: decisions, orders, trades history
-# Create: wrangler d1 create moe-db
-# Then add D1_DATABASE_ID as a GitHub Secret.
-# The deploy workflow strips this block if the secret is not set.
-[[d1_databases]]
-binding = "DB"
-database_name = "moe-db"
-database_id = "placeholder"
+# ── D1 Database (optional — add later for trade history) ──────────────────────
+# To enable: wrangler d1 create moe-db
+# Then replace the id below and uncomment:
+# [[d1_databases]]
+# binding = "DB"
+# database_name = "moe-db"
+# database_id = "your-d1-database-id-here"
 
 # ── Cloudflare Secrets (set via: wrangler secret put <NAME>) ──────────────────
 # WEBULL_SANDBOX_APP_KEY         — paper trading app key
