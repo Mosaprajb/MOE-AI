@@ -36,6 +36,49 @@ export interface Env {
   MAX_PORTFOLIO_HEAT: string;
   ALLOWED_ORIGINS:    string;
   RISK_PCT?:          string;   // % of buying power per trade (default 5)
+  // Scanner vars
+  SCANNER_TP_PCT?:        string;   // take profit % (default 1.5)
+  SCANNER_TRAIL_PCT?:     string;   // trailing stop % (default 1.0)
+  SCANNER_HARD_STOP_PCT?: string;   // hard stop % (default 1.5)
+  SCANNER_PRICE_MIN?:     string;   // min stock price (default 10)
+  SCANNER_PRICE_MAX?:     string;   // max stock price (default 100)
+}
+
+// ── Scanner types ─────────────────────────────────────────────────────────────
+
+export interface ScannerConfig {
+  tpPct:        number;
+  trailPct:     number;
+  hardStopPct:  number;
+  priceMin:     number;
+  priceMax:     number;
+  riskPct:      number;
+  maxPositions: number;
+}
+
+export interface ScannerPosition {
+  id:            string;
+  symbol:        string;
+  quantity:      number;
+  entryPrice:    number;
+  currentPrice:  number;
+  highestPrice:  number;
+  stopLoss:      number;   // current trailing SL
+  takeProfit:    number;
+  hardStop:      number;   // fixed floor SL
+  trailPct:      number;
+  tpPct:         number;
+  confidence:    'HIGH' | 'MEDIUM';
+  score:         number;
+  webullOrderId?: string;
+  status:        'OPEN' | 'CLOSED';
+  mode:          TradingMode;
+  openedAt:      string;
+  updatedAt:     string;
+  closedAt?:     string;
+  exitPrice?:    number;
+  pnl?:          number;
+  closeReason?:  string;
 }
 
 export type TradingMode = 'SANDBOX' | 'LIVE';

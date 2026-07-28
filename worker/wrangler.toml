@@ -33,14 +33,22 @@ compatibility_flags = ["nodejs_compat"]
 # ── Durable Objects cleanup migration ─────────────────────────────────────────
 # Deletes the legacy AlertCoordinator DO namespace from the old Worker.
 # Safe to remove from wrangler.toml after first successful deploy.
+[triggers]
+crons = ["*/5 * * * *"]
+
 [[migrations]]
 tag             = "v2-cleanup"
 deleted_classes = ["AlertCoordinator"]
 
 [vars]
-WORKER_VERSION      = "5.0.0"
-RISK_PCT            = "5"
-MAX_OPEN_POSITIONS  = "4"
+WORKER_VERSION      = "6.0.0"
+RISK_PCT              = "5"
+SCANNER_TP_PCT        = "1.5"
+SCANNER_TRAIL_PCT     = "1.0"
+SCANNER_HARD_STOP_PCT = "1.5"
+SCANNER_PRICE_MIN     = "10"
+SCANNER_PRICE_MAX     = "100"
+MAX_OPEN_POSITIONS    = "4"
 MAX_DAILY_TRADES    = "8"
 MAX_DAILY_LOSS_PCT  = "2"
 MAX_OPEN_RISK_PCT   = "2"
