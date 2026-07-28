@@ -3,12 +3,11 @@ import { Hono } from 'hono';
 import type { Env, TradingMode, ScannerConfig } from '../lib/types';
 import type { ScanCandidate } from '../lib/strategy';
 import { scoreStock, confidenceMultiplier } from '../lib/strategy';
-import { fetchCandles, fetchBatchQuotes } from '../lib/market-data';
+import { fetchCandles, fetchBatchQuotes, fetchLivePrices } from '../lib/market-data';
 import { loadWatchlist, ensureWatchlistTable, addToWatchlist, removeFromWatchlist, DEFAULT_WATCHLIST } from '../lib/watchlist';
 import { ensureScannerTables, savePosition, managePositions, loadOpenPositions } from '../lib/position-manager';
 import { getKillSwitch, getTradingMode } from '../lib/risk';
 import { WebullClient } from '../lib/webull';
-import { fetchLivePrices } from '../lib/market-data';
 
 const scanner = new Hono<{ Bindings: Env }>();
 
