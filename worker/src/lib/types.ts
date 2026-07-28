@@ -35,6 +35,7 @@ export interface Env {
   MAX_OPEN_RISK_PCT:  string;
   MAX_PORTFOLIO_HEAT: string;
   ALLOWED_ORIGINS:    string;
+  RISK_PCT?:          string;   // % of buying power per trade (default 5)
 }
 
 export type TradingMode = 'SANDBOX' | 'LIVE';

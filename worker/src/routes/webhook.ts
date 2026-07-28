@@ -69,8 +69,33 @@ webhook.post('/webhook', async (c) => {
 
   // ── Build order ──────────────────────────────────────────────────────────
   const side = (payload.action === 'buy' ? 'BUY' : 'SELL') as 'BUY' | 'SELL';
-  const qty  = Math.max(1, Math.round(Number(payload.qty ?? 1)));
   const type = ((payload.type ?? 'MARKET') as string).toUpperCase() as 'MARKET' | 'LIMIT';
+
+  // ── Smart position sizing ─────────────────────────────────────────────────
+  // If qty is explicitly provided in the alert → honour it (manual override).
+  // Otherwise calculate: qty = floor(buyingPower × RISK_PCT% ÷ price), min 1.
+  let qty: number;
+  if (payload.qty != null) {
+    qty = Math.max(1, Math.round(Number(payload.qty)));
+    console.log(`[Webhook] qty from alert: ${qty}`);
+  } else {
+    const price = Number(payload.price ?? payload.entry ?? 0);
+    const riskPct = Math.max(0.1, Math.min(50, Number(env.RISK_PCT ?? '5'))) / 100;
+    if (price > 0) {
+      try {
+        const acct = await client.getAccount();
+        const buyingPower = acct.buyingPower > 0 ? acct.buyingPower : acct.cash;
+        qty = Math.max(1, Math.floor((buyingPower * riskPct) / price));
+        console.log(`[Webhook] smart qty: floor($${buyingPower.toFixed(2)} × ${(riskPct*100).toFixed(1)}% ÷ $${price}) = ${qty}`);
+      } catch (err) {
+        qty = 1;
+        console.warn(`[Webhook] balance fetch failed, defaulting qty=1:`, err);
+      }
+    } else {
+      qty = 1;
+      console.warn(`[Webhook] no price in alert — add "price": {{close}} to your TradingView alert for smart sizing. Defaulting qty=1.`);
+    }
+  }
 
   // ── Place order on Webull ────────────────────────────────────────────────
   let orderId   = '';

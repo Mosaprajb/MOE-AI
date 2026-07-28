@@ -39,6 +39,7 @@ deleted_classes = ["AlertCoordinator"]
 
 [vars]
 WORKER_VERSION      = "5.0.0"
+RISK_PCT            = "5"
 MAX_OPEN_POSITIONS  = "4"
 MAX_DAILY_TRADES    = "8"
 MAX_DAILY_LOSS_PCT  = "2"
