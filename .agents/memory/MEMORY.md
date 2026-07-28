@@ -1,0 +1,1 @@
+- [MOERAND project](moerand-project.md) — trading signal PWA ported from Next.js (GitHub: Mosaprajb/MOE-AI, branch feature/moe-core-domain-v2) into artifacts/trading-bot React+Vite artifact.
