@@ -1,5 +1,15 @@
 // MOE-AI — Scanner Page (English UI)
 import { useState, useEffect, useRef } from 'react';
+
+// ── Module-level timer state — survives page navigation ───────────────────────
+// Stored outside the component so unmount/remount doesn't reset the clock.
+let _lastScanAt  = 0;                    // epoch ms of the most recent completed scan
+const INTERVAL_MS = 5 * 60 * 1000;      // 5 minutes
+
+function remainingSec(): number {
+  if (_lastScanAt === 0) return 0;       // never scanned → trigger immediately
+  return Math.max(0, Math.ceil((INTERVAL_MS - (Date.now() - _lastScanAt)) / 1000));
+}
 import type { TradingMode } from '../lib/config';
 import { useScanner } from '../hooks/useScanner';
 import type { ScanCandidate, ScannerPosition } from '../hooks/useScanner';
@@ -173,25 +183,52 @@ export default function ScannerPage({ mode, showToast }: Props) {
 
   const doScan = async () => {
     const result = await runScanRef.current();
+    _lastScanAt = Date.now();                // record when scan finished
+    setNextScanIn(INTERVAL_MS / 1000);
     showToast(
       result
         ? `✅ Scan complete — ${result.candidates?.length ?? 0} candidates, ${result.ordersPlaced} orders`
         : '❌ Scan failed — check connection',
       result ? 'success' : 'error',
     );
-    setNextScanIn(5 * 60);
   };
 
-  // Auto-scan on mount + every 5 min
+  // Auto-scan: picks up from module-level timestamp so navigation doesn't reset the clock
   useEffect(() => {
     let cancelled = false;
-    const run = async () => { if (!cancelled) doScan(); };
-    run();
-    setNextScanIn(5 * 60);
-    countdownRef.current    = setInterval(() => setNextScanIn(p => p <= 1 ? 5 * 60 : p - 1), 1000);
-    scanIntervalRef.current = setInterval(run, 5 * 60 * 1000);
+
+    const maybeScan = async () => {
+      if (cancelled) return;
+      doScan();
+    };
+
+    // On mount: initialise countdown from wherever the clock actually is
+    const initial = remainingSec();
+    setNextScanIn(initial);
+
+    // If overdue (or first load), scan right away; otherwise wait out the remainder
+    let firstTimer: ReturnType<typeof setTimeout>;
+    if (initial === 0) {
+      maybeScan();
+      // Schedule recurring scans from now
+      scanIntervalRef.current = setInterval(maybeScan, INTERVAL_MS);
+    } else {
+      // Wait until the next scheduled time, then go periodic
+      firstTimer = setTimeout(() => {
+        if (cancelled) return;
+        maybeScan();
+        scanIntervalRef.current = setInterval(maybeScan, INTERVAL_MS);
+      }, initial * 1000);
+    }
+
+    // Countdown ticker — reads live remaining time every second
+    countdownRef.current = setInterval(() => {
+      setNextScanIn(remainingSec());
+    }, 1000);
+
     return () => {
       cancelled = true;
+      clearTimeout(firstTimer!);
       if (scanIntervalRef.current) clearInterval(scanIntervalRef.current);
       if (countdownRef.current)    clearInterval(countdownRef.current);
     };
