@@ -80,12 +80,23 @@ function SetupTab({ showToast }: { showToast: Props['showToast'] }) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ symbol: testSym.toUpperCase(), action: testAction, qty: 1 }),
       });
-      const d = await res.json() as { accepted: boolean; reason?: string; signalId?: string };
+      const d = await res.json() as {
+        accepted?: boolean;
+        reason?: string;
+        error?: string;
+        message?: string;
+        signalId?: string;
+      };
+      const failureReason =
+        d.reason ??
+        d.error ??
+        d.message ??
+        `Worker returned HTTP ${res.status}`;
       showToast(
-        d.accepted
+        res.ok && d.accepted
           ? `✅ Signal accepted — ${testSym} ${testAction.toUpperCase()} (ID: ${d.signalId?.slice(-8)})`
-          : `⚠ Signal rejected — ${d.reason}`,
-        d.accepted ? 'success' : 'error',
+          : `⚠ Signal rejected — ${failureReason}`,
+        res.ok && d.accepted ? 'success' : 'error',
       );
     } catch { showToast('❌ Could not reach worker', 'error'); }
     setTesting(false);
