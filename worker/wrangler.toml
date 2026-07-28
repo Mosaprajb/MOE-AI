@@ -33,8 +33,7 @@ compatibility_flags = ["nodejs_compat"]
 # ── Durable Objects cleanup migration ─────────────────────────────────────────
 # Deletes the legacy AlertCoordinator DO namespace from the old Worker.
 # Safe to remove from wrangler.toml after first successful deploy.
-[triggers]
-crons = ["*/5 * * * *"]
+# Scanner cron removed — signals now received from TradingView webhooks
 
 [[migrations]]
 tag             = "v2-cleanup"

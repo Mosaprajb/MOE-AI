@@ -5,7 +5,6 @@ import { corsMiddleware } from './lib/cors';
 import { health }  from './routes/health';
 import { webhook } from './routes/webhook';
 import { trading } from './routes/trading';
-import { scanner, runScanCycle } from './routes/scanner';
 
 const app = new Hono<{ Bindings: Env }>();
 
@@ -17,13 +16,13 @@ app.route('/api/health',         health);
 app.route('/api/system/health',  health);
 app.route('/api/tradingview',    webhook);
 app.route('/api/trading',        trading);
-app.route('/api/scanner',        scanner);
 
 // ── Root info ──────────────────────────────────────────────────────────────────
 app.get('/', (c) => c.json({
   service: 'MOE-AI Worker',
   version: c.env.WORKER_VERSION,
   status:  'running',
+  mode:    'TradingView Webhook Bridge',
   webhook: 'POST /api/tradingview/webhook',
   docs: [
     'GET  /api/health',
@@ -36,8 +35,6 @@ app.get('/', (c) => c.json({
     'GET  /api/trading/kill-switch',
     'POST /api/trading/kill-switch',
     'GET  /api/trading/live/readiness',
-    'POST /api/trading/orders',
-    'GET  /api/trading/trades',
   ],
 }));
 
@@ -47,16 +44,4 @@ app.onError((err, c) => {
   return c.json({ error: err.message ?? 'Internal error' }, 500);
 });
 
-// ── Cloudflare Cron Trigger — runs every 5 minutes ────────────────────────────
-export default {
-  fetch: app.fetch.bind(app),
-  async scheduled(_event: ScheduledEvent, env: Env, _ctx: ExecutionContext) {
-    console.log('[Cron] Scanner cycle starting…');
-    try {
-      const result = await runScanCycle(env);
-      console.log(`[Cron] Done — scanned:${result.scanned} candidates:${result.candidates.length} orders:${result.ordersPlaced} ms:${result.ms}`);
-    } catch (e) {
-      console.error('[Cron] Scanner error:', e);
-    }
-  },
-};
+export default app;

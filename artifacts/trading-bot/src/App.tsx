@@ -12,13 +12,13 @@ import OrdersPage    from './pages/Orders';
 import TradesPage    from './pages/Trades';
 import SystemPage    from './pages/System';
 import SettingsPage  from './pages/Settings';
-import ScannerPage   from './pages/Scanner';
+import SignalsPage   from './pages/Signals';
 
 type Page = 'dashboard' | 'positions' | 'orders' | 'trades' | 'system' | 'settings' | 'scanner';
 
 const NAV_TRADING: { id: Page; icon: string; label: string }[] = [
   { id: 'dashboard', icon: '⬡', label: 'Dashboard'  },
-  { id: 'scanner',   icon: '📡', label: 'Scanner'    },
+  { id: 'scanner',   icon: '📡', label: 'Signals'    },
   { id: 'positions', icon: '◈', label: 'Positions'  },
   { id: 'orders',    icon: '≡', label: 'Orders'     },
   { id: 'trades',    icon: '⟳', label: 'History'    },
@@ -322,7 +322,7 @@ export default function App() {
         <SideNav page={page} onChange={setPage} />
         <main className="main-content">
           {page === 'dashboard' && <DashboardPage {...sharedProps} />}
-          {page === 'scanner'   && <ScannerPage   {...sharedProps} />}
+          {page === 'scanner'   && <SignalsPage    {...sharedProps} />}
           {page === 'positions' && <PositionsPage  {...sharedProps} />}
           {page === 'orders'    && <OrdersPage     {...sharedProps} />}
           {page === 'trades'    && <TradesPage     {...sharedProps} />}
