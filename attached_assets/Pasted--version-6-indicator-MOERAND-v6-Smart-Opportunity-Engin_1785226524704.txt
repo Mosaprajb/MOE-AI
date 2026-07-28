@@ -1,0 +1,505 @@
+//@version=6
+indicator("MOERAND v6 Smart Opportunity Engine + MOE AI", "MOERAND v6", overlay = true, max_boxes_count = 5, max_lines_count = 10, max_labels_count = 10)
+
+//=============================================================================
+// 1. SETTINGS
+//=============================================================================
+
+string groupTime = "1. Higher Timeframe"
+bool useAutomaticHtf = input.bool(true, "Use Exact Automatic Mapping", group = groupTime)
+string customHtf = input.timeframe("240", "Custom Higher Timeframe", group = groupTime)
+bool blockUnsupportedTf = input.bool(true, "Block Unsupported Chart Timeframes", group = groupTime)
+int htfFastLength = input.int(20, "HTF Fast EMA", minval = 5, maxval = 100, group = groupTime)
+int htfSlowLength = input.int(50, "HTF Slow EMA", minval = 10, maxval = 200, group = groupTime)
+
+string groupEngine = "2. Smart Opportunity Engine"
+int localFastLength = input.int(20, "Local Fast EMA", minval = 5, maxval = 100, group = groupEngine)
+int localSlowLength = input.int(50, "Local Slow EMA", minval = 10, maxval = 200, group = groupEngine)
+int rsiLength = input.int(14, "RSI Length", minval = 5, maxval = 50, group = groupEngine)
+int supportLookback = input.int(24, "Support Search Bars", minval = 8, maxval = 150, group = groupEngine)
+int resistanceLookback = input.int(35, "Resistance Search Bars", minval = 10, maxval = 250, group = groupEngine)
+int pivotLength = input.int(2, "Swing Sensitivity", minval = 1, maxval = 6, group = groupEngine)
+int minimumOpportunityScore = input.int(68, "Minimum Opportunity Score", minval = 50, maxval = 95, group = groupEngine)
+float maximumDistanceAtr = input.float(2.20, "Maximum Distance From Zone (ATR)", minval = 0.50, maxval = 6.00, step = 0.10, group = groupEngine)
+float minimumRelativeVolume = input.float(0.70, "Minimum Relative Volume", minval = 0.10, maxval = 3.00, step = 0.05, group = groupEngine)
+
+string groupRisk = "3. Adaptive Zone and Risk"
+int atrLength = input.int(14, "ATR Length", minval = 5, maxval = 50, group = groupRisk)
+int atrAverageLength = input.int(50, "ATR Average Length", minval = 10, maxval = 200, group = groupRisk)
+float zoneAtrMultiplier = input.float(0.48, "Buy Zone Size (ATR)", minval = 0.20, maxval = 1.50, step = 0.02, group = groupRisk)
+float stopBufferAtr = input.float(0.22, "Stop Buffer Below Zone (ATR)", minval = 0.05, maxval = 1.00, step = 0.01, group = groupRisk)
+float maximumStopAtr = input.float(1.10, "Maximum Stop Distance (ATR)", minval = 0.40, maxval = 2.50, step = 0.05, group = groupRisk)
+float baseTargetAtr = input.float(1.20, "Base Take Profit Distance (ATR)", minval = 0.40, maxval = 3.00, step = 0.05, group = groupRisk)
+float maximumTargetAtr = input.float(2.00, "Maximum Take Profit Distance (ATR)", minval = 0.80, maxval = 4.00, step = 0.05, group = groupRisk)
+float minimumRiskReward = input.float(1.25, "Minimum Risk / Reward", minval = 0.75, maxval = 3.00, step = 0.05, group = groupRisk)
+
+string groupLife = "4. Opportunity Life"
+int setupExpiryBars = input.int(24, "Pending Opportunity Expiry Bars", minval = 5, maxval = 300, group = groupLife)
+int confirmationBars = input.int(3, "Entry Confirmation Window", minval = 1, maxval = 8, group = groupLife)
+float replacementScoreImprovement = input.float(6.0, "Replacement Score Improvement", minval = 1.0, maxval = 25.0, step = 1.0, group = groupLife)
+float replacementDistanceAtr = input.float(0.30, "Replacement Level Change (ATR)", minval = 0.05, maxval = 2.00, step = 0.05, group = groupLife)
+int cooldownBars = input.int(2, "Cooldown After Finished Trade", minval = 0, maxval = 50, group = groupLife)
+
+string groupDisplay = "5. Display and Alerts"
+bool showLabels = input.bool(true, "Show Price Labels", group = groupDisplay)
+bool showInfoPanel = input.bool(true, "Show White Information Panel", group = groupDisplay)
+bool enableAlerts = input.bool(true, "Enable Dynamic Alerts", group = groupDisplay)
+int lineWidth = input.int(2, "SL / TP Line Width", minval = 1, maxval = 5, group = groupDisplay)
+
+string groupWebhook = "6. MOE AI Webhook"
+bool enableMoeWebhook = input.bool(true, "Enable MOE AI Webhook", group = groupWebhook)
+string moeWebhookSecret = input.string("", "MOE Webhook Secret", group = groupWebhook, tooltip = "Use the same secret configured on the MOE AI server. Never publish it.")
+string webhookSession = input.string("CORE", "Trading Session", options = ["CORE", "ALL"], group = groupWebhook)
+bool requestSandboxSubmission = input.bool(false, "Request Sandbox Submission", group = groupWebhook)
+float riskPercent = input.float(0.50, "Risk Per Trade (%)", minval = 0.05, maxval = 5.00, step = 0.05, group = groupWebhook)
+bool sendWebhookTest = input.bool(false, "Send One-Time Webhook Test", group = groupWebhook)
+
+//=============================================================================
+// 2. HELPERS
+//=============================================================================
+
+f_price(float value) =>
+    str.tostring(value, format.mintick)
+
+f_num(float value) =>
+    str.tostring(value, format.mintick)
+
+f_bool(bool value) =>
+    value ? "true" : "false"
+
+f_webhook_message(string sourceName, string secret, string sessionName, bool sandbox, float riskPct, float entryPrice, float marketPrice, float stopPrice, float targetPrice, bool higherTfAligned, float relativeVolume, int scoreValue, int signalTime) =>
+    string signalId = sourceName + "-" + syminfo.ticker + "-" + timeframe.period + "-" + str.tostring(signalTime)
+    string message = "{"
+    message += "\"secret\":\"" + secret + "\","
+    message += "\"symbol\":\"" + syminfo.ticker + "\","
+    message += "\"side\":\"BUY\","
+    message += "\"orderType\":\"LIMIT\","
+    message += "\"session\":\"" + sessionName + "\","
+    message += "\"limitPrice\":" + f_num(entryPrice) + ","
+    message += "\"marketPrice\":" + f_num(marketPrice) + ","
+    message += "\"stopLoss\":" + f_num(stopPrice) + ","
+    message += "\"takeProfit\":" + f_num(targetPrice) + ","
+    message += "\"source\":\"" + sourceName + "\","
+    message += "\"signalId\":\"" + signalId + "\","
+    message += "\"submitSandbox\":" + f_bool(sandbox) + ","
+    message += "\"riskPercent\":" + str.tostring(riskPct) + ","
+    message += "\"context\":{" 
+    message += "\"marketPrice\":" + f_num(marketPrice) + ","
+    message += "\"riskPercent\":" + str.tostring(riskPct) + ","
+    message += "\"htfAligned\":" + f_bool(higherTfAligned) + ","
+    message += "\"relativeVolume\":" + str.tostring(relativeVolume) + ","
+    message += "\"signalScore\":" + str.tostring(scoreValue)
+    message += "}}"
+    message
+
+//=============================================================================
+// 3. EXACT TIMEFRAME MAP
+//    1m -> 15m | 5m -> 1h | 15m -> 4h | 4h -> 1D | 1D -> 1W
+//=============================================================================
+
+bool tf1m = timeframe.isminutes and timeframe.multiplier == 1
+bool tf5m = timeframe.isminutes and timeframe.multiplier == 5
+bool tf15m = timeframe.isminutes and timeframe.multiplier == 15
+bool tf4h = timeframe.isminutes and timeframe.multiplier == 240
+bool tf1d = timeframe.isdaily and timeframe.multiplier == 1
+bool supportedTf = tf1m or tf5m or tf15m or tf4h or tf1d
+
+string mappedHtf = tf1m ? "15" : tf5m ? "60" : tf15m ? "240" : tf4h ? "D" : tf1d ? "W" : customHtf
+string trendTf = useAutomaticHtf ? mappedHtf : customHtf
+bool timeframeAllowed = not useAutomaticHtf or supportedTf or not blockUnsupportedTf
+
+//=============================================================================
+// 4. CONFIRMED NON-REPAINTING HIGHER-TIMEFRAME CONTEXT
+//=============================================================================
+
+float htfFast = request.security(syminfo.tickerid, trendTf, ta.ema(close, htfFastLength)[1], barmerge.gaps_off, barmerge.lookahead_on)
+float htfFastPrevious = request.security(syminfo.tickerid, trendTf, ta.ema(close, htfFastLength)[2], barmerge.gaps_off, barmerge.lookahead_on)
+float htfSlow = request.security(syminfo.tickerid, trendTf, ta.ema(close, htfSlowLength)[1], barmerge.gaps_off, barmerge.lookahead_on)
+float htfClose = request.security(syminfo.tickerid, trendTf, close[1], barmerge.gaps_off, barmerge.lookahead_on)
+float htfRsi = request.security(syminfo.tickerid, trendTf, ta.rsi(close, rsiLength)[1], barmerge.gaps_off, barmerge.lookahead_on)
+
+bool htfBullish = htfClose > htfSlow and htfFast > htfSlow and htfFast >= htfFastPrevious
+bool htfAcceptable = htfClose >= htfSlow * 0.992 and htfRsi >= 47.0
+
+//=============================================================================
+// 5. LOCAL MARKET CONTEXT AND ADAPTIVE BUY ZONE
+//=============================================================================
+
+float atr = ta.atr(atrLength)
+float averageAtr = ta.sma(atr, atrAverageLength)
+float rawVolatilityRatio = not na(averageAtr) and averageAtr > 0.0 ? atr / averageAtr : 1.0
+float volatilityRatio = math.max(0.80, math.min(1.50, rawVolatilityRatio))
+float adaptiveZoneSize = atr * zoneAtrMultiplier * volatilityRatio
+
+float localFast = ta.ema(close, localFastLength)
+float localSlow = ta.ema(close, localSlowLength)
+float localRsi = ta.rsi(close, rsiLength)
+float volumeAverage = ta.sma(volume, 20)
+float relativeVolume = not na(volumeAverage) and volumeAverage > 0.0 ? volume / volumeAverage : 1.0
+float recentLow = ta.lowest(low, supportLookback)
+float priorResistance = ta.highest(high[1], resistanceLookback)
+float pivotLowValue = ta.pivotlow(low, pivotLength, pivotLength)
+float impulseLow = ta.lowest(low, 10)
+
+var float lastConfirmedSwingLow = na
+if not na(pivotLowValue)
+    lastConfirmedSwingLow := pivotLowValue
+
+float structuralSupport = na(lastConfirmedSwingLow) ? recentLow : math.max(recentLow, lastConfirmedSwingLow)
+float emaSupport = localFast - adaptiveZoneSize * 0.30
+float selectedSupport = math.max(structuralSupport, emaSupport)
+float candidateUpperRaw = selectedSupport + adaptiveZoneSize * 0.62
+float candidateUpper = math.min(candidateUpperRaw, close - syminfo.mintick)
+float candidateLower = candidateUpper - adaptiveZoneSize
+float candidateCenter = math.avg(candidateUpper, candidateLower)
+
+bool localTrendPositive = localFast >= localSlow or localFast > localFast[2]
+bool momentumPositive = localRsi >= 50.0 and localRsi <= 74.0
+bool impulsePresent = close - impulseLow >= atr * 0.75
+bool volumeAcceptable = relativeVolume >= minimumRelativeVolume
+bool zoneBelowPrice = candidateUpper < close
+float distanceFromZoneAtr = atr > 0.0 ? (close - candidateUpper) / atr : 999.0
+bool zoneNearPrice = zoneBelowPrice and distanceFromZoneAtr <= maximumDistanceAtr
+bool bullishCandleContext = close > open or close > close[1]
+
+int opportunityScore = 0
+opportunityScore += htfBullish ? 25 : htfAcceptable ? 15 : 0
+opportunityScore += localTrendPositive ? 15 : 0
+opportunityScore += momentumPositive ? 12 : localRsi >= 47.0 ? 6 : 0
+opportunityScore += volumeAcceptable ? 10 : 0
+opportunityScore += impulsePresent ? 10 : 0
+opportunityScore += bullishCandleContext ? 8 : 0
+opportunityScore += zoneNearPrice ? int(math.round(20.0 * (1.0 - math.min(distanceFromZoneAtr / maximumDistanceAtr, 1.0)))) : 0
+opportunityScore := math.min(100, math.max(0, opportunityScore))
+
+bool enoughHistory = not na(atr) and not na(htfSlow) and not na(localSlow) and not na(candidateLower)
+bool opportunityReady = barstate.isconfirmed and timeframeAllowed and enoughHistory and htfAcceptable and zoneNearPrice and opportunityScore >= minimumOpportunityScore
+
+//=============================================================================
+// 6. SINGLE ACTIVE BUY OPPORTUNITY STATE
+//=============================================================================
+
+var bool setupActive = false
+var bool tradeEntered = false
+var bool awaitingConfirmation = false
+var int setupBar = na
+var int firstTouchBar = na
+var int setupSignalTime = na
+var int actualEntryTime = na
+var int lastFinishBar = na
+var float plannedUpper = na
+var float plannedLower = na
+var float plannedStop = na
+var float plannedTarget = na
+var float actualEntry = na
+var int activeScore = na
+var int zoneEntryCount = 0
+var int zoneDownExitCount = 0
+var bool zoneVisitActive = false
+
+var int totalTpHits = 0
+var int totalSlHits = 0
+var string lastTradeResult = "-"
+var int lastTradeEndTime = na
+var int lastTradeScore = na
+
+var box buyZoneBox = na
+var line stopLine = na
+var line targetLine = na
+var label zoneLabel = na
+var label stopLabel = na
+var label targetLabel = na
+
+bool cooldownComplete = na(lastFinishBar) or bar_index - lastFinishBar > cooldownBars
+
+//=============================================================================
+// 7. CREATE OR REPLACE THE SINGLE BUY ZONE
+//=============================================================================
+
+if opportunityReady and not setupActive and cooldownComplete
+    setupActive := true
+    tradeEntered := false
+    awaitingConfirmation := false
+    setupBar := bar_index
+    firstTouchBar := na
+    setupSignalTime := time
+    actualEntryTime := na
+    plannedUpper := candidateUpper
+    plannedLower := candidateLower
+    plannedStop := na
+    plannedTarget := na
+    actualEntry := na
+    activeScore := opportunityScore
+    zoneEntryCount := 0
+    zoneDownExitCount := 0
+    zoneVisitActive := false
+
+    buyZoneBox := box.new(left = bar_index, top = plannedUpper, right = bar_index + 1, bottom = plannedLower, extend = extend.right, border_color = color.new(color.rgb(0, 180, 95), 18), border_width = 2, bgcolor = color.new(color.rgb(0, 205, 105), 92))
+
+    if showLabels
+        zoneLabel := label.new(bar_index, plannedUpper, "BUY ZONE\nUpper: " + f_price(plannedUpper) + "\nLower: " + f_price(plannedLower), style = label.style_label_left, color = color.new(color.rgb(0, 155, 82), 10), textcolor = color.white)
+
+bool betterScore = setupActive and not tradeEntered and opportunityReady and opportunityScore >= nz(activeScore, 0) + replacementScoreImprovement
+bool betterLevel = setupActive and not tradeEntered and opportunityReady and opportunityScore >= nz(activeScore, 0) and math.abs(candidateCenter - math.avg(plannedUpper, plannedLower)) >= atr * replacementDistanceAtr
+bool replaceSetup = bar_index > nz(setupBar, bar_index) and (betterScore or betterLevel)
+
+if replaceSetup
+    setupBar := bar_index
+    setupSignalTime := time
+    plannedUpper := candidateUpper
+    plannedLower := candidateLower
+    activeScore := opportunityScore
+    awaitingConfirmation := false
+    firstTouchBar := na
+    zoneEntryCount := 0
+    zoneDownExitCount := 0
+    zoneVisitActive := false
+
+    if not na(buyZoneBox)
+        box.set_left(buyZoneBox, bar_index)
+        box.set_top(buyZoneBox, plannedUpper)
+        box.set_bottom(buyZoneBox, plannedLower)
+
+    if showLabels and not na(zoneLabel)
+        label.set_xy(zoneLabel, bar_index, plannedUpper)
+        label.set_text(zoneLabel, "BUY ZONE\nUpper: " + f_price(plannedUpper) + "\nLower: " + f_price(plannedLower))
+
+if setupActive and showLabels
+    if not na(zoneLabel)
+        label.set_xy(zoneLabel, bar_index, plannedUpper)
+    if not na(stopLabel) and not na(plannedStop)
+        label.set_xy(stopLabel, bar_index, plannedStop)
+    if not na(targetLabel) and not na(plannedTarget)
+        label.set_xy(targetLabel, bar_index, plannedTarget)
+
+//=============================================================================
+// 8. ZONE TOUCH, CONFIRMED ENTRY, ADAPTIVE SL / TP
+//=============================================================================
+
+bool priceIntersectsZone = setupActive and low <= plannedUpper and high >= plannedLower
+bool enteredZoneNow = priceIntersectsZone and not zoneVisitActive
+
+if enteredZoneNow
+    zoneEntryCount += 1
+    zoneVisitActive := true
+    if not tradeEntered
+        awaitingConfirmation := true
+        firstTouchBar := bar_index
+
+bool exitedZoneDownNow = setupActive and zoneVisitActive and close < plannedLower
+if exitedZoneDownNow
+    zoneDownExitCount += 1
+    zoneVisitActive := false
+    if not tradeEntered
+        awaitingConfirmation := false
+        firstTouchBar := na
+else if setupActive and zoneVisitActive and close > plannedUpper and not priceIntersectsZone
+    zoneVisitActive := false
+
+float zoneMidpoint = setupActive ? math.avg(plannedUpper, plannedLower) : na
+bool confirmationWindowOpen = awaitingConfirmation and not na(firstTouchBar) and bar_index - firstTouchBar <= confirmationBars
+bool bullishConfirmation = barstate.isconfirmed and close > open and close > close[1] and close >= zoneMidpoint and localRsi >= 48.0
+bool zoneRiskAcceptable = setupActive and close - (plannedLower - syminfo.mintick) <= atr * maximumStopAtr * volatilityRatio
+bool entryConfirmed = setupActive and not tradeEntered and confirmationWindowOpen and bullishConfirmation and zoneRiskAcceptable
+bool entryRejectedForRisk = setupActive and not tradeEntered and confirmationWindowOpen and bullishConfirmation and not zoneRiskAcceptable
+
+if awaitingConfirmation and not tradeEntered and not na(firstTouchBar) and bar_index - firstTouchBar > confirmationBars
+    awaitingConfirmation := false
+    firstTouchBar := na
+
+if entryConfirmed
+    tradeEntered := true
+    awaitingConfirmation := false
+    actualEntry := close
+    actualEntryTime := time
+
+    float zoneBasedStop = plannedLower - atr * stopBufferAtr * volatilityRatio
+    float maximumAllowedStop = actualEntry - atr * maximumStopAtr * volatilityRatio
+    plannedStop := math.max(zoneBasedStop, maximumAllowedStop)
+    plannedStop := math.min(plannedStop, plannedLower - syminfo.mintick)
+
+    float actualRisk = math.max(actualEntry - plannedStop, syminfo.mintick)
+    float minimumTarget = actualEntry + actualRisk * minimumRiskReward
+    float baseTarget = actualEntry + atr * baseTargetAtr * volatilityRatio
+    float maximumAllowedTarget = actualEntry + atr * maximumTargetAtr * volatilityRatio
+    bool resistanceUsable = not na(priorResistance) and priorResistance >= minimumTarget and priorResistance <= maximumAllowedTarget
+    plannedTarget := resistanceUsable ? priorResistance : math.min(math.max(baseTarget, minimumTarget), maximumAllowedTarget)
+
+    stopLine := line.new(bar_index, plannedStop, bar_index + 1, plannedStop, extend = extend.right, color = color.rgb(235, 65, 75), width = lineWidth)
+    targetLine := line.new(bar_index, plannedTarget, bar_index + 1, plannedTarget, extend = extend.right, color = color.rgb(35, 140, 255), width = lineWidth)
+
+    if not na(buyZoneBox)
+        box.set_bgcolor(buyZoneBox, color.new(color.rgb(0, 205, 105), 87))
+
+    if showLabels
+        stopLabel := label.new(bar_index, plannedStop, "SL  " + f_price(plannedStop), style = label.style_label_left, color = color.rgb(205, 45, 55), textcolor = color.white)
+        targetLabel := label.new(bar_index, plannedTarget, "TP  " + f_price(plannedTarget), style = label.style_label_left, color = color.rgb(30, 115, 220), textcolor = color.white)
+
+    if enableAlerts
+        if enableMoeWebhook and str.length(moeWebhookSecret) > 0
+            string webhookMessage = f_webhook_message("MOERAND_V6", moeWebhookSecret, webhookSession, requestSandboxSubmission, riskPercent, actualEntry, close, plannedStop, plannedTarget, htfBullish, relativeVolume, activeScore, actualEntryTime)
+            alert(webhookMessage, alert.freq_once_per_bar_close)
+        else
+            alert(syminfo.ticker + " — MOERAND V6 CONFIRMED BUY | " + timeframe.period + " | Entry: " + f_price(actualEntry) + " | SL: " + f_price(plannedStop) + " | TP: " + f_price(plannedTarget) + " | Score: " + str.tostring(activeScore), alert.freq_once_per_bar_close)
+
+//=============================================================================
+// 9. TRADE RESULT, EXPIRY, INVALIDATION, CLEANUP
+//=============================================================================
+
+bool stopHit = setupActive and tradeEntered and not na(plannedStop) and low <= plannedStop
+bool targetHit = setupActive and tradeEntered and not stopHit and not na(plannedTarget) and high >= plannedTarget
+bool pendingExpired = setupActive and not tradeEntered and bar_index - setupBar > setupExpiryBars
+bool trendInvalid = setupActive and not tradeEntered and htfClose < htfSlow * 0.985
+bool priceInvalid = setupActive and not tradeEntered and close < plannedLower - atr * 0.30
+bool opportunityInvalid = trendInvalid or priceInvalid or entryRejectedForRisk
+
+if targetHit
+    totalTpHits += 1
+    lastTradeResult := "TP HIT"
+    lastTradeEndTime := time
+    lastTradeScore := activeScore
+    if enableAlerts
+        alert(syminfo.ticker + " — MOERAND V6 TAKE PROFIT HIT | " + timeframe.period + " | TP: " + f_price(plannedTarget), alert.freq_once_per_bar)
+
+if stopHit
+    totalSlHits += 1
+    lastTradeResult := "SL HIT"
+    lastTradeEndTime := time
+    lastTradeScore := activeScore
+    if enableAlerts
+        alert(syminfo.ticker + " — MOERAND V6 STOP LOSS HIT | " + timeframe.period + " | SL: " + f_price(plannedStop), alert.freq_once_per_bar)
+
+bool removeSetup = targetHit or stopHit or pendingExpired or opportunityInvalid
+
+if removeSetup
+    if not na(buyZoneBox)
+        box.delete(buyZoneBox)
+    if not na(stopLine)
+        line.delete(stopLine)
+    if not na(targetLine)
+        line.delete(targetLine)
+    if not na(zoneLabel)
+        label.delete(zoneLabel)
+    if not na(stopLabel)
+        label.delete(stopLabel)
+    if not na(targetLabel)
+        label.delete(targetLabel)
+
+    if targetHit or stopHit
+        lastFinishBar := bar_index
+
+    setupActive := false
+    tradeEntered := false
+    awaitingConfirmation := false
+    setupBar := na
+    firstTouchBar := na
+    setupSignalTime := na
+    actualEntryTime := na
+    plannedUpper := na
+    plannedLower := na
+    plannedStop := na
+    plannedTarget := na
+    actualEntry := na
+    activeScore := na
+    zoneEntryCount := 0
+    zoneDownExitCount := 0
+    zoneVisitActive := false
+    buyZoneBox := na
+    stopLine := na
+    targetLine := na
+    zoneLabel := na
+    stopLabel := na
+    targetLabel := na
+
+//=============================================================================
+// 10. ONE-TIME WEBHOOK TEST
+//=============================================================================
+
+var bool webhookTestSent = false
+if not sendWebhookTest
+    webhookTestSent := false
+
+if sendWebhookTest and not webhookTestSent and barstate.isrealtime and enableAlerts and enableMoeWebhook and str.length(moeWebhookSecret) > 0
+    float testEntry = close
+    float testStop = math.max(syminfo.mintick, testEntry - math.max(atr, syminfo.mintick * 10.0))
+    float testTarget = testEntry + math.max(atr * 1.5, syminfo.mintick * 20.0)
+    string testMessage = f_webhook_message("MOERAND_V6_TEST", moeWebhookSecret, webhookSession, false, riskPercent, testEntry, testEntry, testStop, testTarget, true, 1.0, 100, time)
+    alert(testMessage, alert.freq_once_per_bar)
+    webhookTestSent := true
+
+//=============================================================================
+// 11. WHITE TRANSPARENT INFORMATION PANEL
+//=============================================================================
+
+color panelBg = color.new(color.white, 82)
+color panelLabelBg = color.new(color.white, 72)
+color panelHeaderBg = color.new(color.white, 58)
+color panelBorder = color.new(color.white, 42)
+
+var table infoPanel = table.new(position.top_right, 2, 14, bgcolor = panelBg, frame_color = panelBorder, frame_width = 1, border_color = panelBorder, border_width = 1)
+
+if barstate.islast
+    if showInfoPanel
+        string currentStatus = not timeframeAllowed ? "UNSUPPORTED TF" : tradeEntered ? "IN TRADE" : awaitingConfirmation ? "WAIT CONFIRM" : setupActive ? "ACTIVE" : "SEARCHING"
+        color statusColor = not timeframeAllowed ? color.rgb(185, 95, 20) : tradeEntered ? color.rgb(25, 105, 190) : awaitingConfirmation ? color.rgb(210, 145, 20) : setupActive ? color.rgb(0, 155, 80) : color.rgb(85, 85, 85)
+
+        table.cell(infoPanel, 0, 0, "MOERAND v6", bgcolor = panelHeaderBg, text_color = color.rgb(25, 35, 45))
+        table.cell(infoPanel, 1, 0, currentStatus, bgcolor = color.new(statusColor, 22), text_color = color.white)
+
+        table.cell(infoPanel, 0, 1, "Trend TF", bgcolor = panelLabelBg, text_color = color.rgb(35, 45, 55))
+        table.cell(infoPanel, 1, 1, trendTf, bgcolor = panelBg, text_color = color.rgb(20, 110, 175))
+
+        table.cell(infoPanel, 0, 2, "Opportunity", bgcolor = panelLabelBg, text_color = color.rgb(35, 45, 55))
+        table.cell(infoPanel, 1, 2, str.tostring(opportunityScore) + " / 100", bgcolor = panelBg, text_color = opportunityScore >= minimumOpportunityScore ? color.rgb(0, 150, 80) : color.rgb(180, 125, 20))
+
+        table.cell(infoPanel, 0, 3, "Active score", bgcolor = panelLabelBg, text_color = color.rgb(35, 45, 55))
+        table.cell(infoPanel, 1, 3, setupActive and not na(activeScore) ? str.tostring(activeScore) + " / 100" : "-", bgcolor = panelBg, text_color = color.rgb(180, 125, 20))
+
+        table.cell(infoPanel, 0, 4, "Upper Buy", bgcolor = panelLabelBg, text_color = color.rgb(35, 45, 55))
+        table.cell(infoPanel, 1, 4, setupActive ? f_price(plannedUpper) : "-", bgcolor = panelBg, text_color = color.rgb(0, 145, 80))
+
+        table.cell(infoPanel, 0, 5, "Lower Buy", bgcolor = panelLabelBg, text_color = color.rgb(35, 45, 55))
+        table.cell(infoPanel, 1, 5, setupActive ? f_price(plannedLower) : "-", bgcolor = panelBg, text_color = color.rgb(0, 145, 80))
+
+        table.cell(infoPanel, 0, 6, "Entry", bgcolor = panelLabelBg, text_color = color.rgb(35, 45, 55))
+        table.cell(infoPanel, 1, 6, tradeEntered ? f_price(actualEntry) : "-", bgcolor = panelBg, text_color = color.rgb(20, 110, 175))
+
+        table.cell(infoPanel, 0, 7, "Stop", bgcolor = panelLabelBg, text_color = color.rgb(35, 45, 55))
+        table.cell(infoPanel, 1, 7, tradeEntered ? f_price(plannedStop) : "-", bgcolor = panelBg, text_color = color.rgb(210, 55, 65))
+
+        table.cell(infoPanel, 0, 8, "Target", bgcolor = panelLabelBg, text_color = color.rgb(35, 45, 55))
+        table.cell(infoPanel, 1, 8, tradeEntered ? f_price(plannedTarget) : "-", bgcolor = panelBg, text_color = color.rgb(30, 115, 220))
+
+        table.cell(infoPanel, 0, 9, "Zone entries", bgcolor = panelLabelBg, text_color = color.rgb(35, 45, 55))
+        table.cell(infoPanel, 1, 9, str.tostring(zoneEntryCount), bgcolor = panelBg, text_color = color.rgb(180, 125, 20))
+
+        table.cell(infoPanel, 0, 10, "Down exits", bgcolor = panelLabelBg, text_color = color.rgb(35, 45, 55))
+        table.cell(infoPanel, 1, 10, str.tostring(zoneDownExitCount), bgcolor = panelBg, text_color = color.rgb(210, 55, 65))
+
+        table.cell(infoPanel, 0, 11, "TP / SL", bgcolor = panelLabelBg, text_color = color.rgb(35, 45, 55))
+        table.cell(infoPanel, 1, 11, str.tostring(totalTpHits) + " / " + str.tostring(totalSlHits), bgcolor = panelBg, text_color = color.rgb(20, 110, 175))
+
+        table.cell(infoPanel, 0, 12, "Last result", bgcolor = panelLabelBg, text_color = color.rgb(35, 45, 55))
+        table.cell(infoPanel, 1, 12, lastTradeResult, bgcolor = panelBg, text_color = lastTradeResult == "TP HIT" ? color.rgb(0, 150, 80) : lastTradeResult == "SL HIT" ? color.rgb(210, 55, 65) : color.gray)
+
+        table.cell(infoPanel, 0, 13, "Last score", bgcolor = panelLabelBg, text_color = color.rgb(35, 45, 55))
+        table.cell(infoPanel, 1, 13, not na(lastTradeScore) ? str.tostring(lastTradeScore) + " / 100" : "-", bgcolor = panelBg, text_color = color.rgb(180, 125, 20))
+    else
+        table.clear(infoPanel, 0, 0, 1, 13)
+
+//=============================================================================
+// 12. ALERT CONDITIONS AND DATA WINDOW
+//=============================================================================
+
+alertcondition(entryConfirmed, "MOERAND V6 CONFIRMED BUY", "MOERAND v6 confirmed buy on {{ticker}} {{interval}}")
+alertcondition(targetHit, "MOERAND V6 TAKE PROFIT HIT", "MOERAND v6 take profit reached on {{ticker}} {{interval}}")
+alertcondition(stopHit, "MOERAND V6 STOP LOSS HIT", "MOERAND v6 stop loss reached on {{ticker}} {{interval}}")
+alertcondition(pendingExpired, "MOERAND V6 SETUP EXPIRED", "MOERAND v6 pending setup expired on {{ticker}} {{interval}}")
+
+plot(opportunityScore, "Opportunity Score 0-100", display = display.data_window)
+plot(relativeVolume, "Relative Volume", display = display.data_window)
+plot(volatilityRatio, "Volatility Ratio", display = display.data_window)
+plot(setupActive ? 1 : 0, "Setup Active", display = display.data_window)
+plot(tradeEntered ? actualEntry : na, "Actual Entry", display = display.data_window)
+plot(tradeEntered ? plannedStop : na, "Active Stop", display = display.data_window)
+plot(tradeEntered ? plannedTarget : na, "Active Target", display = display.data_window)
