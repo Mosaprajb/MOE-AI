@@ -20,7 +20,9 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
-      - run: npm install --ignore-scripts
+          cache: npm
+          cache-dependency-path: worker/package-lock.json
+      - run: npm ci --ignore-scripts
       - run: npx tsc --noEmit
 
   deploy:
@@ -36,10 +38,10 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
-      - run: npm install --ignore-scripts
+          cache: npm
+          cache-dependency-path: worker/package-lock.json
+      - run: npm ci --ignore-scripts
 
-      # Inject real KV / D1 IDs from GitHub Secrets, or strip the
-      # bindings entirely so wrangler can still deploy without them.
       - name: Configure KV and D1 bindings
         run: |
           KV_ID="${{ secrets.KV_NAMESPACE_ID }}"

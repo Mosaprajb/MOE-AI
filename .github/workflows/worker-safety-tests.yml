@@ -23,9 +23,10 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
+          cache: npm
+          cache-dependency-path: worker/package-lock.json
 
-      - name: Install dependencies
-        run: npm install --ignore-scripts
+      - run: npm ci --ignore-scripts
 
       - name: TypeScript type check
         run: npx tsc --noEmit
@@ -38,8 +39,10 @@ jobs:
 
       - name: Verify no hardcoded credentials
         run: |
-          ! grep -rE "(WEBULL_|secret_|api_key_)[A-Za-z0-9]{20,}" src/ \
-            && echo "PASS: no hardcoded credentials found"
+          if grep -rqE "(WEBULL_|secret_|api_key_)[A-Za-z0-9]{20,}" src/; then
+            echo "FAIL: hardcoded credentials found"; exit 1
+          fi
+          echo "PASS: no hardcoded credentials found"
 
       - name: Verify CORS is applied globally
         run: |
