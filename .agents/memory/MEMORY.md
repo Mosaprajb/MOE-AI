@@ -1,1 +1,2 @@
 - [MOE-AI Trading Platform](moerand-project.md) — full React+Vite trading SPA built in artifacts/trading-bot; PIN auth, 8 pages, CF Worker backend, Arabic RTL dark theme.
+- [MOE Scalp Scanner](moe-scalp-scanner.md) — autonomous scanner using Yahoo Finance for candles; EMA/RSI/Volume scoring; trailing SL in D1; cron every 5 min.
