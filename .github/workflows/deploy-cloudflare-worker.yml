@@ -17,16 +17,11 @@ jobs:
         working-directory: worker
     steps:
       - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
-        with:
-          version: 10
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
-          cache: pnpm
-          cache-dependency-path: worker/pnpm-lock.yaml
-      - run: pnpm install --frozen-lockfile
-      - run: pnpm type-check
+          node-version: '22'
+      - run: npm install --ignore-scripts
+      - run: npx tsc --noEmit
 
   deploy:
     name: Deploy Worker (Production)
@@ -38,18 +33,13 @@ jobs:
         working-directory: worker
     steps:
       - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
-        with:
-          version: 10
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
-          cache: pnpm
-          cache-dependency-path: worker/pnpm-lock.yaml
-      - run: pnpm install --frozen-lockfile
+          node-version: '22'
+      - run: npm install --ignore-scripts
 
-      # If real IDs are provided as secrets, inject them.
-      # If not, strip the KV/D1 bindings so wrangler can still deploy.
+      # Inject real KV / D1 IDs from GitHub Secrets, or strip the
+      # bindings entirely so wrangler can still deploy without them.
       - name: Configure KV and D1 bindings
         run: |
           KV_ID="${{ secrets.KV_NAMESPACE_ID }}"
@@ -59,7 +49,6 @@ jobs:
             sed -i "s/id = \"placeholder\"/id = \"$KV_ID\"/" wrangler.toml
             echo "✓ KV namespace ID injected"
           else
-            # Remove the entire [[kv_namespaces]] block so wrangler doesn't fail
             python3 - <<'PYEOF'
           import re, pathlib
           p = pathlib.Path("wrangler.toml")
@@ -87,7 +76,7 @@ jobs:
           fi
 
       - name: Deploy to Cloudflare Workers
-        run: pnpm deploy
+        run: npx wrangler deploy src/index.ts
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
