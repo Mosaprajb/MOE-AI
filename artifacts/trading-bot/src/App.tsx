@@ -265,7 +265,9 @@ export default function App() {
     () => (localStorage.getItem(LS_MODE) as TradingMode) ?? 'SANDBOX'
   );
   const [page, setPage]               = useState<Page>('dashboard');
-  const [killSwitch, setKillSwitch]   = useState(true); // default engaged
+  const [killSwitch, setKillSwitch]   = useState(
+    () => localStorage.getItem('moe-kill-switch') === 'true' // default disengaged
+  );
   const [connected, setConnected]     = useState(false);
   const [toast, setToast]             = useState<{ msg: string; type?: 'success' | 'error' } | null>(null);
 
@@ -308,7 +310,7 @@ export default function App() {
         mode={mode}
         onModeChange={handleModeChange}
         killSwitch={killSwitch}
-        onKillSwitch={setKillSwitch}
+        onKillSwitch={(v: boolean) => { setKillSwitch(v); localStorage.setItem('moe-kill-switch', String(v)); }}
         connected={connected}
         onLogout={handleLogout}
       />
