@@ -1,0 +1,15 @@
+<svg width="512" height="512" viewBox="0 0 512 512" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <rect width="512" height="512" rx="100" fill="#0D1117"/>
+  <rect x="40" y="40" width="432" height="432" rx="80" fill="#0D1117"/>
+  <!-- Chart bars -->
+  <rect x="80" y="300" width="60" height="140" rx="8" fill="#00C896" opacity="0.7"/>
+  <rect x="160" y="240" width="60" height="200" rx="8" fill="#00C896" opacity="0.85"/>
+  <rect x="240" y="180" width="60" height="260" rx="8" fill="#00C896"/>
+  <rect x="320" y="120" width="60" height="320" rx="8" fill="#00C896"/>
+  <!-- M letter overlay -->
+  <text x="256" y="290" font-family="Arial Black,Arial,sans-serif" font-weight="900" font-size="210" fill="white" opacity="0.12" text-anchor="middle">M</text>
+  <!-- Trend line -->
+  <polyline points="80,380 160,320 240,260 320,180 400,120" stroke="#FF6B35" stroke-width="12" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+  <!-- Dot at tip -->
+  <circle cx="400" cy="120" r="18" fill="#FF6B35"/>
+</svg>
