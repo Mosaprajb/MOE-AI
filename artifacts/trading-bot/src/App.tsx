@@ -3,6 +3,8 @@ import { useCallback, useEffect, useState } from 'react';
 import { API_BASE, LS_MODE } from './lib/config';
 import type { TradingMode } from './lib/config';
 import { isSessionValid, createSession, clearSession, hasPinSet, setPin, verifyPin } from './lib/auth';
+import { useMarketClock } from './hooks/useMarketClock';
+import type { MarketSession } from './hooks/useMarketClock';
 
 import DashboardPage from './pages/Dashboard';
 import PositionsPage from './pages/Positions';
@@ -89,6 +91,14 @@ function LoginScreen({ onAuth }: { onAuth: () => void }) {
   );
 }
 
+// ── Session colour map ────────────────────────────────────────────────────────
+const SESSION_STYLE: Record<MarketSession, { bg: string; color: string }> = {
+  'CORE':        { bg: 'rgba(34,197,94,.15)',  color: '#22c55e' },
+  'PRE-MARKET':  { bg: 'rgba(251,191,36,.15)', color: '#fbbf24' },
+  'AFTER-HOURS': { bg: 'rgba(251,191,36,.15)', color: '#fbbf24' },
+  'CLOSED':      { bg: 'rgba(100,116,139,.15)',color: '#64748b' },
+};
+
 // ── Top Bar ───────────────────────────────────────────────────────────────────
 function TopBar({
   mode, onModeChange, killSwitch, onKillSwitch, connected, onLogout,
@@ -101,6 +111,8 @@ function TopBar({
   onLogout: () => void;
 }) {
   const [confirmLive, setConfirmLive] = useState(false);
+  const clock = useMarketClock();
+  const sesStyle = SESSION_STYLE[clock.session];
 
   return (
     <header className="topbar">
@@ -113,6 +125,23 @@ function TopBar({
       </div>
 
       <div className="topbar-spacer" />
+
+      {/* ── Market Clock ── */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginRight: 4 }}>
+        <div style={{ textAlign: 'right', lineHeight: 1.3 }}>
+          <div style={{ fontFamily: 'monospace', fontSize: 13, fontWeight: 700, letterSpacing: '.03em', color: 'var(--fg)' }}>
+            {clock.timeET} <span style={{ fontSize: 10, color: 'var(--muted)', fontWeight: 400 }}>ET</span>
+          </div>
+          <div style={{ fontSize: 10, color: 'var(--muted)' }}>{clock.nextLabel}</div>
+        </div>
+        <div style={{
+          padding: '3px 9px', borderRadius: 6, fontSize: 11, fontWeight: 800,
+          letterSpacing: '.05em', background: sesStyle.bg, color: sesStyle.color,
+          border: `1px solid ${sesStyle.color}44`,
+        }}>
+          {clock.session}
+        </div>
+      </div>
 
       <div className="conn-pill">
         <span className={`conn-dot ${connected ? 'live' : 'error'}`} />

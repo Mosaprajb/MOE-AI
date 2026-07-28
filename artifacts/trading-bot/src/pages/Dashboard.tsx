@@ -1,6 +1,7 @@
 // MOE-AI Dashboard
 import { useMemo } from 'react';
 import { useDashboard, useDecisions } from '../hooks/useApi';
+import { useMarketClock } from '../hooks/useMarketClock';
 import type { TradingMode } from '../lib/config';
 import type { Position, Order, Decision } from '../lib/types';
 
@@ -25,6 +26,7 @@ interface Props { mode: TradingMode; showToast: (msg: string, type?: 'success'|'
 export default function DashboardPage({ mode }: Props) {
   const { data, loading, error, lastUpdated } = useDashboard(mode, 15_000);
   const { data: decisions } = useDecisions(15_000);
+  const clock = useMarketClock();
 
   const account   = data?.account   ?? {};
   const positions: Position[] = data?.positions ?? [];
