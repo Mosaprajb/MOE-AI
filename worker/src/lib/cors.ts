@@ -12,10 +12,12 @@ const DEFAULT_ORIGINS = new Set([
   'http://127.0.0.1:20883',
 ]);
 
-// Wildcard patterns: 'https://*.replit.dev' → matches any replit.dev subdomain
+// Wildcard patterns — match any depth of replit.dev / replit.app subdomains
+// e.g. foo.replit.dev, foo.janeway.replit.dev, etc.
 const DEFAULT_PATTERNS: RegExp[] = [
-  /^https:\/\/[^.]+\.replit\.dev$/,
-  /^https:\/\/[^.]+\.replit\.app$/,
+  /^https:\/\/.+\.replit\.dev$/,
+  /^https:\/\/.+\.replit\.app$/,
+  /^https:\/\/.+\.repl\.co$/,
 ];
 
 function isAllowed(origin: string | null, env: Env): boolean {
