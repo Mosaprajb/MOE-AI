@@ -138,8 +138,12 @@ export default function ScannerPage({ mode, showToast }: Props) {
   const scanIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const countdownRef    = useRef<ReturnType<typeof setInterval> | null>(null);
 
+  // Keep a stable ref so the interval always calls the latest version
+  const runScanRef = useRef(runScan);
+  useEffect(() => { runScanRef.current = runScan; }, [runScan]);
+
   const handleScan = async () => {
-    const result = await runScan();
+    const result = await runScanRef.current();
     showToast(
       result
         ? `✅ فحص مكتمل — ${result.candidates?.length ?? 0} مرشح، ${result.ordersPlaced} أوامر`
@@ -149,24 +153,39 @@ export default function ScannerPage({ mode, showToast }: Props) {
   };
 
   // Auto-scan: run immediately on mount, then every 5 minutes
-  const INTERVAL_MS = 5 * 60 * 1000; // 5 min
+  const INTERVAL_MS = 5 * 60 * 1000;
   useEffect(() => {
-    // Run immediately on page open
-    handleScan();
-    setNextScanIn(INTERVAL_MS / 1000);
+    let cancelled = false;
+
+    const doScan = async () => {
+      if (cancelled) return;
+      const result = await runScanRef.current();
+      if (cancelled) return;
+      showToast(
+        result
+          ? `✅ فحص مكتمل — ${result.candidates?.length ?? 0} مرشح، ${result.ordersPlaced} أوامر`
+          : '❌ فشل الفحص — تحقق من الاتصال',
+        result ? 'success' : 'error',
+      );
+      setNextScanIn(INTERVAL_MS / 1000);
+    };
+
+    // Run immediately
+    doScan();
 
     // Countdown ticker
+    setNextScanIn(INTERVAL_MS / 1000);
     countdownRef.current = setInterval(() => {
       setNextScanIn(prev => (prev <= 1 ? INTERVAL_MS / 1000 : prev - 1));
     }, 1000);
 
     // Auto-scan every 5 min
     scanIntervalRef.current = setInterval(() => {
-      handleScan();
-      setNextScanIn(INTERVAL_MS / 1000);
+      doScan();
     }, INTERVAL_MS);
 
     return () => {
+      cancelled = true;
       if (scanIntervalRef.current) clearInterval(scanIntervalRef.current);
       if (countdownRef.current)    clearInterval(countdownRef.current);
     };
@@ -235,7 +254,7 @@ export default function ScannerPage({ mode, showToast }: Props) {
           border: '1px solid rgba(96,165,250,.2)', borderRadius: 8, marginBottom: 16,
           display: 'flex', gap: 20, fontSize: 12 }}>
           <span>🔍 فُحص: <b>{lastResult.scanned}</b></span>
-          <span style={{ color: '#22c55e' }}>📊 مرشح: <b>{lastResult.candidates.length}</b></span>
+          <span style={{ color: '#22c55e' }}>📊 مرشح: <b>{lastResult.candidates?.length ?? 0}</b></span>
           <span style={{ color: '#a78bfa' }}>📋 أوامر: <b>{lastResult.ordersPlaced}</b></span>
           <span style={{ color: 'var(--muted)' }}>⏱ {lastResult.ms}ms</span>
         </div>
@@ -245,7 +264,7 @@ export default function ScannerPage({ mode, showToast }: Props) {
       <div style={{ display: 'flex', gap: 4, marginBottom: 16, borderBottom: '1px solid var(--border)', paddingBottom: 0 }}>
         {([
           { id: 'positions',  label: `صفقات مفتوحة (${positions.length})` },
-          { id: 'candidates', label: `المرشحون (${lastResult?.candidates.length ?? 0})` },
+          { id: 'candidates', label: `المرشحون (${lastResult?.candidates?.length ?? 0})` },
           { id: 'watchlist',  label: `قائمة الأسهم (${watchlist.length})` },
           { id: 'runs',       label: `سجل الفحص (${runs.length})` },
         ] as { id: typeof tab; label: string }[]).map(t => (
