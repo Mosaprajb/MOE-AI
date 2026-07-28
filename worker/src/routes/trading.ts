@@ -47,6 +47,27 @@ trading.get('/:mode/dashboard', async (c) => {
   const acct = account.status   === 'fulfilled' ? account.value   : {};
   const pos  = positions.status === 'fulfilled' ? positions.value : [];
   const ord  = orders.status    === 'fulfilled' ? orders.value    : [];
+
+  // ── Enrich positions with SL/TP from D1 ──────────────────────────────────
+  if (env.DB && pos.length > 0) {
+    try {
+      const syms = [...new Set(pos.map(p => p.symbol))];
+      const ph   = syms.map(() => '?').join(',');
+      const rows = await env.DB
+        .prepare(`SELECT symbol, stop, target FROM decisions WHERE symbol IN (${ph}) AND accepted = 1 AND mode = ? GROUP BY symbol HAVING created_at = MAX(created_at)`)
+        .bind(...syms, modeParam)
+        .all<{ symbol: string; stop: number | null; target: number | null }>();
+      const sltp = new Map(rows.results?.map(r => [r.symbol, r]) ?? []);
+      for (const p of pos) {
+        const d = sltp.get(p.symbol);
+        if (d) {
+          (p as Record<string,unknown>).stopLoss   = d.stop   ?? undefined;
+          (p as Record<string,unknown>).takeProfit = d.target ?? undefined;
+        }
+      }
+    } catch { /* D1 unavailable */ }
+  }
+
   const risk = await computeRiskState(env, modeParam, pos, (acct as { accountValue?: number }).accountValue ?? 0);
   const executionAllowed = !ks && !risk.locked;
 
@@ -87,8 +108,45 @@ trading.get('/:mode/positions', async (c) => {
   const mode   = (c.req.param('mode').toUpperCase() === 'LIVE' ? 'LIVE' : 'SANDBOX') as TradingMode;
   const client = WebullClient.fromEnv(c.env, mode);
   if (!client) return c.json({ data: [], error: `${mode} credentials not configured` }, 503);
-  try   { return c.json({ data: await client.getPositions() }); }
-  catch (e) { return c.json({ data: [], error: String(e) }, 502); }
+  try {
+    const positions = await client.getPositions();
+
+    // ── Enrich with SL/TP from D1 decisions ──────────────────────────────
+    // Webull API never returns stop-loss / take-profit; we stored them when
+    // the webhook executed the order, so look up the latest accepted decision
+    // per symbol and merge the values back.
+    if (c.env.DB && positions.length > 0) {
+      try {
+        const symbols  = [...new Set(positions.map(p => p.symbol))];
+        const placeholders = symbols.map(() => '?').join(',');
+        const rows = await c.env.DB
+          .prepare(
+            `SELECT symbol, stop, target
+               FROM decisions
+              WHERE symbol IN (${placeholders})
+                AND accepted = 1
+                AND mode     = ?
+              GROUP BY symbol
+              HAVING created_at = MAX(created_at)`
+          )
+          .bind(...symbols, mode)
+          .all<{ symbol: string; stop: number | null; target: number | null }>();
+
+        const map = new Map<string, { stop: number | null; target: number | null }>();
+        for (const r of rows.results ?? []) map.set(r.symbol, r);
+
+        for (const pos of positions) {
+          const d = map.get(pos.symbol);
+          if (d) {
+            (pos as Record<string, unknown>).stopLoss   = d.stop   ?? undefined;
+            (pos as Record<string, unknown>).takeProfit = d.target ?? undefined;
+          }
+        }
+      } catch { /* D1 not available — continue without SL/TP */ }
+    }
+
+    return c.json({ data: positions });
+  } catch (e) { return c.json({ data: [], error: String(e) }, 502); }
 });
 
 trading.get('/:mode/orders', async (c) => {
