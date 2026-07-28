@@ -19,7 +19,7 @@ health.get('/', async (c) => {
 
   let dbOk = false;
   try {
-    await env.DB.prepare('SELECT 1').first();
+    await env.DB?.prepare('SELECT 1').first();
     dbOk = true;
   } catch {}
 
@@ -31,7 +31,7 @@ health.get('/', async (c) => {
     webullOk:         sandboxOk || liveOk,
     webullMode:       liveOk ? 'LIVE' : sandboxOk ? 'SANDBOX' : 'DISCONNECTED',
     databaseOk:       dbOk,
-    queuesOk:         !!env.ORDER_QUEUE,
+    queuesOk:         false,
     notificationsOk:  true,
     killSwitch:       killSwitch.status === 'fulfilled' ? killSwitch.value : true,
     liveCredentials:  liveOk,

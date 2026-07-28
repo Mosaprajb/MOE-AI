@@ -1,12 +1,10 @@
 // MOE-AI Cloudflare Worker — Type Definitions
 
 export interface Env {
-  // KV
-  CONFIG: KVNamespace;
-  // D1
-  DB: D1Database;
-  // Queues
-  ORDER_QUEUE?: Queue;
+  // KV (optional until namespace is created)
+  CONFIG?: KVNamespace;
+  // D1 (optional until database is created)
+  DB?: D1Database;
   // Secrets
   WEBULL_LIVE_APP_KEY?:       string;
   WEBULL_LIVE_APP_SECRET?:    string;

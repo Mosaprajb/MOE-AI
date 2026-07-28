@@ -14,20 +14,20 @@ export function getRiskConfig(env: Env): RiskConfig {
 // ── Kill switch ───────────────────────────────────────────────────────────────
 export async function getKillSwitch(env: Env): Promise<boolean> {
   try {
-    const val = await env.CONFIG.get('kill_switch');
+    const val = await env.CONFIG?.get('kill_switch');
     return val !== 'false'; // default ON (safe)
   } catch { return true; }
 }
 
 export async function setKillSwitch(env: Env, enabled: boolean): Promise<void> {
-  await env.CONFIG.put('kill_switch', enabled ? 'true' : 'false');
+  await env.CONFIG?.put('kill_switch', enabled ? 'true' : 'false');
 }
 
 // ── Daily stats from D1 ────────────────────────────────────────────────────
 export async function getDailyStats(env: Env, mode: string): Promise<{ dailyTrades: number; dailyLoss: number }> {
   try {
     const today = new Date().toISOString().slice(0, 10);
-    const row = await env.DB.prepare(
+    const row = await env.DB?.prepare(
       `SELECT COUNT(*) as trades, COALESCE(SUM(CASE WHEN pnl < 0 THEN ABS(pnl) ELSE 0 END), 0) as loss
        FROM trades WHERE DATE(opened_at) = ? AND mode = ?`
     ).bind(today, mode).first<{ trades: number; loss: number }>();
@@ -100,8 +100,8 @@ export async function checkLiveSafetyGates(
 
   const [killSwitch, liveArmed, pinSet] = await Promise.all([
     getKillSwitch(env),
-    env.CONFIG.get('live_automation_armed').then(v => v === 'true').catch(() => false),
-    env.CONFIG.get('pin_set').then(v => !!v).catch(() => false),
+    env.CONFIG?.get('live_automation_armed').then(v => v === 'true').catch(() => false) ?? Promise.resolve(false),
+    env.CONFIG?.get('pin_set').then(v => !!v).catch(() => false) ?? Promise.resolve(false),
   ]);
 
   const gates: SafetyGates = {

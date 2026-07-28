@@ -47,6 +47,23 @@ jobs:
           cache: pnpm
           cache-dependency-path: worker/pnpm-lock.yaml
       - run: pnpm install --frozen-lockfile
+
+      # Substitute real KV / D1 IDs if the GitHub Secrets are set
+      - name: Inject KV and D1 IDs
+        run: |
+          if [ -n "${{ secrets.KV_NAMESPACE_ID }}" ]; then
+            sed -i 's/id = "placeholder"/id = "${{ secrets.KV_NAMESPACE_ID }}"/' wrangler.toml
+            echo "✓ KV namespace ID injected"
+          else
+            echo "⚠ KV_NAMESPACE_ID secret not set — using placeholder (Worker will run without KV)"
+          fi
+          if [ -n "${{ secrets.D1_DATABASE_ID }}" ]; then
+            sed -i "0,/database_id = \"placeholder\"/s/database_id = \"placeholder\"/database_id = \"${{ secrets.D1_DATABASE_ID }}\"/" wrangler.toml
+            echo "✓ D1 database ID injected"
+          else
+            echo "⚠ D1_DATABASE_ID secret not set — using placeholder (Worker will run without D1)"
+          fi
+
       - name: Deploy to Cloudflare Workers
         run: pnpm deploy
         env:

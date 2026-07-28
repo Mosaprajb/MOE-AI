@@ -38,7 +38,7 @@ webhook.post('/webhook', async (c) => {
   let dailyTrades = 0;
   try {
     const today = new Date().toISOString().slice(0, 10);
-    const row = await env.DB.prepare(
+    const row = await env.DB?.prepare(
       `SELECT COUNT(*) as cnt FROM decisions WHERE DATE(created_at) = ? AND accepted = 1 AND mode = ?`
     ).bind(today, mode).first<{ cnt: number }>();
     dailyTrades = row?.cnt ?? 0;
@@ -69,7 +69,7 @@ webhook.post('/webhook', async (c) => {
 
   // ── Persist to D1 ────────────────────────────────────────────────────
   try {
-    await env.DB.prepare(`
+    await env.DB?.prepare(`
       INSERT INTO decisions (signal_id, symbol, side, signal, score, entry, stop, target,
         accepted, submitted, reject_reason, reasons, mode, created_at)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -89,7 +89,7 @@ webhook.post('/webhook', async (c) => {
 
   // ── Log alert ────────────────────────────────────────────────────────
   try {
-    await env.DB.prepare(
+    await env.DB?.prepare(
       `INSERT INTO alerts (type, symbol, message, price, mode) VALUES (?, ?, ?, ?, ?)`
     ).bind(
       accepted ? 'BUY' : 'SYSTEM',
@@ -115,11 +115,11 @@ webhook.get('/decisions', async (c) => {
     const query = mode
       ? `SELECT * FROM decisions WHERE mode = ? ORDER BY created_at DESC LIMIT ?`
       : `SELECT * FROM decisions ORDER BY created_at DESC LIMIT ?`;
-    const { results } = mode
-      ? await env.DB.prepare(query).bind(mode, limit).all<Record<string, unknown>>()
-      : await env.DB.prepare(query).bind(limit).all<Record<string, unknown>>();
+    const dbResult = mode
+      ? await env.DB?.prepare(query).bind(mode, limit).all<Record<string, unknown>>()
+      : await env.DB?.prepare(query).bind(limit).all<Record<string, unknown>>();
 
-    const decisions = (results ?? []).map(r => ({
+    const decisions = (dbResult?.results ?? []).map((r: Record<string, unknown>) => ({
       signalId:     r.signal_id,
       symbol:       r.symbol,
       side:         r.side,

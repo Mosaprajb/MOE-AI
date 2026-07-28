@@ -3,32 +3,26 @@ main = "src/index.ts"
 compatibility_date = "2024-11-01"
 compatibility_flags = ["nodejs_compat"]
 
-# KV Namespaces
+# KV Namespace — ID injected by GitHub Actions from secret KV_NAMESPACE_ID
+# Run: wrangler kv namespace create "CONFIG"  → paste the ID as GitHub Secret
 [[kv_namespaces]]
 binding = "CONFIG"
-id = "REPLACE_WITH_KV_NAMESPACE_ID"
+id = "placeholder"
 
-# D1 Database
+# D1 Database — ID injected by GitHub Actions from secret D1_DATABASE_ID
+# Run: wrangler d1 create moe-db  → paste the ID as GitHub Secret
 [[d1_databases]]
 binding = "DB"
 database_name = "moe-db"
-database_id = "REPLACE_WITH_D1_DATABASE_ID"
+database_id = "placeholder"
 
-# Queues (for async order processing)
-[[queues.producers]]
-queue = "moe-orders"
-binding = "ORDER_QUEUE"
-
-[[queues.consumers]]
-queue = "moe-orders"
-max_batch_size = 5
-max_batch_timeout = 10
+# NOTE: Queues removed — requires Cloudflare Workers Paid plan ($5/mo)
+# Add back once you upgrade: [[queues.producers]] / [[queues.consumers]]
 
 # Secrets (set via: wrangler secret put <NAME>)
 # WEBULL_LIVE_APP_KEY
 # WEBULL_LIVE_APP_SECRET
 # WEBULL_LIVE_ACCESS_TOKEN
-# WEBULL_LIVE_REFRESH_TOKEN
 # WEBULL_LIVE_ACCOUNT_ID
 # WEBULL_SANDBOX_APP_KEY
 # WEBULL_SANDBOX_APP_SECRET
@@ -54,9 +48,9 @@ vars = { WORKER_VERSION = "2.0.0", ENV = "sandbox" }
 
 [[env.sandbox.kv_namespaces]]
 binding = "CONFIG"
-id = "REPLACE_WITH_SANDBOX_KV_ID"
+id = "placeholder"
 
 [[env.sandbox.d1_databases]]
 binding = "DB"
 database_name = "moe-db-sandbox"
-database_id = "REPLACE_WITH_SANDBOX_D1_ID"
+database_id = "placeholder"

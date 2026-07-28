@@ -151,7 +151,7 @@ trading.post('/orders', async (c) => {
 
   // Check idempotency
   try {
-    const existing = await env.DB.prepare('SELECT id FROM orders WHERE idempotency_key = ?')
+    const existing = await env.DB?.prepare('SELECT id FROM orders WHERE idempotency_key = ?')
       .bind(body.idempotencyKey).first<{ id: string }>();
     if (existing) return c.json({ orderId: existing.id, status: 'ALREADY_SUBMITTED' });
   } catch {}
@@ -168,7 +168,7 @@ trading.post('/orders', async (c) => {
     });
 
     // Persist to D1
-    await env.DB.prepare(
+    await env.DB?.prepare(
       `INSERT OR IGNORE INTO orders (webull_id, symbol, side, type, quantity, price, stop_price, status, mode, idempotency_key)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     ).bind(result.orderId, body.symbol, body.side, body.type, body.quantity,
@@ -189,11 +189,11 @@ trading.get('/trades', async (c) => {
     const query = mode
       ? `SELECT * FROM trades WHERE mode = ? ORDER BY opened_at DESC LIMIT ?`
       : `SELECT * FROM trades ORDER BY opened_at DESC LIMIT ?`;
-    const { results } = mode
-      ? await env.DB.prepare(query).bind(mode, limit).all<Record<string, unknown>>()
-      : await env.DB.prepare(query).bind(limit).all<Record<string, unknown>>();
+    const dbResult = mode
+      ? await env.DB?.prepare(query).bind(mode, limit).all<Record<string, unknown>>()
+      : await env.DB?.prepare(query).bind(limit).all<Record<string, unknown>>();
 
-    const trades = (results ?? []).map(r => ({
+    const trades = (dbResult?.results ?? []).map((r: Record<string, unknown>) => ({
       id:         r.id,
       symbol:     r.symbol,
       side:       r.side,
