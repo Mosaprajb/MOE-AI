@@ -66,18 +66,24 @@ img,svg { display:block; }
   display:flex;
   flex-direction:column;
   min-height:100vh;
+  min-height:100dvh; /* dynamic viewport — accounts for browser chrome */
 }
 
 .topbar {
   position:sticky; top:0; z-index:100;
-  background:rgba(7,16,24,.92);
-  backdrop-filter:blur(16px);
-  -webkit-backdrop-filter:blur(16px);
+  background:rgba(7,16,24,.96);
+  backdrop-filter:blur(20px);
+  -webkit-backdrop-filter:blur(20px);
   border-bottom:1px solid var(--border);
-  padding:0 20px;
-  height:60px;
+  /* safe-area-inset-top pushes content below Dynamic Island / notch */
+  padding-top:max(env(safe-area-inset-top), 0px);
+  padding-left:max(env(safe-area-inset-left), 20px);
+  padding-right:max(env(safe-area-inset-right), 20px);
+  padding-bottom:0;
+  min-height:calc(env(safe-area-inset-top) + 60px);
   display:flex;
-  align-items:center;
+  align-items:flex-end; /* items sit in the 60px zone below the notch */
+  padding-bottom:10px;
   gap:14px;
 }
 
@@ -155,8 +161,8 @@ img,svg { display:block; }
   border-right:1px solid var(--border);
   padding:12px 8px;
   display:flex; flex-direction:column; gap:4px;
-  position:sticky; top:60px;
-  height:calc(100vh - 60px);
+  position:sticky; top:calc(env(safe-area-inset-top) + 60px);
+  height:calc(100dvh - env(safe-area-inset-top) - 60px);
   overflow-y:auto;
 }
 
@@ -592,8 +598,16 @@ tr:hover td { background:rgba(255,255,255,.02); }
   .grid-3       { grid-template-columns:1fr 1fr; }
 }
 @media(max-width:640px) {
-  /* ── Topbar: hide non-essentials, keep controls usable ── */
-  .topbar                { height:50px; padding:0 10px; gap:6px; }
+  /* ── Topbar: preserve safe-area, hide non-essentials ── */
+  .topbar {
+    /* do NOT override padding-top — safe-area-inset-top must stay */
+    padding-left:  max(env(safe-area-inset-left),  10px);
+    padding-right: max(env(safe-area-inset-right), 10px);
+    padding-bottom: 8px;
+    gap:6px;
+    /* height becomes: safe-area-top + 50px visible bar */
+    min-height: calc(env(safe-area-inset-top) + 50px);
+  }
   .brand-sub             { display:none; }
   .brand-name            { font-size:14px; }
   .logo                  { width:30px; height:30px; font-size:14px; border-radius:8px; }
@@ -605,8 +619,13 @@ tr:hover td { background:rgba(255,255,255,.02); }
   .kill-switch-btn       { padding:5px 9px; font-size:11px; }
   .topbar-logout         { display:none !important; }
 
-  /* ── Content — keep normal readable sizes ── */
-  .main-content  { padding:14px 12px 82px; }
+  /* ── Content: account for topbar height (safe-area + 50px) + bottom nav ── */
+  .main-content {
+    padding-top:   14px;
+    padding-left:  12px;
+    padding-right: 12px;
+    padding-bottom: calc(max(env(safe-area-inset-bottom), 10px) + 72px);
+  }
   .page-title    { font-size:19px; }
   .page-header   { margin-bottom:12px; }
 
