@@ -75,28 +75,25 @@ function SetupTab({ showToast }: { showToast: Props['showToast'] }) {
   const handleTest = async () => {
     setTesting(true);
     try {
-      const res = await fetch(`${API_BASE}/api/tradingview/webhook`, {
-        method: 'POST', mode: 'cors',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ symbol: testSym.toUpperCase(), action: testAction, qty: 1 }),
+      // This is deliberately a read-only health check. Never call the trading
+      // webhook from the dashboard test button, because that could place an
+      // order. The indicator's one-time test is the real webhook test.
+      const res = await fetch(`${API_BASE}/api/health`, {
+        method: 'GET', mode: 'cors', cache: 'no-store',
       });
       const d = await res.json() as {
-        accepted?: boolean;
-        reason?: string;
+        ok?: boolean;
+        webullMode?: string;
+        tradingMode?: string;
         error?: string;
         message?: string;
-        signalId?: string;
       };
-      const failureReason =
-        d.reason ??
-        d.error ??
-        d.message ??
-        `Worker returned HTTP ${res.status}`;
+      const failureReason = d.error ?? d.message ?? `Worker returned HTTP ${res.status}`;
       showToast(
-        res.ok && d.accepted
-          ? `✅ Signal accepted — ${testSym} ${testAction.toUpperCase()} (ID: ${d.signalId?.slice(-8)})`
+        res.ok && d.ok
+          ? `✅ Worker online — ${d.webullMode ?? d.tradingMode ?? 'ready'}`
           : `⚠ Signal rejected — ${failureReason}`,
-        res.ok && d.accepted ? 'success' : 'error',
+        res.ok && d.ok ? 'success' : 'error',
       );
     } catch { showToast('❌ Could not reach worker', 'error'); }
     setTesting(false);
@@ -185,9 +182,9 @@ function SetupTab({ showToast }: { showToast: Props['showToast'] }) {
             <option value="sell">SELL</option>
           </select>
           <button className="btn btn-primary btn-sm" onClick={handleTest} disabled={testing || !testSym}>
-            {testing ? '⏳ Sending…' : '🚀 Send Signal'}
+            {testing ? '⏳ Checking…' : '🔌 Check Worker'}
           </button>
-          <span style={{ fontSize: 11, color: 'var(--muted)' }}>qty = 1 share (test mode)</span>
+          <span style={{ fontSize: 11, color: 'var(--muted)' }}>safe check — does not place an order</span>
         </div>
       </div>
     </div>

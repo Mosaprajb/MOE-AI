@@ -39,11 +39,21 @@ webhook.post('/webhook', async (c) => {
   }
 
   if (!payload.symbol) return c.json({ error: 'Missing field: symbol' }, 400);
-  if (!payload.action || !['buy', 'sell', 'close'].includes(payload.action))
-    return c.json({ error: 'Invalid action — must be: buy | sell | close' }, 400);
+
+  // Accept both the dashboard format (action/price/stop/target) and the
+  // MOERAND TradingView indicator format (side/orderType/limitPrice/stopLoss/takeProfit).
+  const action = payload.action
+    ?? (payload.side === 'BUY' ? 'buy' : payload.side === 'SELL' ? 'sell' : undefined);
+  if (!action || !['buy', 'sell', 'close'].includes(action))
+    return c.json({ error: 'Invalid signal — expected action or side BUY/SELL' }, 400);
 
   const symbol   = payload.symbol.toUpperCase().replace(/[^A-Z0-9.-]/g, '');
-  const signalId = `tv-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const signalId = payload.signalId
+    ? `tv-${payload.signalId.slice(0, 180)}`
+    : `tv-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const orderPrice = payload.price ?? payload.entry ?? payload.limitPrice;
+  const stopPrice  = payload.stop ?? payload.stopLoss;
+  const targetPrice = payload.target ?? payload.takeProfit;
 
   // ── Kill switch ──────────────────────────────────────────────────────────
   const killSwitch = await getKillSwitch(env);
@@ -68,8 +78,8 @@ webhook.post('/webhook', async (c) => {
   }
 
   // ── Build order ──────────────────────────────────────────────────────────
-  const side = (payload.action === 'buy' ? 'BUY' : 'SELL') as 'BUY' | 'SELL';
-  const type = ((payload.type ?? 'MARKET') as string).toUpperCase() as 'MARKET' | 'LIMIT';
+  const side = (action === 'buy' ? 'BUY' : 'SELL') as 'BUY' | 'SELL';
+  const type = ((payload.type ?? payload.orderType ?? 'MARKET') as string).toUpperCase() as 'MARKET' | 'LIMIT';
 
   // ── Smart position sizing ─────────────────────────────────────────────────
   // If qty is explicitly provided in the alert → honour it (manual override).
@@ -79,7 +89,7 @@ webhook.post('/webhook', async (c) => {
     qty = Math.max(1, Math.round(Number(payload.qty)));
     console.log(`[Webhook] qty from alert: ${qty}`);
   } else {
-    const price = Number(payload.price ?? payload.entry ?? 0);
+    const price = Number(orderPrice ?? 0);
     const riskPct = Math.max(0.1, Math.min(50, Number(env.RISK_PCT ?? '5'))) / 100;
     if (price > 0) {
       try {
@@ -105,8 +115,8 @@ webhook.post('/webhook', async (c) => {
   try {
     const result = await client.placeOrder({
       symbol, side, type, qty,
-      price: payload.price ?? payload.entry,
-      stop:  payload.stop,
+       price: orderPrice,
+       stop:  stopPrice,
       idempotencyKey: signalId,
     });
     orderId     = result.orderId;
@@ -123,9 +133,9 @@ webhook.post('/webhook', async (c) => {
   const decision: Decision = {
     signalId, symbol, side,
     signal:       side === 'BUY' ? 'BUY NOW' : 'SELL NOW',
-    entry:        payload.entry ?? payload.price,
-    stop:         payload.stop,
-    target:       payload.target,
+    entry:        orderPrice,
+    stop:         stopPrice,
+    target:       targetPrice,
     accepted,
     submitted:    accepted,
     rejectReason: execError || undefined,

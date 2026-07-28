@@ -195,14 +195,25 @@ export interface SafetyGates {
 export interface TVWebhookPayload {
   secret?:    string;
   symbol:     string;
-  action:     'buy' | 'sell' | 'close' | 'alert';
+  // Legacy dashboard format
+  action?:    'buy' | 'sell' | 'close' | 'alert';
+  // MOERAND TradingView indicator format
+  side?:      'BUY' | 'SELL';
+  orderType?: string;
   qty?:       number;   // shares to trade
   type?:      string;   // MARKET | LIMIT (default MARKET)
   price?:     number;
   entry?:     number;
+  limitPrice?: number;
   stop?:      number;
+  stopLoss?:  number;
   target?:    number;
+  takeProfit?: number;
   signal?:    string;
+  signalId?:  string;
+  session?:   string;
+  submitSandbox?: boolean;
+  riskPercent?: number;
   score?:     number;
   timeframe?: string;
   strategy?:  string;
