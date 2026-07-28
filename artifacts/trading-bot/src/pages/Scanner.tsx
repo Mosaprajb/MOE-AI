@@ -579,39 +579,22 @@ function WatchlistTab({
   );
 }
 
-// ── Demo position factory ─────────────────────────────────────────────────────
-const DEMO_STOCKS = [
-  { symbol:'NVDA', entry:127.45, price:129.23, highest:130.10, score:8, confidence:'HIGH'  as const },
-  { symbol:'AAPL', entry:211.80, price:212.94, highest:213.50, score:7, confidence:'HIGH'  as const },
-  { symbol:'TSLA', entry: 52.30, price: 53.86, highest: 54.20, score:6, confidence:'MEDIUM' as const },
-  { symbol:'AMD',  entry: 98.12, price: 97.40, highest: 99.80, score:5, confidence:'MEDIUM' as const },
-];
-let _demoIdx = 0;
-function makeDemoPosition(mode: string): ScannerPosition {
-  const d = DEMO_STOCKS[_demoIdx % DEMO_STOCKS.length];
-  _demoIdx++;
-  const tpPct = 1.5; const trailPct = 1.0;
-  return {
-    id:           `demo-${Date.now()}`,
-    symbol:       d.symbol,
-    quantity:     10,
-    entryPrice:   d.entry,
-    currentPrice: d.price,
-    highestPrice: d.highest,
-    stopLoss:     d.highest * (1 - trailPct / 100),
-    takeProfit:   d.entry   * (1 + tpPct    / 100),
-    hardStop:     d.entry   * (1 - 1.5      / 100),
-    trailPct,
-    tpPct,
-    confidence: d.confidence,
-    score:      d.score,
-    status:     'OPEN',
-    mode,
-    openedAt:   new Date().toISOString(),
-    updatedAt:  new Date().toISOString(),
-    _demo: true,
-  } as ScannerPosition & { _demo: boolean };
-}
+// ── Static sample positions (shown automatically when scanner has no real trades) ──
+type DemoPos = ScannerPosition & { _demo: true };
+const SAMPLE_POSITIONS: DemoPos[] = [
+  { id:'s1', symbol:'NVDA', quantity:10, entryPrice:127.45, currentPrice:129.23, highestPrice:130.10,
+    stopLoss:128.80, takeProfit:129.36, hardStop:125.54, trailPct:1.0, tpPct:1.5,
+    confidence:'HIGH',  score:8, status:'OPEN', mode:'SANDBOX',
+    openedAt:'2025-07-28T09:31:00Z', updatedAt:'2025-07-28T10:15:00Z', _demo:true },
+  { id:'s2', symbol:'AAPL', quantity:5,  entryPrice:211.80, currentPrice:213.45, highestPrice:213.80,
+    stopLoss:211.62, takeProfit:214.97, hardStop:208.62, trailPct:1.0, tpPct:1.5,
+    confidence:'HIGH',  score:7, status:'OPEN', mode:'SANDBOX',
+    openedAt:'2025-07-28T09:45:00Z', updatedAt:'2025-07-28T10:15:00Z', _demo:true },
+  { id:'s3', symbol:'AMD',  quantity:20, entryPrice: 98.12, currentPrice: 97.40, highestPrice: 99.80,
+    stopLoss: 98.81, takeProfit: 99.59, hardStop: 96.64, trailPct:1.0, tpPct:1.5,
+    confidence:'MEDIUM', score:5, status:'OPEN', mode:'SANDBOX',
+    openedAt:'2025-07-28T10:02:00Z', updatedAt:'2025-07-28T10:15:00Z', _demo:true },
+] as unknown as DemoPos[];
 
 // ── Main Page ─────────────────────────────────────────────────────────────────
 export default function ScannerPage({ mode, showToast }: Props) {
@@ -620,7 +603,6 @@ export default function ScannerPage({ mode, showToast }: Props) {
     watchlist, scanning, loading, error, runScan, loadQuotes, updateWatchlist,
   } = useScanner(mode);
 
-  const [demoPositions, setDemoPositions] = useState<(ScannerPosition & { _demo?: boolean })[]>([]);
   const [tab,        setTab]        = useState<'market' | 'positions' | 'candidates' | 'history' | 'watchlist' | 'runs'>('market');
   const [nextScanIn, setNextScanIn] = useState(0);
   const scanIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -774,31 +756,29 @@ export default function ScannerPage({ mode, showToast }: Props) {
 
       {tab === 'market'     && <MarketGrid quotes={quotes} watchlist={watchlist} scanning={scanning}
         candidates={candidates} onRefresh={loadQuotes} quotesAt={quotesAt} />}
-      {tab === 'positions'  && (
-        <div>
-          {/* Demo trade toolbar */}
-          <div style={{ display:'flex', gap:8, marginBottom:12, flexWrap:'wrap', alignItems:'center' }}>
-            <button
-              className="btn btn-ghost btn-sm"
-              onClick={() => { setDemoPositions(p => [...p, makeDemoPosition(mode)]); showToast('🎭 Demo position added', 'success'); }}
-              style={{ borderColor:'rgba(251,191,36,.4)', color:'#fbbf24' }}>
-              🎭 Add Demo Trade
-            </button>
-            {demoPositions.length > 0 && (
-              <button
-                className="btn btn-ghost btn-sm"
-                onClick={() => { setDemoPositions([]); showToast('Demo positions cleared', 'success'); }}
-                style={{ borderColor:'rgba(255,105,115,.3)', color:'var(--red)', fontSize:11 }}>
-                ✕ Clear Demo ({demoPositions.length})
-              </button>
+      {tab === 'positions'  && (() => {
+        const isDemo    = positions.length === 0;
+        const displayed = isDemo ? SAMPLE_POSITIONS : positions as typeof SAMPLE_POSITIONS;
+        return (
+          <div>
+            {isDemo && (
+              <div style={{ padding:'8px 14px', marginBottom:12, borderRadius:8,
+                background:'rgba(251,191,36,.07)', border:'1px solid rgba(251,191,36,.2)',
+                fontSize:12, color:'#fbbf24', display:'flex', gap:8, alignItems:'center' }}>
+                <span>📋</span>
+                <span>
+                  <b>No open trades yet.</b>{' '}
+                  <span style={{ color:'var(--muted)' }}>
+                    Sample positions shown below. Real trades appear once the scanner finds
+                    signals and Webull credentials are configured.
+                  </span>
+                </span>
+              </div>
             )}
-            <span style={{ fontSize:11, color:'var(--muted)' }}>
-              {demoPositions.length > 0 ? 'Demo positions are local only — not real orders' : 'Add a demo trade to preview how positions look'}
-            </span>
+            <PositionsTable positions={displayed} />
           </div>
-          <PositionsTable positions={[...demoPositions, ...positions]} />
-        </div>
-      )}
+        );
+      })()}
       {tab === 'candidates' && <CandidatesTable candidates={candidates} />}
       {tab === 'history'    && <HistoryTable history={history} />}
       {tab === 'watchlist'  && <WatchlistTab watchlist={watchlist}

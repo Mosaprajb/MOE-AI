@@ -550,22 +550,24 @@ tr:hover td { background:rgba(255,255,255,.02); }
 .bottom-nav {
   display:none;
   position:fixed; bottom:0; left:0; right:0;
-  background:rgba(14,24,34,.97); backdrop-filter:blur(16px);
-  border-top:1px solid var(--border);
-  padding:4px 0 calc(env(safe-area-inset-bottom) + 4px);
-  z-index:100;
+  background:#0a1520;
+  border-top:2px solid var(--border-2);
+  padding:5px 0 calc(env(safe-area-inset-bottom) + 5px);
+  z-index:200;
 }
 .bottom-nav-items {
   display:grid; grid-template-columns:repeat(7,1fr);
 }
 .bottom-nav-item {
-  display:flex; flex-direction:column; align-items:center; gap:2px;
-  border:0; background:transparent; color:var(--dim);
-  padding:4px 2px; font-size:9px; font-weight:600;
+  display:flex; flex-direction:column; align-items:center; gap:3px;
+  border:0; background:transparent; color:var(--muted);
+  padding:6px 2px; font-size:11px; font-weight:600;
   cursor:pointer; transition:color .15s;
+  min-height:54px; justify-content:center;
 }
-.bottom-nav-item .nav-icon { font-size:18px; }
+.bottom-nav-item .nav-icon { font-size:22px; line-height:1; }
 .bottom-nav-item.active { color:var(--green); }
+.bottom-nav-item.active .nav-icon { filter:drop-shadow(0 0 4px var(--green)); }
 
 /* ─── Responsive ─── */
 @media(max-width:1100px) {
@@ -581,44 +583,34 @@ tr:hover td { background:rgba(255,255,255,.02); }
   .grid-3       { grid-template-columns:1fr 1fr; }
 }
 @media(max-width:640px) {
-  /* ── Topbar compact ── */
-  .topbar                { height:46px; padding:0 8px; gap:5px; }
+  /* ── Topbar: hide non-essentials, keep controls usable ── */
+  .topbar                { height:50px; padding:0 10px; gap:6px; }
   .brand-sub             { display:none; }
-  .brand-name            { font-size:13px; }
-  .logo                  { width:28px; height:28px; font-size:13px; border-radius:8px; }
+  .brand-name            { font-size:14px; }
+  .logo                  { width:30px; height:30px; font-size:14px; border-radius:8px; }
   .topbar-clock          { display:none !important; }
   .topbar-session-badge  { display:flex !important; }
   .topbar-conn-text      { display:none; }
-  .conn-pill             { padding:3px 6px; gap:4px; }
-  .mode-switch button    { padding:4px 7px; font-size:10px; }
-  .kill-switch-btn       { padding:4px 7px; font-size:10px; }
+  .conn-pill             { padding:4px 7px; gap:4px; }
+  .mode-switch button    { padding:5px 9px; font-size:11px; }
+  .kill-switch-btn       { padding:5px 9px; font-size:11px; }
   .topbar-logout         { display:none !important; }
 
-  /* ── Content ── */
-  .main-content  { padding:10px 10px 72px; }
-  .page-title    { font-size:17px; }
-  .page-header   { margin-bottom:10px; }
+  /* ── Content — keep normal readable sizes ── */
+  .main-content  { padding:14px 12px 82px; }
+  .page-title    { font-size:19px; }
+  .page-header   { margin-bottom:12px; }
 
   /* ── Metrics ── */
   .metric-card   { padding:10px 12px; }
-  .metric-label  { font-size:9px; margin-bottom:3px; }
-  .metric-value  { font-size:20px; }
-  .metric-change { font-size:10px; margin-top:3px; }
+  .metric-label  { font-size:10px; }
+  .metric-value  { font-size:22px; }
 
   /* ── Cards ── */
-  .card    { padding:10px; border-radius:10px; }
-  .card-sm { padding:8px; }
-
-  /* ── Tables ── */
-  td { padding:8px 8px; font-size:12px; }
-  th { padding:7px 8px; font-size:10px; }
-
-  /* ── Buttons ── */
-  .btn    { padding:7px 11px; font-size:12px; }
-  .btn-sm { padding:5px 8px;  font-size:11px; }
+  .card    { padding:12px; }
 
   /* ── Grids ── */
-  .gauge-grid               { grid-template-columns:repeat(2,1fr); gap:8px; }
+  .gauge-grid               { grid-template-columns:repeat(2,1fr); gap:10px; }
   .grid-4,.grid-3,.grid-2   { grid-template-columns:1fr; }
   .scanner-row              { grid-template-columns:24px 1fr 60px 28px; }
 }
