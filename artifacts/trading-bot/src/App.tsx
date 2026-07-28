@@ -1,33 +1,30 @@
 // MOE-AI Personal Trading Platform — App Shell
 import { useCallback, useEffect, useState } from 'react';
-import { LS_MODE } from './lib/config';
+import { API_BASE, LS_MODE } from './lib/config';
 import type { TradingMode } from './lib/config';
 import { isSessionValid, createSession, clearSession, hasPinSet, setPin, verifyPin } from './lib/auth';
 
-// ── Pages (lazy imports for now, inline components) ──────────────────────────
-import DashboardPage  from './pages/Dashboard';
-import ScannerPage    from './pages/Scanner';
-import PositionsPage  from './pages/Positions';
-import OrdersPage     from './pages/Orders';
-import RiskPage       from './pages/Risk';
-import SettingsPage   from './pages/Settings';
-import TradesPage     from './pages/Trades';
-import SystemPage     from './pages/System';
+import DashboardPage from './pages/Dashboard';
+import PositionsPage from './pages/Positions';
+import OrdersPage    from './pages/Orders';
+import TradesPage    from './pages/Trades';
+import SystemPage    from './pages/System';
+import SettingsPage  from './pages/Settings';
 
-type Page = 'dashboard' | 'scanner' | 'positions' | 'orders' | 'risk' | 'settings' | 'trades' | 'system';
+type Page = 'dashboard' | 'positions' | 'orders' | 'trades' | 'system' | 'settings';
 
-const NAV_ITEMS: { id: Page; icon: string; label: string }[] = [
-  { id: 'dashboard',  icon: '⬡',  label: 'لوحة القيادة' },
-  { id: 'scanner',    icon: '⌕',  label: 'الماسح'       },
-  { id: 'positions',  icon: '◈',  label: 'الصفقات'      },
-  { id: 'orders',     icon: '≡',  label: 'الأوامر'      },
-  { id: 'risk',       icon: '⚠',  label: 'إدارة المخاطر' },
-  { id: 'trades',     icon: '⟳',  label: 'السجل'        },
-  { id: 'system',     icon: '◎',  label: 'حالة النظام'  },
-  { id: 'settings',   icon: '⚙',  label: 'الإعدادات'   },
+const NAV_TRADING: { id: Page; icon: string; label: string }[] = [
+  { id: 'dashboard', icon: '⬡', label: 'Dashboard'  },
+  { id: 'positions', icon: '◈', label: 'Positions'  },
+  { id: 'orders',    icon: '≡', label: 'Orders'     },
+  { id: 'trades',    icon: '⟳', label: 'History'    },
+];
+const NAV_SYSTEM: { id: Page; icon: string; label: string }[] = [
+  { id: 'system',   icon: '◎', label: 'System'   },
+  { id: 'settings', icon: '⚙', label: 'Settings' },
 ];
 
-// ── PIN Login ────────────────────────────────────────────────────────────────
+// ── PIN Login ─────────────────────────────────────────────────────────────────
 function LoginScreen({ onAuth }: { onAuth: () => void }) {
   const [pin, setPin_]     = useState('');
   const [mode, setMode]    = useState<'enter' | 'set' | 'confirm'>('enter');
@@ -35,57 +32,11 @@ function LoginScreen({ onAuth }: { onAuth: () => void }) {
   const [error, setError]  = useState('');
   const [shaking, setShake]= useState(false);
 
-  const noPinSet = !hasPinSet();
-
-  useEffect(() => {
-    if (!noPinSet) setMode('enter');
-    else           setMode('set');
-  }, [noPinSet]);
+  useEffect(() => { setMode(hasPinSet() ? 'enter' : 'set'); }, []);
 
   const shake = () => {
     setShake(true);
     setTimeout(() => { setShake(false); setPin_(''); setError(''); }, 600);
-  };
-
-  const handleDigit = async (d: string) => {
-    if (d === 'DEL') { setPin_(p => p.slice(0, -1)); return; }
-    const next = pin + d;
-    setPin_(next);
-
-    if (next.length < 6) return;
-
-    if (mode === 'enter') {
-      const ok = await verifyPin(next);
-      if (ok) { createSession(); onAuth(); }
-      else    { setError('رمز PIN غير صحيح'); shake(); }
-    } else if (mode === 'set') {
-      setConf('');
-      setMode('confirm');
-      setPin_('');
-    } else if (mode === 'confirm') {
-      if (next === confirm || (confirm === '' && pin === next)) {
-        // confirm was set as pin from previous step
-        await setPin(confirm || next);
-        createSession();
-        onAuth();
-      } else {
-        setError('رمزا PIN غير متطابقَين'); shake();
-        setMode('set'); setConf('');
-      }
-    }
-  };
-
-  // When first entering confirm mode, store the pin
-  useEffect(() => {
-    if (mode === 'confirm' && confirm === '' && pin === '') {
-      // The pin was stored when transitioning; we need to capture it
-    }
-  }, [mode, confirm, pin]);
-
-  const handleSetTransition = async (next: string) => {
-    setConf(next);
-    setMode('confirm');
-    setPin_('');
   };
 
   const handleKey = async (d: string) => {
@@ -97,12 +48,12 @@ function LoginScreen({ onAuth }: { onAuth: () => void }) {
     if (mode === 'enter') {
       const ok = await verifyPin(next);
       if (ok) { createSession(); onAuth(); }
-      else    { setError('رمز PIN غير صحيح'); shake(); }
+      else    { setError('Incorrect PIN'); shake(); }
     } else if (mode === 'set') {
-      await handleSetTransition(next);
+      setConf(next); setMode('confirm'); setPin_('');
     } else if (mode === 'confirm') {
       if (next === confirm) { await setPin(confirm); createSession(); onAuth(); }
-      else { setError('رمزا PIN غير متطابقَين'); shake(); setMode('set'); setConf(''); }
+      else { setError('PINs do not match'); shake(); setMode('set'); setConf(''); }
     }
   };
 
@@ -114,7 +65,8 @@ function LoginScreen({ onAuth }: { onAuth: () => void }) {
         <div className="login-logo">M</div>
         <div style={{ fontSize: 22, fontWeight: 800 }}>MOE-AI</div>
         <div style={{ fontSize: 12, color: 'var(--muted)', marginTop: 4 }}>
-          منصة التداول الشخصية · {mode === 'enter' ? 'أدخل رمز PIN' : mode === 'set' ? 'اضبط رمز PIN جديداً (٦ أرقام)' : 'أعد إدخال رمز PIN للتأكيد'}
+          Personal Trading Platform ·{' '}
+          {mode === 'enter' ? 'Enter PIN' : mode === 'set' ? 'Set a new 6-digit PIN' : 'Confirm PIN'}
         </div>
         {error && <div style={{ color: 'var(--red)', fontSize: 12, marginTop: 10, fontWeight: 700 }}>{error}</div>}
         <div className="pin-dots">
@@ -156,24 +108,22 @@ function TopBar({
         <div className="logo">M</div>
         <div>
           <div className="brand-name">MOE-AI</div>
-          <div className="brand-sub">منصة التداول الشخصية</div>
+          <div className="brand-sub">Auto Trader</div>
         </div>
       </div>
 
       <div className="topbar-spacer" />
 
-      {/* Connection pill */}
       <div className="conn-pill">
         <span className={`conn-dot ${connected ? 'live' : 'error'}`} />
-        {connected ? 'Cloudflare متصل' : 'غير متصل'}
+        {connected ? 'Worker Connected' : 'Disconnected'}
       </div>
 
-      {/* Mode switch */}
       <div className="mode-switch">
         <button
           className={mode === 'SANDBOX' ? 'active-sandbox' : ''}
           onClick={() => onModeChange('SANDBOX')}>
-          SANDBOX
+          DEMO
         </button>
         <button
           className={mode === 'LIVE' ? 'active-live' : ''}
@@ -182,30 +132,27 @@ function TopBar({
         </button>
       </div>
 
-      {/* Kill switch */}
       <button
         className={`kill-switch-btn ${killSwitch ? 'engaged' : ''}`}
         onClick={() => onKillSwitch(!killSwitch)}
-        title={killSwitch ? 'Kill Switch مفعّل — انقر للإيقاف' : 'Kill Switch معطّل — انقر للتفعيل'}>
+        title={killSwitch ? 'Kill Switch ENGAGED — click to disarm' : 'Kill Switch disarmed — click to engage'}>
         {killSwitch ? '🔴 KILL' : '🟢 ARM'}
       </button>
 
-      {/* Logout */}
-      <button className="btn btn-ghost btn-sm" onClick={onLogout}>خروج</button>
+      <button className="btn btn-ghost btn-sm" onClick={onLogout}>Logout</button>
 
-      {/* Live mode confirmation modal */}
       {confirmLive && (
         <div className="modal-overlay" onClick={() => setConfirmLive(false)}>
           <div className="modal" onClick={e => e.stopPropagation()}>
-            <div className="modal-title" style={{ color: 'var(--red)' }}>⚠ تفعيل وضع التداول الحقيقي</div>
+            <div className="modal-title" style={{ color: 'var(--red)' }}>⚠ Switch to Live Trading</div>
             <div className="modal-body">
-              أنت على وشك التبديل إلى <b>LIVE MODE</b>. سيتم تنفيذ الأوامر على الحساب الحقيقي في Webull.<br /><br />
-              تأكد من أن جميع متطلبات الأمان مستوفاة وأن Kill Switch في الوضع الصحيح.
+              You are about to switch to <b>LIVE MODE</b>. TradingView alerts will execute real orders on your Webull live account.<br /><br />
+              Ensure your credentials are configured and the Kill Switch is in the correct state before proceeding.
             </div>
             <div className="modal-actions">
-              <button className="btn btn-ghost" onClick={() => setConfirmLive(false)}>إلغاء</button>
+              <button className="btn btn-ghost" onClick={() => setConfirmLive(false)}>Cancel</button>
               <button className="btn btn-danger" onClick={() => { onModeChange('LIVE'); setConfirmLive(false); }}>
-                تأكيد الدخول للـ LIVE
+                Confirm — Switch to LIVE
               </button>
             </div>
           </div>
@@ -219,8 +166,8 @@ function TopBar({
 function SideNav({ page, onChange }: { page: Page; onChange: (p: Page) => void }) {
   return (
     <nav className="sidenav">
-      <div className="nav-section-label">التداول</div>
-      {NAV_ITEMS.slice(0, 5).map(item => (
+      <div className="nav-section-label">Trading</div>
+      {NAV_TRADING.map(item => (
         <button key={item.id} className={`nav-item ${page === item.id ? 'active' : ''}`}
           onClick={() => onChange(item.id)}>
           <span className="nav-icon">{item.icon}</span>
@@ -228,8 +175,8 @@ function SideNav({ page, onChange }: { page: Page; onChange: (p: Page) => void }
         </button>
       ))}
       <div className="nav-divider" />
-      <div className="nav-section-label">النظام</div>
-      {NAV_ITEMS.slice(5).map(item => (
+      <div className="nav-section-label">System</div>
+      {NAV_SYSTEM.map(item => (
         <button key={item.id} className={`nav-item ${page === item.id ? 'active' : ''}`}
           onClick={() => onChange(item.id)}>
           <span className="nav-icon">{item.icon}</span>
@@ -242,11 +189,11 @@ function SideNav({ page, onChange }: { page: Page; onChange: (p: Page) => void }
 
 // ── Bottom Nav (mobile) ───────────────────────────────────────────────────────
 function BottomNav({ page, onChange }: { page: Page; onChange: (p: Page) => void }) {
-  const items = NAV_ITEMS.slice(0, 5);
+  const all = [...NAV_TRADING, ...NAV_SYSTEM];
   return (
     <nav className="bottom-nav">
       <div className="bottom-nav-items">
-        {items.map(item => (
+        {all.map(item => (
           <button key={item.id} className={`bottom-nav-item ${page === item.id ? 'active' : ''}`}
             onClick={() => onChange(item.id)}>
             <span className="nav-icon">{item.icon}</span>
@@ -260,23 +207,23 @@ function BottomNav({ page, onChange }: { page: Page; onChange: (p: Page) => void
 
 // ── App Root ──────────────────────────────────────────────────────────────────
 export default function App() {
-  const [authed, setAuthed]           = useState(() => isSessionValid());
-  const [mode, setMode]               = useState<TradingMode>(
+  const [authed, setAuthed]         = useState(() => isSessionValid());
+  const [mode, setMode]             = useState<TradingMode>(
     () => (localStorage.getItem(LS_MODE) as TradingMode) ?? 'SANDBOX'
   );
-  const [page, setPage]               = useState<Page>('dashboard');
-  const [killSwitch, setKillSwitch]   = useState(
-    () => localStorage.getItem('moe-kill-switch') === 'true' // default disengaged
+  const [page, setPage]             = useState<Page>('dashboard');
+  const [killSwitch, setKillSwitch] = useState(
+    () => localStorage.getItem('moe-kill-switch') === 'true'
   );
-  const [connected, setConnected]     = useState(false);
-  const [toast, setToast]             = useState<{ msg: string; type?: 'success' | 'error' } | null>(null);
+  const [connected, setConnected]   = useState(false);
+  const [toast, setToast]           = useState<{ msg: string; type?: 'success'|'error' } | null>(null);
 
-  // Ping the Cloudflare Worker to check connectivity
+  // Ping worker for connectivity
   useEffect(() => {
     const check = async () => {
       try {
-        const r = await fetch(`${import.meta.env.VITE_MOE_API_BASE_URL ?? 'https://moerand-alerts.mosaprajb.workers.dev'}/`, { mode: 'cors', cache: 'no-store' });
-        setConnected(r.ok || r.status === 404); // 404 = worker is up but no root route
+        const r = await fetch(`${API_BASE}/`, { mode: 'cors', cache: 'no-store' });
+        setConnected(r.ok);
       } catch { setConnected(false); }
     };
     check();
@@ -284,33 +231,51 @@ export default function App() {
     return () => clearInterval(t);
   }, []);
 
-  const handleModeChange = useCallback((m: TradingMode) => {
-    setMode(m);
-    localStorage.setItem(LS_MODE, m);
-    showToast(`تم التبديل إلى ${m === 'LIVE' ? 'التداول الحقيقي ⚠' : 'وضع Sandbox ✓'}`, m === 'LIVE' ? 'error' : 'success');
-  }, []);
-
-  const handleLogout = useCallback(() => {
-    clearSession();
-    setAuthed(false);
-  }, []);
-
-  const showToast = (msg: string, type?: 'success' | 'error') => {
+  const showToast = (msg: string, type?: 'success'|'error') => {
     setToast({ msg, type });
     setTimeout(() => setToast(null), 3200);
   };
+
+  const handleModeChange = useCallback(async (m: TradingMode) => {
+    setMode(m);
+    localStorage.setItem(LS_MODE, m);
+    showToast(`Switched to ${m === 'LIVE' ? 'Live Trading ⚠' : 'Demo Mode ✓'}`, m === 'LIVE' ? 'error' : 'success');
+    // Persist mode to Worker KV so the webhook uses the correct account
+    try {
+      await fetch(`${API_BASE}/api/trading/mode`, {
+        method: 'POST', mode: 'cors',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ mode: m }),
+      });
+    } catch { /* KV not yet provisioned — local mode still set */ }
+  }, []);
+
+  const handleKillSwitch = useCallback(async (v: boolean) => {
+    setKillSwitch(v);
+    localStorage.setItem('moe-kill-switch', String(v));
+    showToast(v ? '🔴 Kill Switch ENGAGED — trading halted' : '🟢 Kill Switch disarmed', v ? 'error' : 'success');
+    try {
+      await fetch(`${API_BASE}/api/trading/kill-switch`, {
+        method: 'POST', mode: 'cors',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ enabled: v }),
+      });
+    } catch {}
+  }, []);
+
+  const handleLogout = useCallback(() => { clearSession(); setAuthed(false); }, []);
 
   if (!authed) return <LoginScreen onAuth={() => setAuthed(true)} />;
 
   const sharedProps = { mode, showToast };
 
   return (
-    <div className="app-shell" dir="rtl">
+    <div className="app-shell">
       <TopBar
         mode={mode}
         onModeChange={handleModeChange}
         killSwitch={killSwitch}
-        onKillSwitch={(v: boolean) => { setKillSwitch(v); localStorage.setItem('moe-kill-switch', String(v)); }}
+        onKillSwitch={handleKillSwitch}
         connected={connected}
         onLogout={handleLogout}
       />
@@ -318,10 +283,8 @@ export default function App() {
         <SideNav page={page} onChange={setPage} />
         <main className="main-content">
           {page === 'dashboard' && <DashboardPage {...sharedProps} />}
-          {page === 'scanner'   && <ScannerPage   {...sharedProps} />}
           {page === 'positions' && <PositionsPage  {...sharedProps} />}
           {page === 'orders'    && <OrdersPage     {...sharedProps} />}
-          {page === 'risk'      && <RiskPage        {...sharedProps} />}
           {page === 'trades'    && <TradesPage     {...sharedProps} />}
           {page === 'system'    && <SystemPage     {...sharedProps} />}
           {page === 'settings'  && <SettingsPage   {...sharedProps} />}

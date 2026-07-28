@@ -1,5 +1,5 @@
-// MOE-AI Risk Engine — 12 Safety Gates + Live Risk Checks
-import type { Env, RiskConfig, RiskState, SafetyGates, Position } from './types';
+// MOE-AI Risk Engine — Kill Switch + Safety Gates + Mode Storage
+import type { Env, RiskConfig, RiskState, SafetyGates, Position, TradingMode } from './types';
 
 export function getRiskConfig(env: Env): RiskConfig {
   return {
@@ -11,19 +11,32 @@ export function getRiskConfig(env: Env): RiskConfig {
   };
 }
 
-// ── Kill switch ───────────────────────────────────────────────────────────────
+// ── Kill switch ────────────────────────────────────────────────────────────────
 export async function getKillSwitch(env: Env): Promise<boolean> {
   try {
     const val = await env.CONFIG?.get('kill_switch');
-    return val !== 'false'; // default ON (safe)
-  } catch { return true; }
+    // Default: OFF (false) — trading is allowed
+    return val === 'true';
+  } catch { return false; }
 }
 
 export async function setKillSwitch(env: Env, enabled: boolean): Promise<void> {
   await env.CONFIG?.put('kill_switch', enabled ? 'true' : 'false');
 }
 
-// ── Daily stats from D1 ────────────────────────────────────────────────────
+// ── Trading mode (SANDBOX / LIVE) ──────────────────────────────────────────────
+export async function getTradingMode(env: Env): Promise<TradingMode> {
+  try {
+    const val = await env.CONFIG?.get('trading_mode');
+    return val === 'LIVE' ? 'LIVE' : 'SANDBOX';
+  } catch { return 'SANDBOX'; }
+}
+
+export async function setTradingMode(env: Env, mode: TradingMode): Promise<void> {
+  await env.CONFIG?.put('trading_mode', mode);
+}
+
+// ── Daily stats from D1 ────────────────────────────────────────────────────────
 export async function getDailyStats(env: Env, mode: string): Promise<{ dailyTrades: number; dailyLoss: number }> {
   try {
     const today = new Date().toISOString().slice(0, 10);
@@ -35,7 +48,7 @@ export async function getDailyStats(env: Env, mode: string): Promise<{ dailyTrad
   } catch { return { dailyTrades: 0, dailyLoss: 0 }; }
 }
 
-// ── Compute current risk state ────────────────────────────────────────────────
+// ── Compute current risk state ─────────────────────────────────────────────────
 export async function computeRiskState(
   env: Env,
   mode: string,
@@ -48,26 +61,22 @@ export async function computeRiskState(
     getDailyStats(env, mode),
   ]);
 
-  const openRisk = positions.reduce((sum, p) => {
-    const riskPerShare = p.averagePrice * 0.02; // 2% default stop
-    return sum + (riskPerShare * p.quantity);
-  }, 0);
-  const openRiskPct     = accountValue ? (openRisk / accountValue) * 100 : 0;
-  const dailyLossPct    = accountValue ? (daily.dailyLoss / accountValue) * 100 : 0;
-  const portfolioHeat   = positions.reduce((s, p) => s + Math.abs(p.marketValue ?? 0), 0) /
-                          (accountValue || 1) * 100;
+  const openRisk      = positions.reduce((sum, p) => sum + (p.averagePrice * 0.02 * p.quantity), 0);
+  const openRiskPct   = accountValue ? (openRisk / accountValue) * 100 : 0;
+  const dailyLossPct  = accountValue ? (daily.dailyLoss / accountValue) * 100 : 0;
+  const portfolioHeat = positions.reduce((s, p) => s + Math.abs(p.marketValue ?? 0), 0) /
+                        (accountValue || 1) * 100;
 
-  const locked = (
+  const locked =
     killSwitch ||
     dailyLossPct >= cfg.maxDailyLossPct ||
     openRiskPct  >= cfg.maxOpenRiskPct  ||
-    positions.length >= cfg.maxOpenPositions
-  );
+    positions.length >= cfg.maxOpenPositions;
 
   let lockReason: string | undefined;
-  if (killSwitch)                          lockReason = 'Kill switch is engaged';
-  else if (dailyLossPct >= cfg.maxDailyLossPct) lockReason = `Daily loss limit hit (${dailyLossPct.toFixed(2)}%)`;
-  else if (openRiskPct  >= cfg.maxOpenRiskPct)  lockReason = `Open risk limit hit (${openRiskPct.toFixed(2)}%)`;
+  if      (killSwitch)                               lockReason = 'Kill switch is engaged';
+  else if (dailyLossPct >= cfg.maxDailyLossPct)     lockReason = `Daily loss limit hit (${dailyLossPct.toFixed(2)}%)`;
+  else if (openRiskPct  >= cfg.maxOpenRiskPct)      lockReason = `Open risk limit hit (${openRiskPct.toFixed(2)}%)`;
   else if (positions.length >= cfg.maxOpenPositions) lockReason = `Max positions reached (${positions.length})`;
 
   return {
@@ -83,7 +92,7 @@ export async function computeRiskState(
   };
 }
 
-// ── 12 Safety gates for LIVE mode ─────────────────────────────────────────────
+// ── Live safety gates ──────────────────────────────────────────────────────────
 export async function checkLiveSafetyGates(
   env: Env,
   hasPositions: boolean,
@@ -108,11 +117,11 @@ export async function checkLiveSafetyGates(
     killSwitchOff:         !killSwitch,
     pinVerified:           pinSet || !!env.MOE_KILL_SWITCH_PIN,
     liveCredentialsSet:    missingSecrets.length === 0,
-    webullLiveConnected:   missingSecrets.length === 0, // ping tested separately
+    webullLiveConnected:   missingSecrets.length === 0,
     accountDataFresh:      accountValue > 0,
     buyingPowerSufficient: accountValue >= 1000,
     noActiveKillSwitch:    !killSwitch,
-    dailyLossUnderLimit:   true, // computed from DB in full check
+    dailyLossUnderLimit:   true,
     openPositionsUnderMax: !hasPositions || true,
     dailyTradesUnderMax:   true,
     riskChecksPass:        missingSecrets.length === 0 && !killSwitch,

@@ -3,54 +3,41 @@ main = "src/index.ts"
 compatibility_date = "2024-11-01"
 compatibility_flags = ["nodejs_compat"]
 
-# KV Namespace — ID injected by GitHub Actions from secret KV_NAMESPACE_ID
-# Run: wrangler kv namespace create "CONFIG"  → paste the ID as GitHub Secret
+# ── KV Namespace ───────────────────────────────────────────────────────────────
+# Stores: kill_switch, trading_mode, live_automation_armed
+# Create: wrangler kv namespace create "CONFIG"
+# Then add KV_NAMESPACE_ID as a GitHub Secret.
+# The deploy workflow strips this block if the secret is not set.
 [[kv_namespaces]]
 binding = "CONFIG"
 id = "placeholder"
 
-# D1 Database — ID injected by GitHub Actions from secret D1_DATABASE_ID
-# Run: wrangler d1 create moe-db  → paste the ID as GitHub Secret
+# ── D1 Database ────────────────────────────────────────────────────────────────
+# Stores: decisions, orders, trades history
+# Create: wrangler d1 create moe-db
+# Then add D1_DATABASE_ID as a GitHub Secret.
+# The deploy workflow strips this block if the secret is not set.
 [[d1_databases]]
 binding = "DB"
 database_name = "moe-db"
 database_id = "placeholder"
 
-# NOTE: Queues removed — requires Cloudflare Workers Paid plan ($5/mo)
-# Add back once you upgrade: [[queues.producers]] / [[queues.consumers]]
-
-# Secrets (set via: wrangler secret put <NAME>)
-# WEBULL_LIVE_APP_KEY
-# WEBULL_LIVE_APP_SECRET
-# WEBULL_LIVE_ACCESS_TOKEN
-# WEBULL_LIVE_ACCOUNT_ID
-# WEBULL_SANDBOX_APP_KEY
-# WEBULL_SANDBOX_APP_SECRET
-# WEBULL_SANDBOX_ACCESS_TOKEN
-# WEBULL_SANDBOX_ACCOUNT_ID
-# MOE_WEBHOOK_SECRET
-# MOE_KILL_SWITCH_PIN
+# ── Cloudflare Secrets (set via: wrangler secret put <NAME>) ──────────────────
+# WEBULL_SANDBOX_APP_KEY         — paper trading app key
+# WEBULL_SANDBOX_APP_SECRET      — paper trading app secret
+# WEBULL_SANDBOX_ACCESS_TOKEN    — paper trading access token
+# WEBULL_SANDBOX_ACCOUNT_ID      — paper trading account ID
+# WEBULL_LIVE_APP_KEY            — live trading app key
+# WEBULL_LIVE_APP_SECRET         — live trading app secret
+# WEBULL_LIVE_ACCESS_TOKEN       — live trading access token
+# WEBULL_LIVE_ACCOUNT_ID         — live trading account ID
+# MOE_WEBHOOK_SECRET             — shared secret for TradingView webhook validation
 
 [vars]
-WORKER_VERSION = "2.0.0"
-STRATEGY_VERSION = "MOE v6.3.1"
-MAX_OPEN_POSITIONS = "4"
-MAX_DAILY_TRADES = "8"
-MAX_DAILY_LOSS_PCT = "2"
-MAX_OPEN_RISK_PCT = "2"
-MAX_PORTFOLIO_HEAT = "6"
-ALLOWED_ORIGINS = "https://moerand-alerts.mosaprajb.workers.dev,https://moe-ai.replit.app,https://*.replit.dev,https://*.replit.app,http://127.0.0.1"
-
-# Sandbox environment
-[env.sandbox]
-name = "moerand-alerts-sandbox"
-vars = { WORKER_VERSION = "2.0.0", ENV = "sandbox" }
-
-[[env.sandbox.kv_namespaces]]
-binding = "CONFIG"
-id = "placeholder"
-
-[[env.sandbox.d1_databases]]
-binding = "DB"
-database_name = "moe-db-sandbox"
-database_id = "placeholder"
+WORKER_VERSION      = "5.0.0"
+MAX_OPEN_POSITIONS  = "4"
+MAX_DAILY_TRADES    = "8"
+MAX_DAILY_LOSS_PCT  = "2"
+MAX_OPEN_RISK_PCT   = "2"
+MAX_PORTFOLIO_HEAT  = "6"
+ALLOWED_ORIGINS     = "https://moerand-alerts.mosaprajb.workers.dev,https://moe-ai.replit.app,https://*.replit.dev,https://*.replit.app,http://127.0.0.1"

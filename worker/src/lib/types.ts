@@ -143,12 +143,14 @@ export interface TVWebhookPayload {
   secret?:    string;
   symbol:     string;
   action:     'buy' | 'sell' | 'close' | 'alert';
+  qty?:       number;   // shares to trade
+  type?:      string;   // MARKET | LIMIT (default MARKET)
   price?:     number;
-  score?:     number;
-  signal?:    string;
   entry?:     number;
   stop?:      number;
   target?:    number;
+  signal?:    string;
+  score?:     number;
   timeframe?: string;
   strategy?:  string;
   comment?:   string;

@@ -1,82 +1,40 @@
-// MOE-AI Trading Routes — account, positions, orders, live readiness
+// MOE-AI Trading Routes — account, positions, orders, mode, kill-switch
 import { Hono } from 'hono';
-import type { Env } from '../lib/types';
+import type { Env, TradingMode } from '../lib/types';
 import { WebullClient } from '../lib/webull';
-import { computeRiskState, checkLiveSafetyGates, getKillSwitch, setKillSwitch } from '../lib/risk';
+import {
+  computeRiskState, checkLiveSafetyGates,
+  getKillSwitch, setKillSwitch,
+  getTradingMode, setTradingMode,
+} from '../lib/risk';
 
 const trading = new Hono<{ Bindings: Env }>();
 
-// ── Dashboard (sandbox) ───────────────────────────────────────────────────────
-trading.get('/sandbox/dashboard', async (c) => {
-  const env = c.env;
-  const client = WebullClient.fromEnv(env, 'SANDBOX');
+// ── Dashboard (composite: account + positions + orders) ───────────────────────
+trading.get('/:mode/dashboard', async (c) => {
+  const env  = c.env;
+  const modeParam = (c.req.param('mode').toUpperCase() === 'LIVE' ? 'LIVE' : 'SANDBOX') as TradingMode;
+  const client    = WebullClient.fromEnv(env, modeParam);
+  const ks        = await getKillSwitch(env);
 
   if (!client) {
+    const readiness = modeParam === 'LIVE'
+      ? await checkLiveSafetyGates(env, false, 0)
+      : { ready: false, missingSecrets: ['WEBULL_SANDBOX_APP_KEY', 'WEBULL_SANDBOX_ACCESS_TOKEN', 'WEBULL_SANDBOX_ACCOUNT_ID'], gates: {} };
+
     return c.json({
-      account:    {},
-      positions:  [],
-      orders:     [],
-      safety: {
-        webullConnected: false,
-        webullMode: 'DISCONNECTED',
-        killSwitch: await getKillSwitch(env),
-        mode: 'SANDBOX',
-      },
-      updatedAt: new Date().toISOString(),
-    });
-  }
-
-  const [account, positions, orders, killSwitch] = await Promise.allSettled([
-    client.getAccount(),
-    client.getPositions(),
-    client.getOrders(),
-    getKillSwitch(env),
-  ]);
-
-  const acct = account.status === 'fulfilled' ? account.value : {};
-  const pos  = positions.status === 'fulfilled' ? positions.value : [];
-  const ord  = orders.status === 'fulfilled' ? orders.value : [];
-  const ks   = killSwitch.status === 'fulfilled' ? killSwitch.value : true;
-  const risk = await computeRiskState(env, 'SANDBOX', pos, (acct as { accountValue?: number }).accountValue ?? 0);
-
-  return c.json({
-    account:   acct,
-    positions: pos,
-    orders:    ord,
-    risk,
-    safety: {
-      webullConnected: true,
-      webullMode:      'SANDBOX',
-      killSwitch:      ks,
-      mode:            'SANDBOX',
-      executionAllowed: !ks && !risk.locked,
-      observationOnly: ks || risk.locked,
-    },
-    updatedAt: new Date().toISOString(),
-  });
-});
-
-// ── Dashboard (live) ──────────────────────────────────────────────────────────
-trading.get('/live/dashboard', async (c) => {
-  const env = c.env;
-  const client = WebullClient.fromEnv(env, 'LIVE');
-  const ks = await getKillSwitch(env);
-
-  if (!client) {
-    const { ready, missingSecrets, gates } = await checkLiveSafetyGates(env, false, 0);
-    return c.json({
-      account:    {},
-      positions:  [],
-      orders:     [],
+      account:   {},
+      positions: [],
+      orders:    [],
       safety: {
         webullConnected: false,
         webullMode:      'DISCONNECTED',
         killSwitch:      ks,
-        mode:            'LIVE',
+        mode:            modeParam,
         executionAllowed: false,
       },
-      readiness: { ready, missingSecrets, gates },
-      updatedAt:  new Date().toISOString(),
+      readiness,
+      updatedAt: new Date().toISOString(),
     });
   }
 
@@ -86,58 +44,62 @@ trading.get('/live/dashboard', async (c) => {
     client.getOrders(),
   ]);
 
-  const acct = account.status === 'fulfilled' ? account.value : {};
+  const acct = account.status   === 'fulfilled' ? account.value   : {};
   const pos  = positions.status === 'fulfilled' ? positions.value : [];
-  const ord  = orders.status === 'fulfilled' ? orders.value : [];
-  const risk = await computeRiskState(env, 'LIVE', pos, (acct as { accountValue?: number }).accountValue ?? 0);
-  const { ready, missingSecrets, gates } = await checkLiveSafetyGates(env, pos.length > 0, (acct as { accountValue?: number }).accountValue ?? 0);
+  const ord  = orders.status    === 'fulfilled' ? orders.value    : [];
+  const risk = await computeRiskState(env, modeParam, pos, (acct as { accountValue?: number }).accountValue ?? 0);
+  const executionAllowed = !ks && !risk.locked;
 
-  return c.json({
-    account:   acct,
+  const payload: Record<string, unknown> = {
+    account: acct,
     positions: pos,
-    orders:    ord,
+    orders: ord,
     risk,
     safety: {
       webullConnected:  true,
-      webullMode:       'LIVE',
+      webullMode:       modeParam,
       killSwitch:       ks,
-      mode:             'LIVE',
-      executionAllowed: !ks && !risk.locked && ready,
-      observationOnly:  ks || risk.locked || !ready,
+      mode:             modeParam,
+      executionAllowed,
+      observationOnly:  !executionAllowed,
     },
-    readiness: { ready, missingSecrets, gates },
     updatedAt: new Date().toISOString(),
-  });
+  };
+
+  if (modeParam === 'LIVE') {
+    const readiness = await checkLiveSafetyGates(env, pos.length > 0, (acct as { accountValue?: number }).accountValue ?? 0);
+    payload.readiness = readiness;
+  }
+
+  return c.json(payload);
 });
 
-// ── Account ───────────────────────────────────────────────────────────────────
+// ── Individual account / positions / orders ───────────────────────────────────
 trading.get('/:mode/account', async (c) => {
-  const mode = (c.req.param('mode').toUpperCase() === 'LIVE' ? 'LIVE' : 'SANDBOX') as 'SANDBOX' | 'LIVE';
+  const mode   = (c.req.param('mode').toUpperCase() === 'LIVE' ? 'LIVE' : 'SANDBOX') as TradingMode;
   const client = WebullClient.fromEnv(c.env, mode);
   if (!client) return c.json({ error: `${mode} credentials not configured` }, 503);
-  try { return c.json(await client.getAccount()); }
+  try   { return c.json(await client.getAccount()); }
   catch (e) { return c.json({ error: String(e) }, 502); }
 });
 
-// ── Positions ─────────────────────────────────────────────────────────────────
 trading.get('/:mode/positions', async (c) => {
-  const mode = (c.req.param('mode').toUpperCase() === 'LIVE' ? 'LIVE' : 'SANDBOX') as 'SANDBOX' | 'LIVE';
+  const mode   = (c.req.param('mode').toUpperCase() === 'LIVE' ? 'LIVE' : 'SANDBOX') as TradingMode;
   const client = WebullClient.fromEnv(c.env, mode);
   if (!client) return c.json({ data: [], error: `${mode} credentials not configured` }, 503);
-  try { return c.json({ data: await client.getPositions() }); }
+  try   { return c.json({ data: await client.getPositions() }); }
   catch (e) { return c.json({ data: [], error: String(e) }, 502); }
 });
 
-// ── Orders ────────────────────────────────────────────────────────────────────
 trading.get('/:mode/orders', async (c) => {
-  const mode = (c.req.param('mode').toUpperCase() === 'LIVE' ? 'LIVE' : 'SANDBOX') as 'SANDBOX' | 'LIVE';
+  const mode   = (c.req.param('mode').toUpperCase() === 'LIVE' ? 'LIVE' : 'SANDBOX') as TradingMode;
   const client = WebullClient.fromEnv(c.env, mode);
   if (!client) return c.json({ data: [], error: `${mode} credentials not configured` }, 503);
-  try { return c.json({ data: await client.getOrders() }); }
+  try   { return c.json({ data: await client.getOrders() }); }
   catch (e) { return c.json({ data: [], error: String(e) }, 502); }
 });
 
-// ── Place order ───────────────────────────────────────────────────────────────
+// ── Place order ────────────────────────────────────────────────────────────────
 trading.post('/orders', async (c) => {
   const env  = c.env;
   const body = await c.req.json<{
@@ -145,11 +107,11 @@ trading.post('/orders', async (c) => {
     price?: number; stopPrice?: number; mode: string; idempotencyKey: string;
   }>();
 
-  const mode   = (body.mode?.toUpperCase() === 'LIVE' ? 'LIVE' : 'SANDBOX') as 'SANDBOX' | 'LIVE';
-  const ks     = await getKillSwitch(env);
-  if (ks)      return c.json({ error: 'Kill switch is engaged' }, 403);
+  const mode = (body.mode?.toUpperCase() === 'LIVE' ? 'LIVE' : 'SANDBOX') as TradingMode;
+  const ks   = await getKillSwitch(env);
+  if (ks)    return c.json({ error: 'Kill switch is engaged' }, 403);
 
-  // Check idempotency
+  // Idempotency check
   try {
     const existing = await env.DB?.prepare('SELECT id FROM orders WHERE idempotency_key = ?')
       .bind(body.idempotencyKey).first<{ id: string }>();
@@ -167,33 +129,31 @@ trading.post('/orders', async (c) => {
       idempotencyKey: body.idempotencyKey,
     });
 
-    // Persist to D1
     await env.DB?.prepare(
-      `INSERT OR IGNORE INTO orders (webull_id, symbol, side, type, quantity, price, stop_price, status, mode, idempotency_key)
+      `INSERT OR IGNORE INTO orders
+         (webull_id, symbol, side, type, quantity, price, stop_price, status, mode, idempotency_key)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     ).bind(result.orderId, body.symbol, body.side, body.type, body.quantity,
-      body.price ?? null, body.stopPrice ?? null, result.status, mode, body.idempotencyKey
+      body.price ?? null, body.stopPrice ?? null, result.status, mode, body.idempotencyKey,
     ).run();
 
     return c.json(result);
   } catch (e) { return c.json({ error: String(e) }, 502); }
 });
 
-// ── Trades history ────────────────────────────────────────────────────────────
+// ── Trades history ─────────────────────────────────────────────────────────────
 trading.get('/trades', async (c) => {
-  const env   = c.env;
   const limit = Math.min(Number(c.req.query('limit') ?? 100), 500);
   const mode  = c.req.query('mode');
-
   try {
     const query = mode
       ? `SELECT * FROM trades WHERE mode = ? ORDER BY opened_at DESC LIMIT ?`
       : `SELECT * FROM trades ORDER BY opened_at DESC LIMIT ?`;
     const dbResult = mode
-      ? await env.DB?.prepare(query).bind(mode, limit).all<Record<string, unknown>>()
-      : await env.DB?.prepare(query).bind(limit).all<Record<string, unknown>>();
+      ? await c.env.DB?.prepare(query).bind(mode, limit).all<Record<string, unknown>>()
+      : await c.env.DB?.prepare(query).bind(limit).all<Record<string, unknown>>();
 
-    const trades = (dbResult?.results ?? []).map((r: Record<string, unknown>) => ({
+    const trades = (dbResult?.results ?? []).map(r => ({
       id:         r.id,
       symbol:     r.symbol,
       side:       r.side,
@@ -205,10 +165,8 @@ trading.get('/trades', async (c) => {
       stopLoss:   r.stop_loss,
       takeProfit: r.take_profit,
       signal:     r.signal,
-      score:      r.score,
       status:     r.status,
       mode:       r.mode,
-      reason:     r.reason,
       openedAt:   r.opened_at,
       closedAt:   r.closed_at,
     }));
@@ -218,37 +176,46 @@ trading.get('/trades', async (c) => {
   }
 });
 
-// ── Live readiness ────────────────────────────────────────────────────────────
+// ── Live readiness ─────────────────────────────────────────────────────────────
 trading.get('/live/readiness', async (c) => {
-  const env = c.env;
-  const liveClient = WebullClient.fromEnv(env, 'LIVE');
+  const env  = c.env;
+  const live = WebullClient.fromEnv(env, 'LIVE');
   let accountValue = 0;
   let hasPositions = false;
-
-  if (liveClient) {
+  if (live) {
     try {
-      const [acct, pos] = await Promise.allSettled([
-        liveClient.getAccount(), liveClient.getPositions()
-      ]);
+      const [acct, pos] = await Promise.allSettled([live.getAccount(), live.getPositions()]);
       if (acct.status === 'fulfilled') accountValue = acct.value.accountValue;
       if (pos.status  === 'fulfilled') hasPositions = pos.value.length > 0;
     } catch {}
   }
-
   return c.json(await checkLiveSafetyGates(env, hasPositions, accountValue));
 });
 
-// ── Kill switch ────────────────────────────────────────────────────────────────
-trading.post('/kill-switch', async (c) => {
-  const env  = c.env;
-  const body = await c.req.json<{ enabled: boolean }>();
-  await setKillSwitch(env, !!body.enabled);
-  return c.json({ success: true, killSwitch: !!body.enabled });
+// ── Trading mode (SANDBOX / LIVE) ──────────────────────────────────────────────
+trading.get('/mode', async (c) => {
+  const mode = await getTradingMode(c.env);
+  const ks   = await getKillSwitch(c.env);
+  return c.json({ mode, killSwitch: ks });
 });
 
+trading.post('/mode', async (c) => {
+  const body = await c.req.json<{ mode: string }>();
+  const mode = (body.mode?.toUpperCase() === 'LIVE' ? 'LIVE' : 'SANDBOX') as TradingMode;
+  await setTradingMode(c.env, mode);
+  return c.json({ success: true, mode });
+});
+
+// ── Kill switch ────────────────────────────────────────────────────────────────
 trading.get('/kill-switch', async (c) => {
   const enabled = await getKillSwitch(c.env);
   return c.json({ killSwitch: enabled });
+});
+
+trading.post('/kill-switch', async (c) => {
+  const body = await c.req.json<{ enabled: boolean }>();
+  await setKillSwitch(c.env, !!body.enabled);
+  return c.json({ success: true, killSwitch: !!body.enabled });
 });
 
 export { trading };

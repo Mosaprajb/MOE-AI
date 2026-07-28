@@ -16,31 +16,31 @@ function Section({ title, children }: { title: string; children: React.ReactNode
 }
 
 export default function SettingsPage({ showToast }: Props) {
-  const [apiBase, setApiBase] = useState(() =>
+  const [apiBase,   setApiBase]   = useState(() =>
     localStorage.getItem('moe-api-base') ?? 'https://moerand-alerts.mosaprajb.workers.dev'
   );
-  const [newPin,  setNewPin]  = useState('');
-  const [confPin, setConfPin] = useState('');
-  const [notifs,  setNotifs]  = useState(false);
+  const [newPin,    setNewPin]    = useState('');
+  const [confPin,   setConfPin]   = useState('');
+  const [notifs,    setNotifs]    = useState(false);
   const [savingPin, setSavingPin] = useState(false);
 
   const saveApiBase = () => {
     localStorage.setItem('moe-api-base', apiBase.trim().replace(/\/$/, ''));
-    showToast('تم حفظ رابط API · أعد تحميل الصفحة', 'success');
+    showToast('Worker URL saved — reload the page', 'success');
   };
 
   const handlePinSave = async () => {
     if (newPin.length !== 6 || !/^\d{6}$/.test(newPin)) {
-      showToast('رمز PIN يجب أن يكون 6 أرقام', 'error'); return;
+      showToast('PIN must be exactly 6 digits', 'error'); return;
     }
     if (newPin !== confPin) {
-      showToast('رمزا PIN غير متطابقَين', 'error'); return;
+      showToast('PINs do not match', 'error'); return;
     }
     setSavingPin(true);
     await setPin(newPin);
     setSavingPin(false);
     setNewPin(''); setConfPin('');
-    showToast('تم حفظ رمز PIN بنجاح ✓', 'success');
+    showToast('PIN updated ✓', 'success');
   };
 
   const saveSettings = (key: string, val: unknown) => {
@@ -51,43 +51,43 @@ export default function SettingsPage({ showToast }: Props) {
   return (
     <div>
       <div className="page-header">
-        <div className="page-title">الإعدادات</div>
-        <div className="page-sub">إعدادات MOE-AI الشخصية</div>
+        <div className="page-title">Settings</div>
+        <div className="page-sub">MOE-AI configuration</div>
       </div>
 
-      {/* API Connection */}
-      <Section title="اتصال Cloudflare Worker">
+      {/* Cloudflare Worker connection */}
+      <Section title="Cloudflare Worker">
         <div style={{ marginBottom: 8 }}>
-          <div className="input-label">رابط Worker API</div>
+          <div className="input-label">Worker API URL</div>
           <div className="input-group">
             <input className="input" value={apiBase}
               onChange={e => setApiBase(e.target.value)}
               placeholder="https://moerand-alerts.mosaprajb.workers.dev" />
-            <button className="btn btn-primary" onClick={saveApiBase}>حفظ</button>
+            <button className="btn btn-primary" onClick={saveApiBase}>Save</button>
           </div>
           <div style={{ fontSize: 11, color: 'var(--muted)', marginTop: 6 }}>
-            يمكن تغيير هذا الرابط لاستخدام Worker مختلف. يتطلب إعادة تحميل الصفحة.
+            Override the Worker URL if you deploy to a different Cloudflare account. Requires a page reload.
           </div>
         </div>
       </Section>
 
       {/* Security */}
-      <Section title="الأمان">
+      <Section title="Security">
         <div className="setting-row">
           <div className="setting-info">
-            <b>رمز PIN</b>
-            <small>{hasPinSet() ? 'رمز PIN مضبوط ✓' : 'لم يتم ضبط رمز PIN بعد'}</small>
+            <b>Login PIN</b>
+            <small>{hasPinSet() ? 'PIN is set ✓' : 'No PIN set yet'}</small>
           </div>
         </div>
         <div style={{ marginTop: 12, display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
           <div>
-            <div className="input-label">رمز PIN الجديد (6 أرقام)</div>
+            <div className="input-label">New PIN (6 digits)</div>
             <input className="input" type="password" maxLength={6} value={newPin}
               onChange={e => setNewPin(e.target.value.replace(/\D/g,'').slice(0,6))}
               placeholder="••••••" />
           </div>
           <div>
-            <div className="input-label">تأكيد رمز PIN</div>
+            <div className="input-label">Confirm PIN</div>
             <input className="input" type="password" maxLength={6} value={confPin}
               onChange={e => setConfPin(e.target.value.replace(/\D/g,'').slice(0,6))}
               placeholder="••••••" />
@@ -95,24 +95,24 @@ export default function SettingsPage({ showToast }: Props) {
         </div>
         <button className="btn btn-primary btn-sm" style={{ marginTop: 12 }}
           onClick={handlePinSave} disabled={savingPin || newPin.length < 6}>
-          {savingPin ? 'جاري الحفظ…' : 'حفظ رمز PIN'}
+          {savingPin ? 'Saving…' : 'Update PIN'}
         </button>
       </Section>
 
       {/* Notifications */}
-      <Section title="الإشعارات">
+      <Section title="Notifications">
         <div className="setting-row">
           <div className="setting-info">
-            <b>إشعارات الويب</b>
-            <small>استقبال إشعارات الإشارات عبر المتصفح</small>
+            <b>Browser notifications</b>
+            <small>Get notified when alerts are received</small>
           </div>
           <label className="toggle">
             <input type="checkbox" checked={notifs} onChange={e => {
               setNotifs(e.target.checked);
               if (e.target.checked) {
                 Notification.requestPermission().then(p => {
-                  if (p !== 'granted') { setNotifs(false); showToast('لم يتم منح إذن الإشعارات', 'error'); }
-                  else { showToast('تم تفعيل الإشعارات ✓', 'success'); saveSettings('notifications', true); }
+                  if (p !== 'granted') { setNotifs(false); showToast('Notification permission denied', 'error'); }
+                  else { showToast('Notifications enabled ✓', 'success'); saveSettings('notifications', true); }
                 });
               }
             }} />
@@ -122,37 +122,47 @@ export default function SettingsPage({ showToast }: Props) {
         </div>
         <div className="setting-row">
           <div className="setting-info">
-            <b>حالة الإشعارات</b>
-            <small>{typeof Notification !== 'undefined' ? `الإذن: ${Notification.permission}` : 'غير مدعوم'}</small>
+            <b>Permission status</b>
+            <small>{typeof Notification !== 'undefined' ? Notification.permission : 'Not supported'}</small>
           </div>
           <span className={`badge ${Notification?.permission === 'granted' ? 'badge-green' : 'badge-yellow'}`}>
-            {Notification?.permission ?? 'غير مدعوم'}
+            {Notification?.permission ?? 'N/A'}
           </span>
         </div>
       </Section>
 
-      {/* Webull info */}
-      <Section title="Webull API">
-        <div style={{ padding: '12px 0', color: 'var(--muted)', fontSize: 13, lineHeight: 1.8 }}>
-          بيانات اعتماد Webull يجب تخزينها في <b style={{ color: 'var(--cyan)' }}>Cloudflare Secrets</b> وليس هنا.<br />
-          <b>لا تُدخل</b> أي مفتاح API في هذا النموذج — استخدم Cloudflare Dashboard أو Wrangler CLI.
-          <div style={{ marginTop: 12, padding: 12, background: 'var(--surface-2)', borderRadius: 8, fontSize: 11 }}>
-            <div style={{ marginBottom: 8, fontWeight: 700, color: 'var(--green)' }}>المفاتيح المطلوبة في Cloudflare Secrets:</div>
-            {['WEBULL_LIVE_APP_KEY','WEBULL_LIVE_APP_SECRET','WEBULL_LIVE_ACCESS_TOKEN','WEBULL_LIVE_ACCOUNT_ID','MOE_WEBHOOK_SECRET'].map(k => (
-              <div key={k} style={{ marginTop: 4 }}>• {k}</div>
-            ))}
-          </div>
+      {/* Cloudflare Secrets */}
+      <Section title="Required Cloudflare Secrets">
+        <div style={{ color: 'var(--muted)', fontSize: 13, lineHeight: 1.9 }}>
+          Webull credentials and the webhook secret must be stored in <b style={{ color: 'var(--cyan)' }}>Cloudflare Secrets</b> — never entered here.<br />
+          Use <code style={{ color: 'var(--cyan)', fontSize: 11 }}>wrangler secret put {'<NAME>'}</code> in the <code>worker/</code> directory.
+        </div>
+        <div style={{ marginTop: 14, padding: 14, background: 'var(--surface-2)', borderRadius: 8, fontSize: 12 }}>
+          <div style={{ marginBottom: 10, fontWeight: 800, color: 'var(--green)', textTransform: 'uppercase', letterSpacing: '.05em' }}>Required secrets</div>
+          {[
+            'MOE_WEBHOOK_SECRET',
+            'WEBULL_SANDBOX_APP_KEY', 'WEBULL_SANDBOX_APP_SECRET',
+            'WEBULL_SANDBOX_ACCESS_TOKEN', 'WEBULL_SANDBOX_ACCOUNT_ID',
+          ].map(k => (
+            <div key={k} style={{ marginTop: 5, fontFamily: 'monospace', color: 'var(--cyan)' }}>• {k}</div>
+          ))}
+          <div style={{ marginTop: 14, marginBottom: 6, fontWeight: 800, color: 'var(--yellow)', textTransform: 'uppercase', letterSpacing: '.05em' }}>Live trading (add when ready)</div>
+          {[
+            'WEBULL_LIVE_APP_KEY', 'WEBULL_LIVE_APP_SECRET',
+            'WEBULL_LIVE_ACCESS_TOKEN', 'WEBULL_LIVE_ACCOUNT_ID',
+          ].map(k => (
+            <div key={k} style={{ marginTop: 5, fontFamily: 'monospace', color: 'var(--yellow)' }}>• {k}</div>
+          ))}
         </div>
       </Section>
 
       {/* System info */}
-      <Section title="معلومات النظام">
+      <Section title="About">
         {[
-          { k: 'إصدار MOE-AI',    v: '4.0' },
-          { k: 'محرك الاستراتيجية', v: 'MOE v6.3.1' },
-          { k: 'نمط التشغيل',    v: 'Single-Owner Personal Platform' },
-          { k: 'البنية التحتية',  v: 'Cloudflare Workers + D1 + KV + Queues' },
-          { k: 'الوسيط',          v: 'Webull (Sandbox + Live)' },
+          { k: 'Version',        v: '5.0' },
+          { k: 'Mode',           v: 'TradingView → Cloudflare Worker → Webull' },
+          { k: 'Broker',         v: 'Webull (Demo + Live)' },
+          { k: 'Infrastructure', v: 'Cloudflare Workers + KV + D1' },
         ].map(item => (
           <div key={item.k} className="setting-row">
             <div className="setting-info"><b>{item.k}</b></div>

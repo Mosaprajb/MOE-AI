@@ -1,27 +1,27 @@
-// MOE-AI React Hooks — data fetching with auto-refresh
+// MOE-AI React Hooks — polling data from Cloudflare Worker
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { TradingMode } from '../lib/config';
 import type { DashboardPayload, Decision, Trade } from '../lib/types';
 import * as api from '../lib/api';
 
 interface UseApiState<T> {
-  data: T | null;
-  loading: boolean;
-  error: string | null;
-  refresh: () => void;
+  data:        T | null;
+  loading:     boolean;
+  error:       string | null;
+  refresh:     () => void;
   lastUpdated: Date | null;
 }
 
 function usePolled<T>(
-  fetcher: () => Promise<T>,
+  fetcher:    () => Promise<T>,
   intervalMs: number,
   enabled = true,
 ): UseApiState<T> {
-  const [data, setData] = useState<T | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [data,        setData]        = useState<T | null>(null);
+  const [loading,     setLoading]     = useState(false);
+  const [error,       setError]       = useState<string | null>(null);
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
-  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const timerRef  = useRef<ReturnType<typeof setTimeout> | null>(null);
   const mountedRef = useRef(true);
 
   const load = useCallback(async () => {
@@ -30,10 +30,7 @@ function usePolled<T>(
     setError(null);
     try {
       const result = await fetcher();
-      if (mountedRef.current) {
-        setData(result);
-        setLastUpdated(new Date());
-      }
+      if (mountedRef.current) { setData(result); setLastUpdated(new Date()); }
     } catch (err) {
       if (mountedRef.current)
         setError(err instanceof Error ? err.message : 'Request failed');
@@ -61,7 +58,7 @@ export function useDashboard(mode: TradingMode, intervalMs = 15_000) {
   return usePolled<DashboardPayload>(fetcher, intervalMs);
 }
 
-export function useDecisions(intervalMs = 10_000) {
+export function useDecisions(intervalMs = 15_000) {
   const fetcher = useCallback(() => api.fetchDecisions(50), []);
   return usePolled<Decision[]>(fetcher, intervalMs);
 }
