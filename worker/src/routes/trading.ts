@@ -61,8 +61,8 @@ trading.get('/:mode/dashboard', async (c) => {
       for (const p of pos) {
         const d = sltp.get(p.symbol);
         if (d) {
-          (p as Record<string,unknown>).stopLoss   = d.stop   ?? undefined;
-          (p as Record<string,unknown>).takeProfit = d.target ?? undefined;
+          (p as unknown as Record<string,unknown>).stopLoss   = d.stop   ?? undefined;
+          (p as unknown as Record<string,unknown>).takeProfit = d.target ?? undefined;
         }
       }
     } catch { /* D1 unavailable */ }
@@ -138,8 +138,8 @@ trading.get('/:mode/positions', async (c) => {
         for (const pos of positions) {
           const d = map.get(pos.symbol);
           if (d) {
-            (pos as Record<string, unknown>).stopLoss   = d.stop   ?? undefined;
-            (pos as Record<string, unknown>).takeProfit = d.target ?? undefined;
+            (pos as unknown as Record<string, unknown>).stopLoss   = d.stop   ?? undefined;
+            (pos as unknown as Record<string, unknown>).takeProfit = d.target ?? undefined;
           }
         }
       } catch { /* D1 not available — continue without SL/TP */ }
