@@ -1,12 +1,13 @@
 // MOE-AI Market Data Hook
 // Primary source: Cloudflare Worker scanner endpoint
-// Fallback: static demo data so the scanner is always usable
+// Secondary source: local API server → Yahoo Finance proxy (live prices, no key needed)
+// Fallback: deterministic demo data
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { StockDef } from './stocks';
 import type { StockSnapshot, SignalType } from './types';
 import { API_BASE, REFRESH_MS } from './config';
 
-// ── Scoring seed (deterministic demo when no market data) ──────────────────
+// ── Scoring helpers (demo fallback) ───────────────────────────────────────────
 function seedScore(sym: string): number {
   let h = 0;
   for (let i = 0; i < sym.length; i++) { h = ((h << 5) - h + sym.charCodeAt(i)) >>> 0; }
@@ -42,7 +43,7 @@ function buildDemoSnapshot(def: StockDef): StockSnapshot {
     signal:    scoreToSignal(score),
     score,
     grade:     scoreToGrade(score),
-    reason:    'البيانات التجريبية — قم بتوصيل مزود سوق لبيانات حقيقية',
+    reason:    'وضع تجريبي — لم يتم الاتصال بمزود الأسعار',
     entry:     basePrice * 1.001,
     stop:      basePrice * 0.98,
     target:    basePrice * 1.06,
@@ -54,7 +55,7 @@ function buildDemoSnapshot(def: StockDef): StockSnapshot {
   };
 }
 
-// ── API response normaliser ────────────────────────────────────────────────
+// ── Normalise CF Worker decision → StockSnapshot ──────────────────────────────
 function normaliseSignal(raw: Record<string, unknown>, def: StockDef): StockSnapshot {
   const score = Number(raw.score ?? raw.moeScore ?? 0);
   return {
@@ -79,8 +80,52 @@ function normaliseSignal(raw: Record<string, unknown>, def: StockDef): StockSnap
   };
 }
 
-// ── Hook ───────────────────────────────────────────────────────────────────
-export type MarketStatus = 'loading' | 'live' | 'demo' | 'error';
+// ── Yahoo Finance quote → StockSnapshot ──────────────────────────────────────
+interface YahooQuote {
+  symbol: string;
+  price: number;
+  change: number;
+  changePct: number;
+  volume: number;
+  high?: number;
+  low?: number;
+  marketState?: string;
+}
+
+function normaliseYahoo(q: YahooQuote, def: StockDef): StockSnapshot {
+  const score = seedScore(def.symbol); // MOE score stays deterministic (no AI signal yet)
+  const relVol = q.volume > 0
+    ? q.volume / Math.max(1_000_000, seedScore(def.symbol + '_av') * 50_000)
+    : 1;
+  return {
+    symbol:    def.symbol,
+    company:   def.name ?? def.company,
+    price:     q.price,
+    change:    q.change,
+    changePct: q.changePct,
+    volume:    q.volume,
+    signal:    scoreToSignal(score),
+    score,
+    grade:     scoreToGrade(score),
+    reason:    'سعر مباشر من Yahoo Finance — لا توجد إشارة من MOE Engine بعد',
+    entry:     q.price * 1.001,
+    stop:      q.price * 0.98,
+    target:    q.price * 1.06,
+    atr:       q.price * 0.015,
+    vwap:      q.price * 0.999,
+    relVol,
+    timeframe: '1d',
+    engineReady: false,
+  };
+}
+
+// ── Local API proxy URL (same Replit environment, no CORS) ────────────────────
+function localApiUrl(symbols: string[]): string {
+  return `/api/market/quotes?symbols=${symbols.join(',')}`;
+}
+
+// ── Hook types ────────────────────────────────────────────────────────────────
+export type MarketStatus = 'loading' | 'live' | 'live-yahoo' | 'demo' | 'error';
 export type EngineStatus = 'live' | 'warming' | 'demo';
 
 export interface UseFinnhubMarketResult {
@@ -92,6 +137,7 @@ export interface UseFinnhubMarketResult {
   lastUpdated:    Date | null;
 }
 
+// ── Main hook ─────────────────────────────────────────────────────────────────
 export function useFinnhubMarket(stockList: StockDef[]): UseFinnhubMarketResult {
   const [marketStocks, setMarketStocks] = useState<StockSnapshot[]>(
     () => stockList.map(buildDemoSnapshot),
@@ -101,13 +147,16 @@ export function useFinnhubMarket(stockList: StockDef[]): UseFinnhubMarketResult 
   const [engineStatus,  setEngineStatus]  = useState<EngineStatus>('demo');
   const [engineMessage, setEngineMessage] = useState('وضع تجريبي');
   const [lastUpdated,   setLastUpdated]   = useState<Date | null>(null);
-  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const timerRef   = useRef<ReturnType<typeof setTimeout> | null>(null);
   const mountedRef = useRef(true);
 
   const fetchSignals = useCallback(async () => {
+    if (!mountedRef.current) return;
+
+    // ── 1. Try Cloudflare Worker (has MOE AI signals) ──────────────────────
     try {
       const res = await fetch(`${API_BASE}/api/tradingview/decisions?limit=50`, {
-        mode: 'cors', cache: 'no-store',
+        mode: 'cors', cache: 'no-store', signal: AbortSignal.timeout(5000),
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const json = await res.json() as { decisions?: unknown[] };
@@ -116,7 +165,6 @@ export function useFinnhubMarket(stockList: StockDef[]): UseFinnhubMarketResult 
       if (!mountedRef.current) return;
 
       if (decisions.length > 0) {
-        // Overlay live decisions onto the stock list
         const decisionMap = new Map<string, Record<string, unknown>>(
           decisions.map((d) => [(d as Record<string,unknown>).symbol as string, d as Record<string,unknown>])
         );
@@ -126,28 +174,60 @@ export function useFinnhubMarket(stockList: StockDef[]): UseFinnhubMarketResult 
         });
         setMarketStocks(updated);
         setStatus('live');
-        setStatusMessage(`${decisions.length} إشارة نشطة من Cloudflare Worker`);
+        setStatusMessage(`${decisions.length} إشارة نشطة من MOE Engine`);
         setEngineStatus('live');
         setEngineMessage('MOE Engine متصل · Cloudflare Worker');
-      } else {
-        // Worker responded but no decisions yet
-        setStatus('live');
-        setStatusMessage('Worker متصل — لا توجد إشارات نشطة حالياً');
-        setEngineStatus('warming');
-        setEngineMessage('محرك MOE يبحث عن إشارات…');
-        setMarketStocks(stockList.map(buildDemoSnapshot));
+        setLastUpdated(new Date());
+        return;
       }
-      setLastUpdated(new Date());
+
+      // Worker up but no decisions yet — fall through to Yahoo for prices
+      setStatus('live');
+      setStatusMessage('Worker متصل — جاري تحميل الأسعار المباشرة…');
+      setEngineStatus('warming');
+      setEngineMessage('MOE Engine يبحث عن إشارات…');
     } catch {
-      if (!mountedRef.current) return;
-      // Fallback to demo
-      setStatus('demo');
-      setStatusMessage('وضع تجريبي — Cloudflare Worker غير متاح');
-      setEngineStatus('demo');
-      setEngineMessage('لا يمكن الاتصال بـ Cloudflare Worker');
-      setMarketStocks(stockList.map(buildDemoSnapshot));
-      setLastUpdated(new Date());
+      // Worker unreachable — fall through to Yahoo
     }
+
+    // ── 2. Try local API proxy → Yahoo Finance (live prices, no API key) ──
+    try {
+      const symbols = stockList.map(s => s.symbol);
+      const res = await fetch(localApiUrl(symbols), {
+        cache: 'no-store', signal: AbortSignal.timeout(8000),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const json = await res.json() as { quotes?: YahooQuote[] };
+      const quotes = json.quotes ?? [];
+
+      if (!mountedRef.current) return;
+
+      if (quotes.length > 0) {
+        const quoteMap = new Map(quotes.map(q => [q.symbol, q]));
+        const updated = stockList.map(def => {
+          const q = quoteMap.get(def.symbol);
+          return q ? normaliseYahoo(q, def) : buildDemoSnapshot(def);
+        });
+        setMarketStocks(updated);
+        setStatus('live-yahoo');
+        setStatusMessage(`أسعار مباشرة · ${quotes.length} سهم · Yahoo Finance`);
+        setEngineStatus('warming');
+        setEngineMessage('أسعار حقيقية · MOE Engine غير متصل');
+        setLastUpdated(new Date());
+        return;
+      }
+    } catch {
+      // Yahoo proxy failed — fall through to demo
+    }
+
+    // ── 3. Demo fallback ───────────────────────────────────────────────────
+    if (!mountedRef.current) return;
+    setStatus('demo');
+    setStatusMessage('وضع تجريبي — تعذّر الاتصال بمزود الأسعار');
+    setEngineStatus('demo');
+    setEngineMessage('لا يمكن الاتصال — البيانات تجريبية');
+    setMarketStocks(stockList.map(buildDemoSnapshot));
+    setLastUpdated(new Date());
   }, [stockList]);
 
   useEffect(() => {
