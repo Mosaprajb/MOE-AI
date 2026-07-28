@@ -1,0 +1,54 @@
+name: Deploy Cloudflare Worker
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'worker/**'
+      - '.github/workflows/deploy-cloudflare-worker.yml'
+  workflow_dispatch:
+
+jobs:
+  type-check:
+    name: Type Check
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: worker
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+          cache-dependency-path: worker/pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm type-check
+
+  deploy:
+    name: Deploy Worker (Production)
+    needs: type-check
+    runs-on: ubuntu-latest
+    environment: production
+    defaults:
+      run:
+        working-directory: worker
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+          cache-dependency-path: worker/pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+      - name: Deploy to Cloudflare Workers
+        run: pnpm deploy
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}

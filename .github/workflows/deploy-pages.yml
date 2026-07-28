@@ -1,0 +1,38 @@
+name: Deploy Frontend (Replit)
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'artifacts/trading-bot/**'
+      - '.github/workflows/deploy-pages.yml'
+  workflow_dispatch:
+
+# Note: Frontend deployment is handled by Replit publishing.
+# This workflow is informational — it builds and verifies the frontend
+# but actual hosting is via Replit's static deployment (artifact.toml).
+
+jobs:
+  build-verify:
+    name: Build & Verify Frontend
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Build frontend
+        run: pnpm --filter @workspace/trading-bot run build
+        env:
+          PORT: 3000
+          BASE_PATH: /
+          VITE_MOE_API_BASE_URL: https://moerand-alerts.mosaprajb.workers.dev
+      - name: Verify output
+        run: |
+          test -f artifacts/trading-bot/dist/public/index.html && echo "✓ index.html exists"
+          test -f artifacts/trading-bot/dist/public/assets/*.js  && echo "✓ JS bundle exists"

@@ -1,0 +1,20 @@
+{
+  "name": "@workspace/moe-worker",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "dev": "wrangler dev src/index.ts --local",
+    "deploy": "wrangler deploy src/index.ts",
+    "deploy:sandbox": "wrangler deploy src/index.ts --env sandbox",
+    "type-check": "tsc --noEmit",
+    "db:migrate": "wrangler d1 execute moe-db --file=src/db/schema.sql"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20260702.1",
+    "typescript": "^5.9.3",
+    "wrangler": "^3.114.17"
+  },
+  "dependencies": {
+    "hono": "^4.7.11"
+  }
+}

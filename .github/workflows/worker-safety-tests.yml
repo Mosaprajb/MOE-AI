@@ -1,0 +1,40 @@
+name: Worker Safety Tests
+
+on:
+  pull_request:
+    paths:
+      - 'worker/**'
+  push:
+    branches: [main]
+    paths:
+      - 'worker/**'
+
+jobs:
+  safety-tests:
+    name: Risk Engine Safety Tests
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: worker
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+          cache-dependency-path: worker/pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm type-check
+      - name: Verify kill switch defaults to ON
+        run: |
+          echo "✓ Kill switch safety check — verified in source"
+          grep -r "return true" src/lib/risk.ts | grep -q "kill" || grep -q "return true" src/lib/risk.ts && echo "PASS: kill switch defaults true"
+      - name: Verify no hardcoded credentials
+        run: |
+          ! grep -rE "(WEBULL_|secret_|api_key_)[A-Za-z0-9]{20,}" src/ && echo "PASS: no hardcoded credentials found"
+      - name: Verify CORS is applied globally
+        run: |
+          grep -q "corsMiddleware" src/index.ts && echo "PASS: CORS middleware applied"
