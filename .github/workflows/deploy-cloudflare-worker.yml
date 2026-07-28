@@ -48,20 +48,42 @@ jobs:
           cache-dependency-path: worker/pnpm-lock.yaml
       - run: pnpm install --frozen-lockfile
 
-      # Substitute real KV / D1 IDs if the GitHub Secrets are set
-      - name: Inject KV and D1 IDs
+      # If real IDs are provided as secrets, inject them.
+      # If not, strip the KV/D1 bindings so wrangler can still deploy.
+      - name: Configure KV and D1 bindings
         run: |
-          if [ -n "${{ secrets.KV_NAMESPACE_ID }}" ]; then
-            sed -i 's/id = "placeholder"/id = "${{ secrets.KV_NAMESPACE_ID }}"/' wrangler.toml
+          KV_ID="${{ secrets.KV_NAMESPACE_ID }}"
+          D1_ID="${{ secrets.D1_DATABASE_ID }}"
+
+          if [ -n "$KV_ID" ]; then
+            sed -i "s/id = \"placeholder\"/id = \"$KV_ID\"/" wrangler.toml
             echo "✓ KV namespace ID injected"
           else
-            echo "⚠ KV_NAMESPACE_ID secret not set — using placeholder (Worker will run without KV)"
+            # Remove the entire [[kv_namespaces]] block so wrangler doesn't fail
+            python3 - <<'PYEOF'
+          import re, pathlib
+          p = pathlib.Path("wrangler.toml")
+          txt = p.read_text()
+          txt = re.sub(r'\[\[kv_namespaces\]\][^\[]*', '', txt, flags=re.DOTALL)
+          txt = re.sub(r'\[\[env\.sandbox\.kv_namespaces\]\][^\[]*', '', txt, flags=re.DOTALL)
+          p.write_text(txt)
+          print("⚠ KV_NAMESPACE_ID not set — KV binding removed for this deploy")
+          PYEOF
           fi
-          if [ -n "${{ secrets.D1_DATABASE_ID }}" ]; then
-            sed -i "0,/database_id = \"placeholder\"/s/database_id = \"placeholder\"/database_id = \"${{ secrets.D1_DATABASE_ID }}\"/" wrangler.toml
+
+          if [ -n "$D1_ID" ]; then
+            sed -i "s/database_id = \"placeholder\"/database_id = \"$D1_ID\"/" wrangler.toml
             echo "✓ D1 database ID injected"
           else
-            echo "⚠ D1_DATABASE_ID secret not set — using placeholder (Worker will run without D1)"
+            python3 - <<'PYEOF'
+          import re, pathlib
+          p = pathlib.Path("wrangler.toml")
+          txt = p.read_text()
+          txt = re.sub(r'\[\[d1_databases\]\][^\[]*', '', txt, flags=re.DOTALL)
+          txt = re.sub(r'\[\[env\.sandbox\.d1_databases\]\][^\[]*', '', txt, flags=re.DOTALL)
+          p.write_text(txt)
+          print("⚠ D1_DATABASE_ID not set — D1 binding removed for this deploy")
+          PYEOF
           fi
 
       - name: Deploy to Cloudflare Workers
