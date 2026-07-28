@@ -256,7 +256,7 @@ function CandidatesTable({ candidates }: { candidates: ScanCandidate[] }) {
 
 // ── Open Positions Table (sortable) ───────────────────────────────────────────
 type PosSort = 'symbol' | 'pnlPct' | 'pnlAmt' | 'entry' | 'current' | 'score';
-function PositionsTable({ positions }: { positions: ScannerPosition[] }) {
+function PositionsTable({ positions }: { positions: (ScannerPosition & { _demo?: boolean })[] }) {
   const { sort, dir, onSort } = useSort<PosSort>('pnlPct');
   const [search, setSearch] = useState('');
 
@@ -323,9 +323,17 @@ function PositionsTable({ positions }: { positions: ScannerPosition[] }) {
               const prog   = p.takeProfit > p.entryPrice
                 ? Math.max(0, Math.min(100, ((p.currentPrice - p.entryPrice) / (p.takeProfit - p.entryPrice)) * 100)) : 0;
               return (
-                <tr key={p.id}>
+                <tr key={p.id} style={{ opacity: (p as { _demo?: boolean })._demo ? 0.9 : 1 }}>
                   <td>
-                    <div style={{ fontWeight:700 }}>{p.symbol}</div>
+                    <div style={{ display:'flex', alignItems:'center', gap:5 }}>
+                      <span style={{ fontWeight:700 }}>{p.symbol}</span>
+                      {(p as { _demo?: boolean })._demo && (
+                        <span style={{ fontSize:9, fontWeight:800, padding:'1px 4px', borderRadius:3,
+                          background:'rgba(251,191,36,.15)', color:'#fbbf24', border:'1px solid rgba(251,191,36,.3)' }}>
+                          DEMO
+                        </span>
+                      )}
+                    </div>
                     <div style={{ fontSize:10, color:'var(--muted)' }}>High: {fmt(p.highestPrice)}</div>
                   </td>
                   <td><span style={{ fontSize:10, fontWeight:700, padding:'1px 6px', borderRadius:4,
@@ -571,6 +579,40 @@ function WatchlistTab({
   );
 }
 
+// ── Demo position factory ─────────────────────────────────────────────────────
+const DEMO_STOCKS = [
+  { symbol:'NVDA', entry:127.45, price:129.23, highest:130.10, score:8, confidence:'HIGH'  as const },
+  { symbol:'AAPL', entry:211.80, price:212.94, highest:213.50, score:7, confidence:'HIGH'  as const },
+  { symbol:'TSLA', entry: 52.30, price: 53.86, highest: 54.20, score:6, confidence:'MEDIUM' as const },
+  { symbol:'AMD',  entry: 98.12, price: 97.40, highest: 99.80, score:5, confidence:'MEDIUM' as const },
+];
+let _demoIdx = 0;
+function makeDemoPosition(mode: string): ScannerPosition {
+  const d = DEMO_STOCKS[_demoIdx % DEMO_STOCKS.length];
+  _demoIdx++;
+  const tpPct = 1.5; const trailPct = 1.0;
+  return {
+    id:           `demo-${Date.now()}`,
+    symbol:       d.symbol,
+    quantity:     10,
+    entryPrice:   d.entry,
+    currentPrice: d.price,
+    highestPrice: d.highest,
+    stopLoss:     d.highest * (1 - trailPct / 100),
+    takeProfit:   d.entry   * (1 + tpPct    / 100),
+    hardStop:     d.entry   * (1 - 1.5      / 100),
+    trailPct,
+    tpPct,
+    confidence: d.confidence,
+    score:      d.score,
+    status:     'OPEN',
+    mode,
+    openedAt:   new Date().toISOString(),
+    updatedAt:  new Date().toISOString(),
+    _demo: true,
+  } as ScannerPosition & { _demo: boolean };
+}
+
 // ── Main Page ─────────────────────────────────────────────────────────────────
 export default function ScannerPage({ mode, showToast }: Props) {
   const {
@@ -578,6 +620,7 @@ export default function ScannerPage({ mode, showToast }: Props) {
     watchlist, scanning, loading, error, runScan, loadQuotes, updateWatchlist,
   } = useScanner(mode);
 
+  const [demoPositions, setDemoPositions] = useState<(ScannerPosition & { _demo?: boolean })[]>([]);
   const [tab,        setTab]        = useState<'market' | 'positions' | 'candidates' | 'history' | 'watchlist' | 'runs'>('market');
   const [nextScanIn, setNextScanIn] = useState(0);
   const scanIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -731,7 +774,31 @@ export default function ScannerPage({ mode, showToast }: Props) {
 
       {tab === 'market'     && <MarketGrid quotes={quotes} watchlist={watchlist} scanning={scanning}
         candidates={candidates} onRefresh={loadQuotes} quotesAt={quotesAt} />}
-      {tab === 'positions'  && <PositionsTable positions={positions} />}
+      {tab === 'positions'  && (
+        <div>
+          {/* Demo trade toolbar */}
+          <div style={{ display:'flex', gap:8, marginBottom:12, flexWrap:'wrap', alignItems:'center' }}>
+            <button
+              className="btn btn-ghost btn-sm"
+              onClick={() => { setDemoPositions(p => [...p, makeDemoPosition(mode)]); showToast('🎭 Demo position added', 'success'); }}
+              style={{ borderColor:'rgba(251,191,36,.4)', color:'#fbbf24' }}>
+              🎭 Add Demo Trade
+            </button>
+            {demoPositions.length > 0 && (
+              <button
+                className="btn btn-ghost btn-sm"
+                onClick={() => { setDemoPositions([]); showToast('Demo positions cleared', 'success'); }}
+                style={{ borderColor:'rgba(255,105,115,.3)', color:'var(--red)', fontSize:11 }}>
+                ✕ Clear Demo ({demoPositions.length})
+              </button>
+            )}
+            <span style={{ fontSize:11, color:'var(--muted)' }}>
+              {demoPositions.length > 0 ? 'Demo positions are local only — not real orders' : 'Add a demo trade to preview how positions look'}
+            </span>
+          </div>
+          <PositionsTable positions={[...demoPositions, ...positions]} />
+        </div>
+      )}
       {tab === 'candidates' && <CandidatesTable candidates={candidates} />}
       {tab === 'history'    && <HistoryTable history={history} />}
       {tab === 'watchlist'  && <WatchlistTab watchlist={watchlist}

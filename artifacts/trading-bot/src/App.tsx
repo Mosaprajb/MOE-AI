@@ -129,7 +129,7 @@ function TopBar({
       <div className="topbar-spacer" />
 
       {/* ── Market Clock ── */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginRight: 4 }}>
+      <div className="topbar-clock" style={{ display: 'flex', alignItems: 'center', gap: 10, marginRight: 4 }}>
         <div style={{ textAlign: 'right', lineHeight: 1.3 }}>
           <div style={{ fontFamily: 'monospace', fontSize: 13, fontWeight: 700, letterSpacing: '.03em', color: 'var(--fg)' }}>
             {clock.timeET} <span style={{ fontSize: 10, color: 'var(--muted)', fontWeight: 400 }}>ET</span>
@@ -145,9 +145,17 @@ function TopBar({
         </div>
       </div>
 
+      {/* Session badge — always visible on mobile instead of full clock */}
+      <div className="topbar-session-badge" style={{
+        display: 'none', padding: '3px 7px', borderRadius: 6, fontSize: 10, fontWeight: 800,
+        background: sesStyle.bg, color: sesStyle.color, border: `1px solid ${sesStyle.color}44`,
+      }}>
+        {clock.session}
+      </div>
+
       <div className="conn-pill">
         <span className={`conn-dot ${connected ? 'live' : 'error'}`} />
-        {connected ? 'Worker Connected' : 'Disconnected'}
+        <span className="topbar-conn-text">{connected ? 'Worker Connected' : 'Disconnected'}</span>
       </div>
 
       <div className="mode-switch">
@@ -170,7 +178,7 @@ function TopBar({
         {killSwitch ? '🔴 KILL' : '🟢 ARM'}
       </button>
 
-      <button className="btn btn-ghost btn-sm" onClick={onLogout}>Logout</button>
+      <button className="btn btn-ghost btn-sm topbar-logout" onClick={onLogout}>Logout</button>
 
       {confirmLive && (
         <div className="modal-overlay" onClick={() => setConfirmLive(false)}>
