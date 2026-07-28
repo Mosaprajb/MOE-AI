@@ -1,0 +1,27 @@
+kind = "web"
+previewPath = "/"
+title = "Auto Trader - Webull"
+version = "1.0.0"
+id = "artifacts/trading-bot"
+router = "path"
+
+[[services]]
+name = "web"
+paths = [ "/" ]
+localPort = 20883
+
+[services.development]
+run = "pnpm --filter @workspace/trading-bot run dev"
+
+[services.production]
+build = [ "pnpm", "--filter", "@workspace/trading-bot", "run", "build" ]
+serve = "static"
+publicDir = "artifacts/trading-bot/dist/public"
+
+[[services.production.rewrites]]
+from = "/*"
+to = "/index.html"
+
+[services.env]
+PORT = "20883"
+BASE_PATH = "/"

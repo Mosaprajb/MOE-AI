@@ -1,0 +1,1 @@
+- [MOE-AI Trading Platform](moerand-project.md) — full React+Vite trading SPA built in artifacts/trading-bot; PIN auth, 8 pages, CF Worker backend, Arabic RTL dark theme.

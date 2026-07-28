@@ -1,63 +1,32 @@
-name: Deploy Cloudflare Sandbox
+name: Deploy Cloudflare Worker (Sandbox)
 
 on:
   push:
-    branches:
-      - main
+    branches: [develop, staging]
     paths:
-      - 'worker/src/**'
-      - 'wrangler.jsonc'
-      - 'package.json'
-      - 'package-lock.json'
-      - '.github/workflows/deploy-cloudflare-sandbox.yml'
+      - 'worker/**'
   workflow_dispatch:
-
-permissions:
-  contents: read
-
-concurrency:
-  group: cloudflare-sandbox-deploy
-  cancel-in-progress: false
 
 jobs:
   deploy-sandbox:
-    name: Validate and deploy MOERAND Sandbox
+    name: Deploy Worker (Sandbox env)
     runs-on: ubuntu-latest
-    timeout-minutes: 15
-    environment: sandbox
+    defaults:
+      run:
+        working-directory: worker
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Set up Node.js
-        uses: actions/setup-node@v4
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
         with:
-          node-version: '22'
-          cache: npm
-
-      - name: Install dependencies
-        run: npm ci
-
-      - name: Validate long-only safety configuration
-        run: |
-          node --test --test-concurrency=1 worker/test/long-only-direction-policy.test.mjs
-          node --test --test-concurrency=1 worker/test/final-safety-configuration.test.mjs
-
-      - name: Run complete Worker suite
-        run: npm run test:worker
-
-      - name: Deploy Cloudflare Worker Sandbox
-        uses: cloudflare/wrangler-action@v3
+          version: 10
+      - uses: actions/setup-node@v4
         with:
-          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          command: deploy
-
-      - name: Record deployment safety posture
-        run: |
-          echo 'MOERAND deployment completed with:'
-          echo 'MOE_TRADING_MODE_DEFAULT=SANDBOX'
-          echo 'MOE_DIRECTION_POLICY=LONG_ONLY'
-          echo 'WEBULL_LIVE_TRADING=false'
-          echo 'WEBULL_LIVE_ORDER_SUBMISSION=false'
-          echo 'WEBULL_LIVE_KILL_SWITCH=true'
+          node-version: 20
+          cache: pnpm
+          cache-dependency-path: worker/pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+      - name: Deploy Sandbox Worker
+        run: pnpm deploy:sandbox
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}

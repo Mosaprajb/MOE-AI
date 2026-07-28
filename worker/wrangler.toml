@@ -1,0 +1,62 @@
+name = "moerand-alerts"
+main = "src/index.ts"
+compatibility_date = "2024-11-01"
+compatibility_flags = ["nodejs_compat"]
+
+# KV Namespaces
+[[kv_namespaces]]
+binding = "CONFIG"
+id = "REPLACE_WITH_KV_NAMESPACE_ID"
+
+# D1 Database
+[[d1_databases]]
+binding = "DB"
+database_name = "moe-db"
+database_id = "REPLACE_WITH_D1_DATABASE_ID"
+
+# Queues (for async order processing)
+[[queues.producers]]
+queue = "moe-orders"
+binding = "ORDER_QUEUE"
+
+[[queues.consumers]]
+queue = "moe-orders"
+max_batch_size = 5
+max_batch_timeout = 10
+
+# Secrets (set via: wrangler secret put <NAME>)
+# WEBULL_LIVE_APP_KEY
+# WEBULL_LIVE_APP_SECRET
+# WEBULL_LIVE_ACCESS_TOKEN
+# WEBULL_LIVE_REFRESH_TOKEN
+# WEBULL_LIVE_ACCOUNT_ID
+# WEBULL_SANDBOX_APP_KEY
+# WEBULL_SANDBOX_APP_SECRET
+# WEBULL_SANDBOX_ACCESS_TOKEN
+# WEBULL_SANDBOX_ACCOUNT_ID
+# MOE_WEBHOOK_SECRET
+# MOE_KILL_SWITCH_PIN
+
+[vars]
+WORKER_VERSION = "2.0.0"
+STRATEGY_VERSION = "MOE v6.3.1"
+MAX_OPEN_POSITIONS = "4"
+MAX_DAILY_TRADES = "8"
+MAX_DAILY_LOSS_PCT = "2"
+MAX_OPEN_RISK_PCT = "2"
+MAX_PORTFOLIO_HEAT = "6"
+ALLOWED_ORIGINS = "https://moerand-alerts.mosaprajb.workers.dev,https://moe-ai.replit.app"
+
+# Sandbox environment
+[env.sandbox]
+name = "moerand-alerts-sandbox"
+vars = { WORKER_VERSION = "2.0.0", ENV = "sandbox" }
+
+[[env.sandbox.kv_namespaces]]
+binding = "CONFIG"
+id = "REPLACE_WITH_SANDBOX_KV_ID"
+
+[[env.sandbox.d1_databases]]
+binding = "DB"
+database_name = "moe-db-sandbox"
+database_id = "REPLACE_WITH_SANDBOX_D1_ID"
