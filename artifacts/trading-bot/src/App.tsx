@@ -260,10 +260,10 @@ export default function App() {
     return () => clearInterval(t);
   }, []);
 
-  const showToast = (msg: string, type?: 'success'|'error') => {
+  const showToast = useCallback((msg: string, type?: 'success'|'error', ms = 3200) => {
     setToast({ msg, type });
-    setTimeout(() => setToast(null), 3200);
-  };
+    setTimeout(() => setToast(null), ms);
+  }, []);
 
   const handleModeChange = useCallback(async (m: TradingMode) => {
     setMode(m);

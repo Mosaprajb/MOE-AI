@@ -2,6 +2,7 @@
 import { useMemo } from 'react';
 import { useDashboard, useDecisions } from '../hooks/useApi';
 import { useMarketClock } from '../hooks/useMarketClock';
+import { useTradeAlerts } from '../hooks/useTradeAlerts';
 import type { TradingMode } from '../lib/config';
 import type { Position, Order, Decision } from '../lib/types';
 
@@ -21,9 +22,9 @@ function StatusBadge({ value }: { value: string }) {
   return <span className={`badge ${map[value?.toUpperCase()] ?? 'badge-muted'}`}>{value}</span>;
 }
 
-interface Props { mode: TradingMode; showToast: (msg: string, type?: 'success'|'error') => void; }
+interface Props { mode: TradingMode; showToast: (msg: string, type?: 'success'|'error', ms?: number) => void; }
 
-export default function DashboardPage({ mode }: Props) {
+export default function DashboardPage({ mode, showToast }: Props) {
   const { data, loading, error, lastUpdated } = useDashboard(mode, 15_000);
   const { data: decisions } = useDecisions(15_000);
   const clock = useMarketClock();
@@ -31,6 +32,7 @@ export default function DashboardPage({ mode }: Props) {
   const account   = data?.account   ?? {};
   const positions: Position[] = data?.positions ?? [];
   const orders:    Order[]    = data?.orders    ?? [];
+  useTradeAlerts(positions, mode, showToast);
   const safety    = data?.safety    ?? {};
 
   const openPnl   = useMemo(() => positions.reduce((s, p) => s + (p.unrealizedPnl ?? 0), 0), [positions]);
