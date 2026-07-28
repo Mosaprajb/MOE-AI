@@ -22,8 +22,10 @@ export const LS_SETTINGS  = 'moe-settings-v1';
 
 // Safety defaults (mirrors Cloudflare Worker config)
 export const SAFETY_DEFAULTS = {
-  killSwitch: true,
+  killSwitch: false,
   liveUnlocked: false,
   liveAutomationArmed: false,
   liveOrderSubmission: false,
 } as const;
+
+export const LS_KILL_SWITCH = 'moe-kill-switch';
