@@ -5,18 +5,24 @@ export interface Env {
   CONFIG?: KVNamespace;
   // D1 (optional until database is created)
   DB?: D1Database;
-  // Secrets
-  WEBULL_LIVE_APP_KEY?:       string;
-  WEBULL_LIVE_APP_SECRET?:    string;
-  WEBULL_LIVE_ACCESS_TOKEN?:  string;
-  WEBULL_LIVE_REFRESH_TOKEN?: string;
-  WEBULL_LIVE_ACCOUNT_ID?:    string;
-  WEBULL_SANDBOX_APP_KEY?:    string;
-  WEBULL_SANDBOX_APP_SECRET?: string;
+  // Secrets — LIVE
+  WEBULL_LIVE_APP_KEY?:        string;
+  WEBULL_LIVE_APP_SECRET?:     string;
+  WEBULL_LIVE_ACCESS_TOKEN?:   string;
+  WEBULL_LIVE_REFRESH_TOKEN?:  string;
+  WEBULL_LIVE_ACCOUNT_ID?:     string;
+  // Secrets — SANDBOX (new naming)
+  WEBULL_SANDBOX_APP_KEY?:     string;
+  WEBULL_SANDBOX_APP_SECRET?:  string;
   WEBULL_SANDBOX_ACCESS_TOKEN?:string;
-  WEBULL_SANDBOX_ACCOUNT_ID?: string;
-  MOE_WEBHOOK_SECRET?:        string;
-  MOE_KILL_SWITCH_PIN?:       string;
+  WEBULL_SANDBOX_ACCOUNT_ID?:  string;
+  // Secrets — SANDBOX (legacy naming, used as fallback)
+  WEBULL_APP_KEY?:             string;
+  WEBULL_APP_SECRET?:          string;
+  WEBULL_ACCESS_TOKEN?:        string;
+  WEBULL_ACCOUNT_ID?:          string;
+  MOE_WEBHOOK_SECRET?:         string;
+  MOE_KILL_SWITCH_PIN?:        string;
   // Vars
   WORKER_VERSION:   string;
   STRATEGY_VERSION: string;

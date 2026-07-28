@@ -19,23 +19,21 @@ export class WebullClient {
       if (!env.WEBULL_LIVE_APP_KEY || !env.WEBULL_LIVE_APP_SECRET || !env.WEBULL_LIVE_ACCESS_TOKEN || !env.WEBULL_LIVE_ACCOUNT_ID)
         return null;
       return new WebullClient({
-        appKey:      env.WEBULL_LIVE_APP_KEY,
-        appSecret:   env.WEBULL_LIVE_APP_SECRET,
-        accessToken: env.WEBULL_LIVE_ACCESS_TOKEN,
-        refreshToken:env.WEBULL_LIVE_REFRESH_TOKEN,
-        accountId:   env.WEBULL_LIVE_ACCOUNT_ID,
-        mode:        'LIVE',
+        appKey:       env.WEBULL_LIVE_APP_KEY,
+        appSecret:    env.WEBULL_LIVE_APP_SECRET,
+        accessToken:  env.WEBULL_LIVE_ACCESS_TOKEN,
+        refreshToken: env.WEBULL_LIVE_REFRESH_TOKEN,
+        accountId:    env.WEBULL_LIVE_ACCOUNT_ID,
+        mode:         'LIVE',
       });
     }
-    if (!env.WEBULL_SANDBOX_APP_KEY || !env.WEBULL_SANDBOX_APP_SECRET || !env.WEBULL_SANDBOX_ACCESS_TOKEN || !env.WEBULL_SANDBOX_ACCOUNT_ID)
-      return null;
-    return new WebullClient({
-      appKey:      env.WEBULL_SANDBOX_APP_KEY,
-      appSecret:   env.WEBULL_SANDBOX_APP_SECRET,
-      accessToken: env.WEBULL_SANDBOX_ACCESS_TOKEN,
-      accountId:   env.WEBULL_SANDBOX_ACCOUNT_ID,
-      mode:        'SANDBOX',
-    });
+    // Sandbox: accept WEBULL_SANDBOX_* (new) or WEBULL_* (legacy fallback)
+    const appKey      = env.WEBULL_SANDBOX_APP_KEY      ?? env.WEBULL_APP_KEY;
+    const appSecret   = env.WEBULL_SANDBOX_APP_SECRET   ?? env.WEBULL_APP_SECRET;
+    const accessToken = env.WEBULL_SANDBOX_ACCESS_TOKEN ?? env.WEBULL_ACCESS_TOKEN;
+    const accountId   = env.WEBULL_SANDBOX_ACCOUNT_ID   ?? env.WEBULL_ACCOUNT_ID;
+    if (!appKey || !appSecret || !accessToken || !accountId) return null;
+    return new WebullClient({ appKey, appSecret, accessToken, accountId, mode: 'SANDBOX' });
   }
 
   private async req<T>(path: string, init: RequestInit = {}): Promise<T> {
