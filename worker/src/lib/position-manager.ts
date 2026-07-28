@@ -5,7 +5,7 @@ import type { ScannerPosition } from './types';
 import { WebullClient } from './webull';
 import { fetchQuote } from './market-data';
 
-/** Ensure scanner_positions and scanner_runs tables exist */
+/** Ensure scanner_positions, scanner_runs, and trades tables exist */
 export async function ensureScannerTables(env: Env): Promise<void> {
   await env.DB?.exec(`
     CREATE TABLE IF NOT EXISTS scanner_positions (
@@ -42,6 +42,23 @@ export async function ensureScannerTables(env: Env): Promise<void> {
       errors            TEXT,
       duration_ms       INTEGER,
       ran_at            TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS trades (
+      id          TEXT PRIMARY KEY,
+      symbol      TEXT NOT NULL,
+      side        TEXT NOT NULL DEFAULT 'BUY',
+      quantity    INTEGER,
+      entry_price REAL,
+      exit_price  REAL,
+      pnl         REAL,
+      pnl_pct     REAL,
+      stop_loss   REAL,
+      take_profit REAL,
+      signal      TEXT,
+      status      TEXT DEFAULT 'CLOSED',
+      mode        TEXT NOT NULL,
+      opened_at   TEXT,
+      closed_at   TEXT
     );
   `);
 }
@@ -110,14 +127,28 @@ export async function managePositions(env: Env, mode: TradingMode): Promise<{
             symbol: pos.symbol, side: 'SELL', type: 'MARKET',
             qty: pos.quantity, idempotencyKey: `scanner-close-${pos.id}`,
           });
-          const pnl = (price - pos.entryPrice) * pos.quantity;
+          const pnl    = (price - pos.entryPrice) * pos.quantity;
+          const pnlPct = ((price - pos.entryPrice) / pos.entryPrice) * 100;
+          const now    = new Date().toISOString();
           await env.DB?.prepare(`
             UPDATE scanner_positions SET
               status = 'CLOSED', exit_price = ?, pnl = ?, close_reason = ?,
               current_price = ?, closed_at = ?, updated_at = ?
             WHERE id = ?
-          `).bind(price, pnl, closeReason, price,
-            new Date().toISOString(), new Date().toISOString(), pos.id).run();
+          `).bind(price, pnl, closeReason, price, now, now, pos.id).run();
+          // Also write to unified trades table so History page shows it
+          await env.DB?.prepare(`
+            INSERT OR IGNORE INTO trades
+              (id, symbol, side, quantity, entry_price, exit_price, pnl, pnl_pct,
+               stop_loss, take_profit, signal, status, mode, opened_at, closed_at)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+          `).bind(
+            `trade-${pos.id}`, pos.symbol, 'BUY', pos.quantity,
+            pos.entryPrice, price, pnl, pnlPct,
+            pos.stopLoss, pos.takeProfit,
+            `Scanner(${pos.confidence},score=${pos.score})`,
+            'CLOSED', pos.mode, pos.openedAt, now,
+          ).run();
           closed++;
         } catch (e) { errors.push(`Close ${pos.symbol}: ${String(e)}`); }
       } else {

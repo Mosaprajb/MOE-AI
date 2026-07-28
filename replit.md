@@ -38,6 +38,6 @@ Single-owner, institutional-grade automated trading system connected to Webull (
 - `MOE_WEBHOOK_SECRET`
 
 ## User Preferences
-- Arabic RTL UI throughout
+- **UI language is always English** — the user communicates in Arabic but all app text, labels, buttons, and pages must be in English
 - Dark institutional design (`#071018` background)
 - No console.log spam — use structured error boundaries

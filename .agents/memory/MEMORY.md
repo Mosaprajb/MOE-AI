@@ -1,2 +1,3 @@
-- [MOE-AI Trading Platform](moerand-project.md) — full React+Vite trading SPA built in artifacts/trading-bot; PIN auth, 8 pages, CF Worker backend, Arabic RTL dark theme.
+- [MOE-AI Trading Platform](moerand-project.md) — full React+Vite trading SPA built in artifacts/trading-bot; PIN auth, 8 pages, CF Worker backend. UI is always English even though user writes in Arabic.
+- [UI Language Rule](ui-language.md) — app UI must always be English; user communicates in Arabic but all labels/buttons/text in the app must be English.
 - [MOE Scalp Scanner](moe-scalp-scanner.md) — autonomous scanner using Yahoo Finance for candles; EMA/RSI/Volume scoring; trailing SL in D1; cron every 5 min.

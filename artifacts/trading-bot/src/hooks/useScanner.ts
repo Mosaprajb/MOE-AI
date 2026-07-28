@@ -77,6 +77,7 @@ interface ScanRun {
 
 export function useScanner(mode: TradingMode) {
   const [positions,   setPositions]   = useState<ScannerPosition[]>([]);
+  const [history,     setHistory]     = useState<ScannerPosition[]>([]);
   const [lastResult,  setLastResult]  = useState<ScanResult | null>(null);
   const [runs,        setRuns]        = useState<ScanRun[]>([]);
   const [config,      setConfig]      = useState<ScannerConfig | null>(null);
@@ -88,13 +89,15 @@ export function useScanner(mode: TradingMode) {
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const [posRes, runsRes, cfgRes, wlRes] = await Promise.all([
+      const [posRes, histRes, runsRes, cfgRes, wlRes] = await Promise.all([
         fetch(`${API_BASE}/api/scanner/positions`, { mode: 'cors' }),
-        fetch(`${API_BASE}/api/scanner/runs?limit=10`, { mode: 'cors' }),
+        fetch(`${API_BASE}/api/scanner/history?limit=50`, { mode: 'cors' }),
+        fetch(`${API_BASE}/api/scanner/runs?limit=20`, { mode: 'cors' }),
         fetch(`${API_BASE}/api/scanner/config`, { mode: 'cors' }),
         fetch(`${API_BASE}/api/scanner/watchlist`, { mode: 'cors' }),
       ]);
       if (posRes.ok)  { const d = await posRes.json();  setPositions(d.data ?? []); }
+      if (histRes.ok) { const d = await histRes.json(); setHistory(d.data ?? []); }
       if (runsRes.ok) { const d = await runsRes.json(); setRuns(d.data ?? []); }
       if (cfgRes.ok)  { setConfig(await cfgRes.json()); }
       if (wlRes.ok)   { const d = await wlRes.json(); setWatchlist(d.symbols ?? []); }
@@ -126,5 +129,5 @@ export function useScanner(mode: TradingMode) {
     await load();
   }, [load]);
 
-  return { positions, lastResult, runs, config, watchlist, scanning, loading, error, runScan, reload: load, updateWatchlist };
+  return { positions, history, lastResult, runs, config, watchlist, scanning, loading, error, runScan, reload: load, updateWatchlist };
 }

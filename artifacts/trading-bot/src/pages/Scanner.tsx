@@ -1,4 +1,4 @@
-// MOE-AI — Scanner Page
+// MOE-AI — Scanner Page (English UI)
 import { useState, useEffect, useRef } from 'react';
 import type { TradingMode } from '../lib/config';
 import { useScanner } from '../hooks/useScanner';
@@ -6,21 +6,22 @@ import type { ScanCandidate, ScannerPosition } from '../hooks/useScanner';
 
 interface Props { mode: TradingMode; showToast: (msg: string, type?: 'success' | 'error') => void; }
 
-const CONF_STYLE: Record<string, { bg: string; color: string; label: string }> = {
-  HIGH:   { bg: 'rgba(34,197,94,.15)',   color: '#22c55e', label: '🟢 عالية' },
-  MEDIUM: { bg: 'rgba(251,191,36,.15)',  color: '#fbbf24', label: '🟡 متوسطة' },
+const CONF: Record<string, { bg: string; color: string; label: string }> = {
+  HIGH:   { bg: 'rgba(34,197,94,.15)',  color: '#22c55e', label: '🟢 HIGH'   },
+  MEDIUM: { bg: 'rgba(251,191,36,.15)', color: '#fbbf24', label: '🟡 MEDIUM' },
 };
 
 function fmt(n?: number, dec = 2) { return n != null ? `$${n.toFixed(dec)}` : '—'; }
 function fmtPct(n?: number) { return n != null ? `${n >= 0 ? '+' : ''}${n.toFixed(2)}%` : '—'; }
 function pnlColor(v?: number) { return v == null ? '' : v >= 0 ? 'var(--green)' : 'var(--red)'; }
+function today() { return new Date().toISOString().slice(0, 10); }
 
-// ── Candidate Card ────────────────────────────────────────────────────────────
+// ── Candidate Card ─────────────────────────────────────────────────────────────
 function CandidateCard({ c }: { c: ScanCandidate }) {
   const [expanded, setExpanded] = useState(false);
-  const cs = CONF_STYLE[c.confidence];
-  const tpPct = ((c.takeProfit - c.entry) / c.entry * 100).toFixed(2);
-  const slPct = ((c.stopLoss  - c.entry) / c.entry * 100).toFixed(2);
+  const cs     = CONF[c.confidence];
+  const tpPct  = ((c.takeProfit - c.entry) / c.entry * 100).toFixed(2);
+  const slPct  = ((c.stopLoss  - c.entry) / c.entry * 100).toFixed(2);
   return (
     <div className="card" style={{ cursor: 'pointer' }} onClick={() => setExpanded(e => !e)}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
@@ -28,7 +29,7 @@ function CandidateCard({ c }: { c: ScanCandidate }) {
           <div style={{ fontWeight: 800, fontSize: 16 }}>{c.symbol}</div>
           <div style={{ fontSize: 11, fontWeight: 700, padding: '2px 8px', borderRadius: 5,
             background: cs.bg, color: cs.color }}>{cs.label}</div>
-          <div style={{ fontSize: 11, color: 'var(--muted)' }}>نقاط: {c.score}/10</div>
+          <div style={{ fontSize: 11, color: 'var(--muted)' }}>Score: {c.score}/10</div>
         </div>
         <div style={{ textAlign: 'right' }}>
           <div style={{ fontWeight: 700 }}>{fmt(c.price)}</div>
@@ -55,7 +56,7 @@ function CandidateCard({ c }: { c: ScanCandidate }) {
       {/* Expanded reasons */}
       {expanded && (
         <div style={{ marginTop: 10, paddingTop: 10, borderTop: '1px solid var(--border)' }}>
-          <div style={{ fontSize: 11, color: 'var(--muted)', marginBottom: 6 }}>مؤشرات الدخول:</div>
+          <div style={{ fontSize: 11, color: 'var(--muted)', marginBottom: 6 }}>Entry signals:</div>
           {c.reasons.map((r, i) => (
             <div key={i} style={{ fontSize: 12, padding: '2px 0', display: 'flex', alignItems: 'center', gap: 6 }}>
               <span style={{ color: 'var(--green)' }}>✓</span> {r}
@@ -65,7 +66,7 @@ function CandidateCard({ c }: { c: ScanCandidate }) {
             <span>RSI: {c.rsi14.toFixed(1)}</span>
             <span>EMA9: {fmt(c.ema9)}</span>
             <span>EMA21: {fmt(c.ema21)}</span>
-            <span>حجم: ×{c.volumeRatio.toFixed(1)}</span>
+            <span>Vol: ×{c.volumeRatio.toFixed(1)}</span>
           </div>
         </div>
       )}
@@ -73,14 +74,13 @@ function CandidateCard({ c }: { c: ScanCandidate }) {
   );
 }
 
-// ── Position Row ──────────────────────────────────────────────────────────────
+// ── Position Row ───────────────────────────────────────────────────────────────
 function PositionRow({ p }: { p: ScannerPosition }) {
-  const cs = CONF_STYLE[p.confidence];
-  const pnlAmt = p.currentPrice ? (p.currentPrice - p.entryPrice) * p.quantity : 0;
-  const pnlPct = p.entryPrice ? ((p.currentPrice - p.entryPrice) / p.entryPrice * 100) : 0;
-  const slPct  = p.entryPrice ? ((p.stopLoss - p.entryPrice) / p.entryPrice * 100) : 0;
-  const tpPct  = p.entryPrice ? ((p.takeProfit - p.entryPrice) / p.entryPrice * 100) : 0;
-  // progress bar: how far price is between entry and TP
+  const cs       = CONF[p.confidence];
+  const pnlAmt   = p.currentPrice ? (p.currentPrice - p.entryPrice) * p.quantity : 0;
+  const pnlPct   = p.entryPrice   ? ((p.currentPrice - p.entryPrice) / p.entryPrice * 100) : 0;
+  const slPct    = p.entryPrice   ? ((p.stopLoss - p.entryPrice) / p.entryPrice * 100) : 0;
+  const tpPct    = p.entryPrice   ? ((p.takeProfit - p.entryPrice) / p.entryPrice * 100) : 0;
   const progress = p.takeProfit > p.entryPrice
     ? Math.max(0, Math.min(100, ((p.currentPrice - p.entryPrice) / (p.takeProfit - p.entryPrice)) * 100))
     : 0;
@@ -95,13 +95,11 @@ function PositionRow({ p }: { p: ScannerPosition }) {
               background: cs.bg, color: cs.color }}>{cs.label}</span>
           </div>
           <div style={{ fontSize: 12, color: 'var(--muted)', marginTop: 2 }}>
-            دخول {fmt(p.entryPrice)} · {p.quantity} سهم
+            Entry {fmt(p.entryPrice)} · {p.quantity} shares
           </div>
         </div>
         <div style={{ textAlign: 'right' }}>
-          <div style={{ fontWeight: 700, color: pnlColor(pnlAmt) }}>
-            {fmtPct(pnlPct)}
-          </div>
+          <div style={{ fontWeight: 700, color: pnlColor(pnlAmt) }}>{fmtPct(pnlPct)}</div>
           <div style={{ fontSize: 12, color: pnlColor(pnlAmt) }}>
             {pnlAmt >= 0 ? '+' : ''}{pnlAmt.toFixed(2)}$
           </div>
@@ -115,75 +113,83 @@ function PositionRow({ p }: { p: ScannerPosition }) {
           borderRadius: 3, transition: 'width .4s' }} />
       </div>
 
-      {/* SL / Price / TP row */}
+      {/* SL / Price / TP */}
       <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11 }}>
         <span style={{ color: 'var(--red)' }}>SL {fmt(p.stopLoss)} ({slPct.toFixed(1)}%)</span>
         <span style={{ color: 'var(--fg)', fontWeight: 600 }}>{fmt(p.currentPrice)}</span>
         <span style={{ color: 'var(--green)' }}>TP {fmt(p.takeProfit)} (+{tpPct.toFixed(1)}%)</span>
       </div>
       <div style={{ fontSize: 10, color: 'var(--muted)', marginTop: 4 }}>
-        Trail {p.trailPct}% · Highest {fmt(p.highestPrice)} · Score {p.score}/10
+        Trail {p.trailPct}% · High {fmt(p.highestPrice)} · Score {p.score}/10
       </div>
     </div>
   );
 }
 
-// ── Main Page ─────────────────────────────────────────────────────────────────
+// ── History Row ────────────────────────────────────────────────────────────────
+function HistoryRow({ p }: { p: ScannerPosition }) {
+  const cs     = CONF[p.confidence] ?? CONF.MEDIUM;
+  const pnl    = p.pnl ?? 0;
+  const pnlPct = p.entryPrice && p.exitPrice
+    ? ((p.exitPrice - p.entryPrice) / p.entryPrice * 100) : 0;
+  return (
+    <tr>
+      <td style={{ fontWeight: 700 }}>{p.symbol}</td>
+      <td><span style={{ fontSize: 11, fontWeight: 700, padding: '1px 6px', borderRadius: 4,
+        background: cs.bg, color: cs.color }}>{cs.label}</span></td>
+      <td style={{ textAlign: 'right' }}>{p.quantity}</td>
+      <td style={{ textAlign: 'right' }}>{fmt(p.entryPrice)}</td>
+      <td style={{ textAlign: 'right' }}>{fmt(p.exitPrice)}</td>
+      <td style={{ textAlign: 'right', color: pnlColor(pnl), fontWeight: 600 }}>{fmtPct(pnlPct)}</td>
+      <td style={{ textAlign: 'right', color: pnlColor(pnl) }}>
+        {pnl >= 0 ? '+' : ''}{pnl.toFixed(2)}
+      </td>
+      <td style={{ fontSize: 10, color: 'var(--muted)' }}>
+        {p.closeReason ?? '—'}
+      </td>
+      <td style={{ fontSize: 10, color: 'var(--muted)' }}>
+        {p.closedAt ? new Date(p.closedAt).toLocaleTimeString() : '—'}
+      </td>
+    </tr>
+  );
+}
+
+// ── Main Page ──────────────────────────────────────────────────────────────────
 export default function ScannerPage({ mode, showToast }: Props) {
-  const { positions, lastResult, runs, config, watchlist, scanning, loading,
-          error, runScan, updateWatchlist } = useScanner(mode);
-  const [newSymbol, setNewSymbol] = useState('');
-  const [tab, setTab] = useState<'positions' | 'candidates' | 'watchlist' | 'runs'>('positions');
-  const [nextScanIn, setNextScanIn] = useState(0);
+  const { positions, history, lastResult, runs, config, watchlist,
+          scanning, loading, error, runScan, updateWatchlist } = useScanner(mode);
+  const [newSymbol,    setNewSymbol]    = useState('');
+  const [tab, setTab] = useState<'positions' | 'candidates' | 'history' | 'watchlist' | 'runs'>('positions');
+  const [nextScanIn,   setNextScanIn]   = useState(0);
   const scanIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const countdownRef    = useRef<ReturnType<typeof setInterval> | null>(null);
-
-  // Keep a stable ref so the interval always calls the latest version
-  const runScanRef = useRef(runScan);
+  const runScanRef      = useRef(runScan);
   useEffect(() => { runScanRef.current = runScan; }, [runScan]);
 
-  const handleScan = async () => {
+  // Today's P&L from history
+  const todayHistory  = history.filter(p => (p.closedAt ?? p.updatedAt ?? '').startsWith(today()));
+  const todayPnl      = todayHistory.reduce((s, p) => s + (p.pnl ?? 0), 0);
+  const todayWinners  = todayHistory.filter(p => (p.pnl ?? 0) > 0).length;
+
+  const doScan = async () => {
     const result = await runScanRef.current();
     showToast(
       result
-        ? `✅ فحص مكتمل — ${result.candidates?.length ?? 0} مرشح، ${result.ordersPlaced} أوامر`
-        : '❌ فشل الفحص — تحقق من الاتصال',
+        ? `✅ Scan complete — ${result.candidates?.length ?? 0} candidates, ${result.ordersPlaced} orders`
+        : '❌ Scan failed — check connection',
       result ? 'success' : 'error',
     );
+    setNextScanIn(5 * 60);
   };
 
-  // Auto-scan: run immediately on mount, then every 5 minutes
-  const INTERVAL_MS = 5 * 60 * 1000;
+  // Auto-scan on mount + every 5 min
   useEffect(() => {
     let cancelled = false;
-
-    const doScan = async () => {
-      if (cancelled) return;
-      const result = await runScanRef.current();
-      if (cancelled) return;
-      showToast(
-        result
-          ? `✅ فحص مكتمل — ${result.candidates?.length ?? 0} مرشح، ${result.ordersPlaced} أوامر`
-          : '❌ فشل الفحص — تحقق من الاتصال',
-        result ? 'success' : 'error',
-      );
-      setNextScanIn(INTERVAL_MS / 1000);
-    };
-
-    // Run immediately
-    doScan();
-
-    // Countdown ticker
-    setNextScanIn(INTERVAL_MS / 1000);
-    countdownRef.current = setInterval(() => {
-      setNextScanIn(prev => (prev <= 1 ? INTERVAL_MS / 1000 : prev - 1));
-    }, 1000);
-
-    // Auto-scan every 5 min
-    scanIntervalRef.current = setInterval(() => {
-      doScan();
-    }, INTERVAL_MS);
-
+    const run = async () => { if (!cancelled) doScan(); };
+    run();
+    setNextScanIn(5 * 60);
+    countdownRef.current    = setInterval(() => setNextScanIn(p => p <= 1 ? 5 * 60 : p - 1), 1000);
+    scanIntervalRef.current = setInterval(run, 5 * 60 * 1000);
     return () => {
       cancelled = true;
       if (scanIntervalRef.current) clearInterval(scanIntervalRef.current);
@@ -197,44 +203,69 @@ export default function ScannerPage({ mode, showToast }: Props) {
     if (!sym) return;
     await updateWatchlist(sym, 'add');
     setNewSymbol('');
-    showToast(`${sym} أضيف للقائمة ✓`, 'success');
+    showToast(`${sym} added to watchlist`, 'success');
   };
+
+  const mm = Math.floor(nextScanIn / 60);
+  const ss = String(nextScanIn % 60).padStart(2, '0');
 
   return (
     <div className="page">
       {/* Header */}
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
         <div>
-          <h1 className="page-title" style={{ marginBottom: 2 }}>📡 الماسح الذكي</h1>
+          <h1 className="page-title" style={{ marginBottom: 2 }}>📡 Smart Scanner</h1>
           <div style={{ fontSize: 12, color: 'var(--muted)' }}>
-            MOE Scalp v1 · {watchlist.length} سهم · {scanning
-              ? '⏳ جارٍ الفحص الآن…'
-              : `⏱ فحص تلقائي بعد ${Math.floor(nextScanIn / 60)}:${String(nextScanIn % 60).padStart(2, '0')}`}
+            MOE Scalp v1 · {watchlist.length} stocks · {scanning ? '⏳ Scanning now…' : `⏱ Next scan in ${mm}:${ss}`}
           </div>
         </div>
-        <button
-          className="btn btn-primary"
-          onClick={handleScan}
-          disabled={scanning}
-          style={{ minWidth: 130 }}>
-          {scanning ? '⏳ جارٍ الفحص…' : '🔍 فحص الآن'}
+        <button className="btn btn-primary" onClick={doScan} disabled={scanning} style={{ minWidth: 120 }}>
+          {scanning ? '⏳ Scanning…' : '🔍 Scan Now'}
         </button>
+      </div>
+
+      {/* Today's summary bar */}
+      <div style={{ display: 'flex', gap: 12, marginBottom: 16, flexWrap: 'wrap' }}>
+        <div style={{ flex: 1, minWidth: 100, padding: '8px 14px', borderRadius: 8,
+          background: 'var(--card)', border: '1px solid var(--border)' }}>
+          <div style={{ fontSize: 10, color: 'var(--muted)', marginBottom: 2 }}>TODAY P&L</div>
+          <div style={{ fontWeight: 800, fontSize: 18, color: pnlColor(todayPnl) }}>
+            {todayPnl >= 0 ? '+' : ''}{todayPnl.toFixed(2)}$
+          </div>
+        </div>
+        <div style={{ flex: 1, minWidth: 100, padding: '8px 14px', borderRadius: 8,
+          background: 'var(--card)', border: '1px solid var(--border)' }}>
+          <div style={{ fontSize: 10, color: 'var(--muted)', marginBottom: 2 }}>TODAY TRADES</div>
+          <div style={{ fontWeight: 800, fontSize: 18 }}>{todayHistory.length}</div>
+        </div>
+        <div style={{ flex: 1, minWidth: 100, padding: '8px 14px', borderRadius: 8,
+          background: 'var(--card)', border: '1px solid var(--border)' }}>
+          <div style={{ fontSize: 10, color: 'var(--muted)', marginBottom: 2 }}>WIN RATE</div>
+          <div style={{ fontWeight: 800, fontSize: 18, color: '#22c55e' }}>
+            {todayHistory.length ? `${((todayWinners / todayHistory.length) * 100).toFixed(0)}%` : '—'}
+          </div>
+        </div>
+        <div style={{ flex: 1, minWidth: 100, padding: '8px 14px', borderRadius: 8,
+          background: 'var(--card)', border: '1px solid var(--border)' }}>
+          <div style={{ fontSize: 10, color: 'var(--muted)', marginBottom: 2 }}>OPEN</div>
+          <div style={{ fontWeight: 800, fontSize: 18 }}>{positions.length}</div>
+        </div>
       </div>
 
       {/* Config pills */}
       {config && (
-        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 20 }}>
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 16 }}>
           {[
-            { label: 'TP', val: `+${config.tpPct}%`,      color: '#22c55e' },
-            { label: 'Trail SL', val: `${config.trailPct}%`, color: '#fbbf24' },
-            { label: 'Hard SL',  val: `-${config.hardStopPct}%`, color: '#ef4444' },
-            { label: 'نطاق السعر', val: `$${config.priceMin}-$${config.priceMax}`, color: '#60a5fa' },
-            { label: 'مخاطرة',  val: `${config.riskPct}%`, color: '#a78bfa' },
-          ].map(p => (
-            <div key={p.label} style={{ padding: '3px 10px', borderRadius: 6, fontSize: 11,
-              background: `${p.color}18`, color: p.color, border: `1px solid ${p.color}33`,
+            { label: 'TP',          val: `+${config.tpPct}%`,            color: '#22c55e' },
+            { label: 'Trail SL',    val: `${config.trailPct}%`,           color: '#fbbf24' },
+            { label: 'Hard SL',     val: `-${config.hardStopPct}%`,       color: '#ef4444' },
+            { label: 'Price Range', val: `$${config.priceMin}–$${config.priceMax}`, color: '#60a5fa' },
+            { label: 'Risk',        val: `${config.riskPct}%`,            color: '#a78bfa' },
+          ].map(pill => (
+            <div key={pill.label} style={{ padding: '3px 10px', borderRadius: 6, fontSize: 11,
+              background: `${pill.color}18`, color: pill.color, border: `1px solid ${pill.color}33`,
               fontWeight: 600 }}>
-              {p.label}: {p.val}
+              {pill.label}: {pill.val}
             </div>
           ))}
         </div>
@@ -252,29 +283,50 @@ export default function ScannerPage({ mode, showToast }: Props) {
       {lastResult && (
         <div style={{ padding: '10px 14px', background: 'rgba(96,165,250,.08)',
           border: '1px solid rgba(96,165,250,.2)', borderRadius: 8, marginBottom: 16,
-          display: 'flex', gap: 20, fontSize: 12 }}>
-          <span>🔍 فُحص: <b>{lastResult.scanned}</b></span>
-          <span style={{ color: '#22c55e' }}>📊 مرشح: <b>{lastResult.candidates?.length ?? 0}</b></span>
-          <span style={{ color: '#a78bfa' }}>📋 أوامر: <b>{lastResult.ordersPlaced}</b></span>
+          display: 'flex', gap: 20, fontSize: 12, flexWrap: 'wrap' }}>
+          <span>🔍 Scanned: <b>{lastResult.scanned}</b></span>
+          <span style={{ color: '#22c55e' }}>📊 Candidates: <b>{lastResult.candidates?.length ?? 0}</b></span>
+          <span style={{ color: '#a78bfa' }}>📋 Orders: <b>{lastResult.ordersPlaced}</b></span>
           <span style={{ color: 'var(--muted)' }}>⏱ {lastResult.ms}ms</span>
+          {(lastResult.errors?.length ?? 0) > 0 && (
+            <span style={{ color: '#ef4444' }}>⚠ {lastResult.errors.length} errors</span>
+          )}
+        </div>
+      )}
+
+      {/* Scanning progress: show all stocks in watchlist */}
+      {scanning && (
+        <div style={{ padding: '12px 14px', background: 'rgba(251,191,36,.07)',
+          border: '1px solid rgba(251,191,36,.2)', borderRadius: 8, marginBottom: 16 }}>
+          <div style={{ fontSize: 11, color: '#fbbf24', fontWeight: 600, marginBottom: 8 }}>
+            ⏳ Scanning {watchlist.length} stocks…
+          </div>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+            {watchlist.map(sym => (
+              <div key={sym} style={{ padding: '2px 8px', borderRadius: 4, fontSize: 11,
+                background: 'rgba(251,191,36,.12)', color: '#fbbf24', fontWeight: 600,
+                animation: 'pulse 1.5s infinite' }}>
+                {sym}
+              </div>
+            ))}
+          </div>
         </div>
       )}
 
       {/* Tabs */}
-      <div style={{ display: 'flex', gap: 4, marginBottom: 16, borderBottom: '1px solid var(--border)', paddingBottom: 0 }}>
+      <div style={{ display: 'flex', gap: 4, marginBottom: 16, borderBottom: '1px solid var(--border)' }}>
         {([
-          { id: 'positions',  label: `صفقات مفتوحة (${positions.length})` },
-          { id: 'candidates', label: `المرشحون (${lastResult?.candidates?.length ?? 0})` },
-          { id: 'watchlist',  label: `قائمة الأسهم (${watchlist.length})` },
-          { id: 'runs',       label: `سجل الفحص (${runs.length})` },
+          { id: 'positions',  label: `Open (${positions.length})` },
+          { id: 'candidates', label: `Candidates (${lastResult?.candidates?.length ?? 0})` },
+          { id: 'history',    label: `History (${history.length})` },
+          { id: 'watchlist',  label: `Watchlist (${watchlist.length})` },
+          { id: 'runs',       label: `Runs (${runs.length})` },
         ] as { id: typeof tab; label: string }[]).map(t => (
-          <button key={t.id}
-            onClick={() => setTab(t.id)}
-            style={{
-              padding: '8px 14px', fontSize: 12, fontWeight: 600, border: 'none', cursor: 'pointer',
-              background: 'transparent', borderBottom: tab === t.id ? '2px solid var(--accent)' : '2px solid transparent',
-              color: tab === t.id ? 'var(--accent)' : 'var(--muted)', marginBottom: -1,
-            }}>
+          <button key={t.id} onClick={() => setTab(t.id)}
+            style={{ padding: '8px 12px', fontSize: 12, fontWeight: 600, border: 'none',
+              cursor: 'pointer', background: 'transparent',
+              borderBottom: tab === t.id ? '2px solid var(--accent)' : '2px solid transparent',
+              color: tab === t.id ? 'var(--accent)' : 'var(--muted)', marginBottom: -1 }}>
             {t.label}
           </button>
         ))}
@@ -283,12 +335,12 @@ export default function ScannerPage({ mode, showToast }: Props) {
       {/* Tab: Open Positions */}
       {tab === 'positions' && (
         <div>
-          {loading && <div style={{ color: 'var(--muted)', textAlign: 'center', padding: 40 }}>جارٍ التحميل…</div>}
+          {loading && <div style={{ color: 'var(--muted)', textAlign: 'center', padding: 40 }}>Loading…</div>}
           {!loading && positions.length === 0 && (
             <div style={{ textAlign: 'center', padding: 60, color: 'var(--muted)' }}>
               <div style={{ fontSize: 32, marginBottom: 12 }}>📭</div>
-              <div>لا توجد صفقات مفتوحة حالياً</div>
-              <div style={{ fontSize: 12, marginTop: 8 }}>اضغط "فحص الآن" لبحث عن فرص تداول</div>
+              <div style={{ fontWeight: 600 }}>No open positions</div>
+              <div style={{ fontSize: 12, marginTop: 6 }}>Scan will open positions when high-confidence signals are found</div>
             </div>
           )}
           <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
@@ -303,8 +355,7 @@ export default function ScannerPage({ mode, showToast }: Props) {
           {!lastResult && (
             <div style={{ textAlign: 'center', padding: 60, color: 'var(--muted)' }}>
               <div style={{ fontSize: 32, marginBottom: 12 }}>🔍</div>
-              <div>لم يتم الفحص بعد</div>
-              <div style={{ fontSize: 12, marginTop: 8 }}>اضغط "فحص الآن" لعرض المرشحين</div>
+              <div>Scan in progress — candidates will appear here</div>
             </div>
           )}
           <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
@@ -313,29 +364,60 @@ export default function ScannerPage({ mode, showToast }: Props) {
         </div>
       )}
 
+      {/* Tab: History */}
+      {tab === 'history' && (
+        <div>
+          {history.length === 0 ? (
+            <div style={{ textAlign: 'center', padding: 60, color: 'var(--muted)' }}>
+              <div style={{ fontSize: 32, marginBottom: 12 }}>📋</div>
+              <div style={{ fontWeight: 600 }}>No closed trades yet</div>
+              <div style={{ fontSize: 12, marginTop: 6 }}>Closed positions will appear here after TP or SL is hit</div>
+            </div>
+          ) : (
+            <div className="table-wrap">
+              <table className="data-table">
+                <thead>
+                  <tr>
+                    <th>Symbol</th>
+                    <th>Confidence</th>
+                    <th className="col-number">Qty</th>
+                    <th className="col-number">Entry</th>
+                    <th className="col-number">Exit</th>
+                    <th className="col-number">P&L %</th>
+                    <th className="col-number">P&L $</th>
+                    <th>Reason</th>
+                    <th>Closed</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {history.map(p => <HistoryRow key={p.id} p={p} />)}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      )}
+
       {/* Tab: Watchlist */}
       {tab === 'watchlist' && (
         <div>
-          {/* Add symbol */}
           <div style={{ display: 'flex', gap: 8, marginBottom: 16 }}>
             <input
               value={newSymbol}
               onChange={e => setNewSymbol(e.target.value.toUpperCase())}
               onKeyDown={e => e.key === 'Enter' && handleAddSymbol()}
-              placeholder="أضف رمز سهم (مثال: AAPL)"
+              placeholder="Add ticker (e.g. AAPL)"
               style={{ flex: 1, padding: '8px 12px', background: 'var(--card)',
                 border: '1px solid var(--border)', borderRadius: 8, color: 'var(--fg)', fontSize: 13 }} />
-            <button className="btn btn-primary" onClick={handleAddSymbol}>إضافة</button>
+            <button className="btn btn-primary" onClick={handleAddSymbol}>Add</button>
           </div>
-          {/* Grid of symbols */}
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
             {watchlist.map(sym => (
               <div key={sym} style={{ display: 'flex', alignItems: 'center', gap: 4,
-                padding: '4px 10px', background: 'var(--card)', border: '1px solid var(--border)',
-                borderRadius: 6, fontSize: 12 }}>
+                padding: '4px 10px', background: 'var(--card)',
+                border: '1px solid var(--border)', borderRadius: 6, fontSize: 12 }}>
                 <span style={{ fontWeight: 700 }}>{sym}</span>
-                <button
-                  onClick={() => updateWatchlist(sym, 'remove')}
+                <button onClick={() => updateWatchlist(sym, 'remove')}
                   style={{ background: 'none', border: 'none', color: 'var(--muted)',
                     cursor: 'pointer', fontSize: 14, lineHeight: 1, padding: '0 2px' }}>
                   ×
@@ -352,17 +434,17 @@ export default function ScannerPage({ mode, showToast }: Props) {
           <table className="data-table">
             <thead>
               <tr>
-                <th>الوقت</th>
-                <th className="col-number">فُحص</th>
-                <th className="col-number">مرشح</th>
-                <th className="col-number">أوامر</th>
-                <th className="col-number">إدارة</th>
-                <th className="col-number">مدة (ms)</th>
+                <th>Time</th>
+                <th className="col-number">Scanned</th>
+                <th className="col-number">Candidates</th>
+                <th className="col-number">Orders</th>
+                <th className="col-number">Managed</th>
+                <th className="col-number">ms</th>
               </tr>
             </thead>
             <tbody>
               {runs.length === 0 && (
-                <tr><td colSpan={6} style={{ textAlign: 'center', color: 'var(--muted)', padding: '30px 0' }}>لا يوجد سجل بعد</td></tr>
+                <tr><td colSpan={6} style={{ textAlign: 'center', color: 'var(--muted)', padding: '30px 0' }}>No runs yet</td></tr>
               )}
               {runs.map(r => (
                 <tr key={r.id}>
