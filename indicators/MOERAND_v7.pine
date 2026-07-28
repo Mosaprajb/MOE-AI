@@ -1,0 +1,596 @@
+//@version=6
+indicator("MOERAND v7 Multi-Timeframe Indicator", "MOERAND v7", overlay = true, max_boxes_count = 5, max_lines_count = 10, max_labels_count = 10)
+
+//=============================================================================
+// 1. SETTINGS
+//=============================================================================
+
+string grpHtf     = "1. Higher Timeframes"
+int    htfFastLength = input.int(20,  "HTF Fast EMA Length",  minval = 5,  maxval = 100, group = grpHtf)
+int    htfSlowLength = input.int(50,  "HTF Slow EMA Length",  minval = 10, maxval = 200, group = grpHtf)
+int    htfRsiLength  = input.int(14,  "HTF RSI Length",       minval = 5,  maxval = 50,  group = grpHtf)
+
+string grpConf    = "2. Confluence Filter"
+int    minimumConfluentTfs     = input.int(3,  "Minimum Bullish HTFs (of 4)",  minval = 1, maxval = 4, group = grpConf, tooltip = "How many of the 4 HTFs (5m/15m/1h/4h) must be fully bullish before a setup can form.")
+int    minimumOpportunityScore = input.int(68, "Minimum Confluence Score",     minval = 50, maxval = 95, group = grpConf)
+
+string grpEngine  = "3. Smart Opportunity Engine"
+int    localFastLength     = input.int(20,  "Local Fast EMA",              minval = 5,   maxval = 100, group = grpEngine)
+int    localSlowLength     = input.int(50,  "Local Slow EMA",              minval = 10,  maxval = 200, group = grpEngine)
+int    rsiLength           = input.int(14,  "RSI Length",                  minval = 5,   maxval = 50,  group = grpEngine)
+int    supportLookback     = input.int(24,  "Support Search Bars",         minval = 8,   maxval = 150, group = grpEngine)
+int    resistanceLookback  = input.int(35,  "Resistance Search Bars",      minval = 10,  maxval = 250, group = grpEngine)
+int    pivotLength         = input.int(2,   "Swing Sensitivity",           minval = 1,   maxval = 6,   group = grpEngine)
+float  maximumDistanceAtr  = input.float(2.20, "Max Distance From Zone (ATR)", minval = 0.50, maxval = 6.00, step = 0.10, group = grpEngine)
+float  minimumRelativeVolume = input.float(0.70, "Minimum Relative Volume", minval = 0.10, maxval = 3.00, step = 0.05, group = grpEngine)
+
+string grpRisk    = "4. Adaptive Zone and Risk"
+int    atrLength          = input.int(14,   "ATR Length",                      minval = 5,   maxval = 50,  group = grpRisk)
+int    atrAverageLength   = input.int(50,   "ATR Average Length",              minval = 10,  maxval = 200, group = grpRisk)
+float  zoneAtrMultiplier  = input.float(0.48, "Buy Zone Size (ATR)",           minval = 0.20, maxval = 1.50, step = 0.02, group = grpRisk)
+float  stopBufferAtr      = input.float(0.22, "Stop Buffer Below Zone (ATR)",  minval = 0.05, maxval = 1.00, step = 0.01, group = grpRisk)
+float  maximumStopAtr     = input.float(1.10, "Maximum Stop Distance (ATR)",   minval = 0.40, maxval = 2.50, step = 0.05, group = grpRisk)
+float  baseTargetAtr      = input.float(1.20, "Base Take Profit Distance (ATR)", minval = 0.40, maxval = 3.00, step = 0.05, group = grpRisk)
+float  maximumTargetAtr   = input.float(2.00, "Maximum Take Profit Distance (ATR)", minval = 0.80, maxval = 4.00, step = 0.05, group = grpRisk)
+float  minimumRiskReward  = input.float(1.50, "Minimum Risk / Reward",         minval = 0.75, maxval = 3.00, step = 0.05, group = grpRisk)
+
+string grpLife    = "5. Opportunity Life"
+int    setupExpiryBars            = input.int(24,  "Pending Opportunity Expiry Bars", minval = 5,  maxval = 300, group = grpLife)
+int    confirmationBars           = input.int(3,   "Entry Confirmation Window",       minval = 1,  maxval = 8,   group = grpLife)
+float  replacementScoreImprovement = input.float(6.0, "Replacement Score Improvement", minval = 1.0, maxval = 25.0, step = 1.0, group = grpLife)
+float  replacementDistanceAtr     = input.float(0.30, "Replacement Level Change (ATR)", minval = 0.05, maxval = 2.00, step = 0.05, group = grpLife)
+int    cooldownBars               = input.int(2,   "Cooldown After Finished Trade",   minval = 0,  maxval = 50,  group = grpLife)
+
+string grpDisplay = "6. Display and Alerts / MOE AI Webhook"
+bool   showLabels            = input.bool(true,  "Show Price Labels",           group = grpDisplay)
+bool   showInfoPanel         = input.bool(true,  "Show Information Panel",      group = grpDisplay)
+bool   enableAlerts          = input.bool(true,  "Enable Dynamic Alerts",       group = grpDisplay)
+int    lineWidth             = input.int(2,      "SL / TP Line Width",          minval = 1, maxval = 5, group = grpDisplay)
+bool   enableMoeWebhook      = input.bool(true,  "Enable MOE AI Webhook",       group = grpDisplay)
+string moeWebhookSecret      = input.string("",  "MOE Webhook Secret",          group = grpDisplay, tooltip = "Use the same secret configured on the MOE AI server. Never publish it.")
+string webhookSession        = input.string("CORE", "Trading Session", options = ["CORE", "ALL"], group = grpDisplay)
+bool   requestSandboxSubmission = input.bool(false, "Request Sandbox Submission", group = grpDisplay)
+float  riskPercent           = input.float(0.50, "Risk Per Trade (%)",          minval = 0.05, maxval = 5.00, step = 0.05, group = grpDisplay)
+bool   sendWebhookTest       = input.bool(false, "Send One-Time Webhook Test",  group = grpDisplay)
+
+//=============================================================================
+// 2. HELPERS
+//=============================================================================
+
+f_price(float value) =>
+    str.tostring(value, format.mintick)
+
+f_num(float value) =>
+    str.tostring(value, format.mintick)
+
+f_bool(bool value) =>
+    value ? "true" : "false"
+
+f_htfEmoji(bool bullish, bool acceptable) =>
+    bullish ? "✅" : acceptable ? "⚠️" : "❌"
+
+f_htfColor(bool bullish, bool acceptable) =>
+    bullish ? color.rgb(0, 155, 82) : acceptable ? color.rgb(210, 145, 20) : color.rgb(185, 60, 60)
+
+f_htfLabel(bool bullish, bool acceptable) =>
+    bullish ? "BULLISH" : acceptable ? "ACCEPTABLE" : "BEARISH"
+
+f_webhook_message(string sourceName, string secret, string sessionName, bool sandbox, float riskPct, float entryPrice, float marketPrice, float stopPrice, float targetPrice, bool htfAligned, float relVol, int scoreValue, int signalTime) =>
+    string signalId = sourceName + "-" + syminfo.ticker + "-" + timeframe.period + "-" + str.tostring(signalTime)
+    string msg = "{"
+    msg += "\"secret\":\"" + secret + "\","
+    msg += "\"symbol\":\"" + syminfo.ticker + "\","
+    msg += "\"side\":\"BUY\","
+    msg += "\"orderType\":\"LIMIT\","
+    msg += "\"session\":\"" + sessionName + "\","
+    msg += "\"limitPrice\":" + f_num(entryPrice) + ","
+    msg += "\"marketPrice\":" + f_num(marketPrice) + ","
+    msg += "\"stopLoss\":" + f_num(stopPrice) + ","
+    msg += "\"takeProfit\":" + f_num(targetPrice) + ","
+    msg += "\"source\":\"" + sourceName + "\","
+    msg += "\"signalId\":\"" + signalId + "\","
+    msg += "\"submitSandbox\":" + f_bool(sandbox) + ","
+    msg += "\"riskPercent\":" + str.tostring(riskPct) + ","
+    msg += "\"context\":{"
+    msg += "\"marketPrice\":" + f_num(marketPrice) + ","
+    msg += "\"riskPercent\":" + str.tostring(riskPct) + ","
+    msg += "\"htfAligned\":" + f_bool(htfAligned) + ","
+    msg += "\"relativeVolume\":" + str.tostring(relVol) + ","
+    msg += "\"signalScore\":" + str.tostring(scoreValue)
+    msg += "}}"
+    msg
+
+//=============================================================================
+// 3. FOUR INDEPENDENT HTF CONTEXT BLOCKS
+//    All request.security calls use [1] bar offset + barmerge.lookahead_on
+//    to guarantee confirmed, non-repainting higher-timeframe data.
+//=============================================================================
+
+// ── 5-minute ──────────────────────────────────────────────────────────────
+float htf5mFast  = request.security(syminfo.tickerid, "5",   ta.ema(close, htfFastLength)[1], barmerge.gaps_off, barmerge.lookahead_on)
+float htf5mSlow  = request.security(syminfo.tickerid, "5",   ta.ema(close, htfSlowLength)[1], barmerge.gaps_off, barmerge.lookahead_on)
+float htf5mRsi   = request.security(syminfo.tickerid, "5",   ta.rsi(close, htfRsiLength)[1],  barmerge.gaps_off, barmerge.lookahead_on)
+float htf5mClose = request.security(syminfo.tickerid, "5",   close[1],                         barmerge.gaps_off, barmerge.lookahead_on)
+
+bool htf5mBullish    = not na(htf5mFast) and not na(htf5mSlow) and htf5mFast > htf5mSlow and htf5mClose > htf5mSlow and htf5mRsi >= 45.0 and htf5mRsi <= 70.0
+bool htf5mAcceptable = not na(htf5mSlow) and not na(htf5mRsi) and htf5mClose >= htf5mSlow * 0.992 and htf5mRsi >= 44.0
+
+// ── 15-minute ─────────────────────────────────────────────────────────────
+float htf15mFast  = request.security(syminfo.tickerid, "15",  ta.ema(close, htfFastLength)[1], barmerge.gaps_off, barmerge.lookahead_on)
+float htf15mSlow  = request.security(syminfo.tickerid, "15",  ta.ema(close, htfSlowLength)[1], barmerge.gaps_off, barmerge.lookahead_on)
+float htf15mRsi   = request.security(syminfo.tickerid, "15",  ta.rsi(close, htfRsiLength)[1],  barmerge.gaps_off, barmerge.lookahead_on)
+float htf15mClose = request.security(syminfo.tickerid, "15",  close[1],                          barmerge.gaps_off, barmerge.lookahead_on)
+
+bool htf15mBullish    = not na(htf15mFast) and not na(htf15mSlow) and htf15mFast > htf15mSlow and htf15mClose > htf15mSlow and htf15mRsi >= 45.0 and htf15mRsi <= 70.0
+bool htf15mAcceptable = not na(htf15mSlow) and not na(htf15mRsi) and htf15mClose >= htf15mSlow * 0.992 and htf15mRsi >= 44.0
+
+// ── 1-hour ────────────────────────────────────────────────────────────────
+float htf1hFast  = request.security(syminfo.tickerid, "60",  ta.ema(close, htfFastLength)[1],  barmerge.gaps_off, barmerge.lookahead_on)
+float htf1hSlow  = request.security(syminfo.tickerid, "60",  ta.ema(close, htfSlowLength)[1],  barmerge.gaps_off, barmerge.lookahead_on)
+float htf1hRsi   = request.security(syminfo.tickerid, "60",  ta.rsi(close, htfRsiLength)[1],   barmerge.gaps_off, barmerge.lookahead_on)
+float htf1hClose = request.security(syminfo.tickerid, "60",  close[1],                          barmerge.gaps_off, barmerge.lookahead_on)
+
+bool htf1hBullish    = not na(htf1hFast) and not na(htf1hSlow) and htf1hFast > htf1hSlow and htf1hClose > htf1hSlow and htf1hRsi >= 45.0 and htf1hRsi <= 70.0
+bool htf1hAcceptable = not na(htf1hSlow) and not na(htf1hRsi) and htf1hClose >= htf1hSlow * 0.992 and htf1hRsi >= 44.0
+
+// ── 4-hour ────────────────────────────────────────────────────────────────
+float htf4hFast  = request.security(syminfo.tickerid, "240", ta.ema(close, htfFastLength)[1],  barmerge.gaps_off, barmerge.lookahead_on)
+float htf4hSlow  = request.security(syminfo.tickerid, "240", ta.ema(close, htfSlowLength)[1],  barmerge.gaps_off, barmerge.lookahead_on)
+float htf4hRsi   = request.security(syminfo.tickerid, "240", ta.rsi(close, htfRsiLength)[1],   barmerge.gaps_off, barmerge.lookahead_on)
+float htf4hClose = request.security(syminfo.tickerid, "240", close[1],                          barmerge.gaps_off, barmerge.lookahead_on)
+
+bool htf4hBullish    = not na(htf4hFast) and not na(htf4hSlow) and htf4hFast > htf4hSlow and htf4hClose > htf4hSlow and htf4hRsi >= 45.0 and htf4hRsi <= 70.0
+bool htf4hAcceptable = not na(htf4hSlow) and not na(htf4hRsi) and htf4hClose >= htf4hSlow * 0.992 and htf4hRsi >= 44.0
+
+// ── Confirmed HTF resistance levels for TP computation ────────────────────
+float htf15mResistance = request.security(syminfo.tickerid, "15",  ta.highest(high, resistanceLookback)[1], barmerge.gaps_off, barmerge.lookahead_on)
+float htf1hResistance  = request.security(syminfo.tickerid, "60",  ta.highest(high, resistanceLookback)[1], barmerge.gaps_off, barmerge.lookahead_on)
+
+// ── Confluence count ───────────────────────────────────────────────────────
+int  confluenceBullishCount = (htf5mBullish ? 1 : 0) + (htf15mBullish ? 1 : 0) + (htf1hBullish ? 1 : 0) + (htf4hBullish ? 1 : 0)
+bool minimumTfsMet          = confluenceBullishCount >= minimumConfluentTfs
+
+//=============================================================================
+// 4. LOCAL MARKET CONTEXT AND ADAPTIVE BUY ZONE
+//=============================================================================
+
+float atr           = ta.atr(atrLength)
+float averageAtr    = ta.sma(atr, atrAverageLength)
+float rawVolRatio   = not na(averageAtr) and averageAtr > 0.0 ? atr / averageAtr : 1.0
+float volatilityRatio = math.max(0.80, math.min(1.50, rawVolRatio))
+float adaptiveZoneSize = atr * zoneAtrMultiplier * volatilityRatio
+
+float localFast      = ta.ema(close, localFastLength)
+float localSlow      = ta.ema(close, localSlowLength)
+float localRsi       = ta.rsi(close, rsiLength)
+float volumeAverage  = ta.sma(volume, 20)
+float relativeVolume = not na(volumeAverage) and volumeAverage > 0.0 ? volume / volumeAverage : 1.0
+float recentLow      = ta.lowest(low, supportLookback)
+float priorResistance = ta.highest(high[1], resistanceLookback)
+float pivotLowValue  = ta.pivotlow(low, pivotLength, pivotLength)
+float impulseLow     = ta.lowest(low, 10)
+
+var float lastConfirmedSwingLow = na
+if not na(pivotLowValue)
+    lastConfirmedSwingLow := pivotLowValue
+
+float structuralSupport  = na(lastConfirmedSwingLow) ? recentLow : math.max(recentLow, lastConfirmedSwingLow)
+float emaSupport         = localFast - adaptiveZoneSize * 0.30
+float selectedSupport    = math.max(structuralSupport, emaSupport)
+float candidateUpperRaw  = selectedSupport + adaptiveZoneSize * 0.62
+float candidateUpper     = math.min(candidateUpperRaw, close - syminfo.mintick)
+float candidateLower     = candidateUpper - adaptiveZoneSize
+float candidateCenter    = math.avg(candidateUpper, candidateLower)
+
+bool  zoneBelowPrice       = candidateUpper < close
+float distanceFromZoneAtr  = atr > 0.0 ? (close - candidateUpper) / atr : 999.0
+bool  zoneNearPrice        = zoneBelowPrice and distanceFromZoneAtr <= maximumDistanceAtr
+bool  localTrendPositive   = localFast >= localSlow or localFast > localFast[2]
+bool  impulsePresent       = close - impulseLow >= atr * 0.75
+bool  volumeAcceptable     = relativeVolume >= minimumRelativeVolume
+
+//=============================================================================
+// 5. CONFLUENCE SCORE ENGINE  (100-point weighted, capped)
+//    Tier weights:  4h = 35 | 1h = 25 | 15m = 20 | 5m = 15 | 1m local = 5
+//    Partial credit: acceptable = ~60 % of bullish weight for that tier.
+//    Bonuses: zone proximity (up to +8) and relative volume (up to +7).
+//=============================================================================
+
+// Per-timeframe score contributions — partial credit at ~60 % for acceptable state
+int score4h  = htf4hBullish  ? 35 : htf4hAcceptable  ? 21 : 0
+int score1h  = htf1hBullish  ? 25 : htf1hAcceptable  ? 15 : 0
+int score15m = htf15mBullish ? 20 : htf15mAcceptable ? 12 : 0
+int score5m  = htf5mBullish  ? 15 : htf5mAcceptable  ? 9  : 0
+// 1m local: awarded when local trend is positive with healthy momentum (max 5 pts)
+int score1m  = (localTrendPositive and localRsi >= 48.0 and localRsi <= 74.0) ? 5 : (localTrendPositive or localRsi >= 47.0) ? 3 : 0
+
+// Pure 100-point weighted score — no extra bonuses beyond the five tiers
+int confluenceScore = math.min(100, math.max(0, score4h + score1h + score15m + score5m + score1m))
+
+bool enoughHistory    = not na(atr) and not na(htf4hSlow) and not na(htf1hSlow) and not na(htf15mSlow) and not na(htf5mSlow) and not na(localSlow) and not na(candidateLower)
+bool anyHtfAcceptable = htf4hAcceptable or htf1hAcceptable or htf15mAcceptable or htf5mAcceptable
+
+bool opportunityReady = barstate.isconfirmed and enoughHistory and anyHtfAcceptable and minimumTfsMet and zoneNearPrice and volumeAcceptable and confluenceScore >= minimumOpportunityScore
+
+//=============================================================================
+// 6. SINGLE ACTIVE BUY OPPORTUNITY — STATE VARIABLES
+//=============================================================================
+
+var bool  setupActive          = false
+var bool  tradeEntered         = false
+var bool  awaitingConfirmation = false
+var int   setupBar             = na
+var int   firstTouchBar        = na
+var int   setupSignalTime      = na
+var int   actualEntryTime      = na
+var int   lastFinishBar        = na
+var float plannedUpper         = na
+var float plannedLower         = na
+var float plannedStop          = na
+var float plannedTarget        = na
+var float actualEntry          = na
+var int   activeScore          = na
+var int   zoneEntryCount       = 0
+var int   zoneDownExitCount    = 0
+var bool  zoneVisitActive      = false
+
+var int    totalTpHits      = 0
+var int    totalSlHits      = 0
+var string lastTradeResult  = "-"
+var int    lastTradeEndTime = na
+var int    lastTradeScore   = na
+
+var box   buyZoneBox  = na
+var line  stopLine    = na
+var line  targetLine  = na
+var label zoneLabel   = na
+var label stopLabel   = na
+var label targetLabel = na
+
+bool cooldownComplete = na(lastFinishBar) or bar_index - lastFinishBar > cooldownBars
+
+//=============================================================================
+// 7. CREATE OR REPLACE THE SINGLE BUY ZONE
+//=============================================================================
+
+if opportunityReady and not setupActive and cooldownComplete
+    setupActive          := true
+    tradeEntered         := false
+    awaitingConfirmation := false
+    setupBar             := bar_index
+    firstTouchBar        := na
+    setupSignalTime      := time
+    actualEntryTime      := na
+    plannedUpper         := candidateUpper
+    plannedLower         := candidateLower
+    plannedStop          := na
+    plannedTarget        := na
+    actualEntry          := na
+    activeScore          := confluenceScore
+    zoneEntryCount       := 0
+    zoneDownExitCount    := 0
+    zoneVisitActive      := false
+
+    buyZoneBox := box.new(left = bar_index, top = plannedUpper, right = bar_index + 1, bottom = plannedLower, extend = extend.right, border_color = color.new(color.rgb(0, 180, 95), 18), border_width = 2, bgcolor = color.new(color.rgb(0, 205, 105), 92))
+
+    if showLabels
+        zoneLabel := label.new(bar_index, plannedUpper, "BUY ZONE\nUpper: " + f_price(plannedUpper) + "\nLower: " + f_price(plannedLower), style = label.style_label_left, color = color.new(color.rgb(0, 155, 82), 10), textcolor = color.white)
+
+bool betterScore  = setupActive and not tradeEntered and opportunityReady and confluenceScore >= nz(activeScore, 0) + replacementScoreImprovement
+bool betterLevel  = setupActive and not tradeEntered and opportunityReady and confluenceScore >= nz(activeScore, 0) and math.abs(candidateCenter - math.avg(plannedUpper, plannedLower)) >= atr * replacementDistanceAtr
+bool replaceSetup = bar_index > nz(setupBar, bar_index) and (betterScore or betterLevel)
+
+if replaceSetup
+    setupBar             := bar_index
+    setupSignalTime      := time
+    plannedUpper         := candidateUpper
+    plannedLower         := candidateLower
+    activeScore          := confluenceScore
+    awaitingConfirmation := false
+    firstTouchBar        := na
+    zoneEntryCount       := 0
+    zoneDownExitCount    := 0
+    zoneVisitActive      := false
+
+    if not na(buyZoneBox)
+        box.set_left(buyZoneBox, bar_index)
+        box.set_top(buyZoneBox, plannedUpper)
+        box.set_bottom(buyZoneBox, plannedLower)
+
+    if showLabels and not na(zoneLabel)
+        label.set_xy(zoneLabel, bar_index, plannedUpper)
+        label.set_text(zoneLabel, "BUY ZONE\nUpper: " + f_price(plannedUpper) + "\nLower: " + f_price(plannedLower))
+
+if setupActive and showLabels
+    if not na(zoneLabel)
+        label.set_xy(zoneLabel, bar_index, plannedUpper)
+    if not na(stopLabel) and not na(plannedStop)
+        label.set_xy(stopLabel, bar_index, plannedStop)
+    if not na(targetLabel) and not na(plannedTarget)
+        label.set_xy(targetLabel, bar_index, plannedTarget)
+
+//=============================================================================
+// 8. ZONE TOUCH, CONFIRMED ENTRY, ADAPTIVE SL / TP
+//=============================================================================
+
+bool priceIntersectsZone = setupActive and low <= plannedUpper and high >= plannedLower
+bool enteredZoneNow      = priceIntersectsZone and not zoneVisitActive
+
+if enteredZoneNow
+    zoneEntryCount  += 1
+    zoneVisitActive := true
+    if not tradeEntered
+        awaitingConfirmation := true
+        firstTouchBar        := bar_index
+
+bool exitedZoneDownNow = setupActive and zoneVisitActive and close < plannedLower
+if exitedZoneDownNow
+    zoneDownExitCount    += 1
+    zoneVisitActive      := false
+    if not tradeEntered
+        awaitingConfirmation := false
+        firstTouchBar        := na
+else if setupActive and zoneVisitActive and close > plannedUpper and not priceIntersectsZone
+    zoneVisitActive := false
+
+float zoneMidpoint = setupActive ? math.avg(plannedUpper, plannedLower) : na
+
+bool confirmationWindowOpen = awaitingConfirmation and not na(firstTouchBar) and bar_index - firstTouchBar <= confirmationBars
+// "Closes bullish inside the buy zone": bullish candle (close > open), close at or above zone
+// midpoint AND at or below zone upper — strictly within zone bounds — plus RSI ≥ 48.
+bool bullishConfirmation    = barstate.isconfirmed and close > open and close >= zoneMidpoint and close <= plannedUpper and localRsi >= 48.0
+bool zoneRiskAcceptable     = setupActive and close - (plannedLower - syminfo.mintick) <= atr * maximumStopAtr * volatilityRatio
+
+// Entry requires: confirmation window open + bullish close inside zone + RSI ≥ 48 +
+// relative volume ≥ threshold + risk-distance check + ≥ minimumConfluentTfs bullish HTFs
+bool entryConfirmed      = setupActive and not tradeEntered and confirmationWindowOpen and bullishConfirmation and zoneRiskAcceptable and minimumTfsMet and relativeVolume >= minimumRelativeVolume
+bool entryRejectedForRisk = setupActive and not tradeEntered and confirmationWindowOpen and bullishConfirmation and not zoneRiskAcceptable
+
+if awaitingConfirmation and not tradeEntered and not na(firstTouchBar) and bar_index - firstTouchBar > confirmationBars
+    awaitingConfirmation := false
+    firstTouchBar        := na
+
+if entryConfirmed
+    tradeEntered         := true
+    awaitingConfirmation := false
+    actualEntry          := close
+    actualEntryTime      := time
+
+    // SL: below the 1m swing low with ATR buffer
+    float swingLowBase        = na(lastConfirmedSwingLow) ? plannedLower : math.min(plannedLower, lastConfirmedSwingLow)
+    float zoneBasedStop       = swingLowBase - atr * stopBufferAtr * volatilityRatio
+    float maximumAllowedStop  = actualEntry  - atr * maximumStopAtr * volatilityRatio
+    plannedStop              := math.max(zoneBasedStop, maximumAllowedStop)
+    plannedStop              := math.min(plannedStop, plannedLower - syminfo.mintick)
+
+    float actualRisk           = math.max(actualEntry - plannedStop, syminfo.mintick)
+    float minimumTarget        = actualEntry + actualRisk * minimumRiskReward
+    float baseTarget           = actualEntry + atr * baseTargetAtr    * volatilityRatio
+    float maximumAllowedTarget = actualEntry + atr * maximumTargetAtr * volatilityRatio
+
+    // TP: nearest qualifying 15m or 1h resistance level, else ATR-based fallback
+    bool  res15mUsable = not na(htf15mResistance) and htf15mResistance >= minimumTarget and htf15mResistance <= maximumAllowedTarget
+    bool  res1hUsable  = not na(htf1hResistance)  and htf1hResistance  >= minimumTarget and htf1hResistance  <= maximumAllowedTarget
+    float nearestHtfRes = na
+    if res15mUsable and res1hUsable
+        nearestHtfRes := math.min(htf15mResistance, htf1hResistance)
+    else if res15mUsable
+        nearestHtfRes := htf15mResistance
+    else if res1hUsable
+        nearestHtfRes := htf1hResistance
+    plannedTarget := not na(nearestHtfRes) ? nearestHtfRes : math.min(math.max(baseTarget, minimumTarget), maximumAllowedTarget)
+
+    stopLine   := line.new(bar_index, plannedStop,   bar_index + 1, plannedStop,   extend = extend.right, color = color.rgb(235, 65, 75),  width = lineWidth)
+    targetLine := line.new(bar_index, plannedTarget, bar_index + 1, plannedTarget, extend = extend.right, color = color.rgb(35, 140, 255), width = lineWidth)
+
+    if not na(buyZoneBox)
+        box.set_bgcolor(buyZoneBox, color.new(color.rgb(0, 205, 105), 87))
+
+    if showLabels
+        stopLabel   := label.new(bar_index, plannedStop,   "SL  " + f_price(plannedStop),   style = label.style_label_left, color = color.rgb(205, 45, 55),  textcolor = color.white)
+        targetLabel := label.new(bar_index, plannedTarget, "TP  " + f_price(plannedTarget), style = label.style_label_left, color = color.rgb(30, 115, 220), textcolor = color.white)
+
+    // ── Alert: CONFIRMED BUY ENTRY (bar close, once only) ─────────────────
+    if enableAlerts
+        if enableMoeWebhook and str.length(moeWebhookSecret) > 0
+            string webhookMsg = f_webhook_message("MOERAND_V7", moeWebhookSecret, webhookSession, requestSandboxSubmission, riskPercent, actualEntry, close, plannedStop, plannedTarget, minimumTfsMet, relativeVolume, activeScore, actualEntryTime)
+            alert(webhookMsg, alert.freq_once_per_bar_close)
+        else
+            alert(syminfo.ticker + " — MOERAND V7 CONFIRMED BUY | " + timeframe.period + " | Entry: " + f_price(actualEntry) + " | SL: " + f_price(plannedStop) + " | TP: " + f_price(plannedTarget) + " | Score: " + str.tostring(activeScore), alert.freq_once_per_bar_close)
+
+//=============================================================================
+// 9. TRADE RESOLUTION, EXPIRY, INVALIDATION, CLEANUP
+//    TP/SL fire their alert and clear state.
+//    Expiry and HTF-invalidation clear state SILENTLY — no alert().
+//=============================================================================
+
+bool stopHit          = setupActive and tradeEntered and not na(plannedStop)   and low  <= plannedStop
+bool targetHit        = setupActive and tradeEntered and not stopHit and not na(plannedTarget) and high >= plannedTarget
+bool pendingExpired   = setupActive and not tradeEntered and bar_index - setupBar > setupExpiryBars
+bool trendInvalid     = setupActive and not tradeEntered and (htf4hClose < htf4hSlow * 0.985 or htf1hClose < htf1hSlow * 0.985)
+bool priceInvalid     = setupActive and not tradeEntered and close < plannedLower - atr * 0.30
+bool opportunityInvalid = trendInvalid or priceInvalid or entryRejectedForRisk
+
+// ── Alert: TAKE PROFIT HIT ────────────────────────────────────────────────
+if targetHit
+    totalTpHits      += 1
+    lastTradeResult   := "TP HIT"
+    lastTradeEndTime  := time
+    lastTradeScore    := activeScore
+    if enableAlerts
+        alert(syminfo.ticker + " — MOERAND V7 TAKE PROFIT HIT | " + timeframe.period + " | TP: " + f_price(plannedTarget), alert.freq_once_per_bar)
+
+// ── Alert: STOP LOSS HIT ──────────────────────────────────────────────────
+if stopHit
+    totalSlHits      += 1
+    lastTradeResult   := "SL HIT"
+    lastTradeEndTime  := time
+    lastTradeScore    := activeScore
+    if enableAlerts
+        alert(syminfo.ticker + " — MOERAND V7 STOP LOSS HIT | " + timeframe.period + " | SL: " + f_price(plannedStop), alert.freq_once_per_bar)
+
+bool removeSetup = targetHit or stopHit or pendingExpired or opportunityInvalid
+
+if removeSetup
+    if not na(buyZoneBox)
+        box.delete(buyZoneBox)
+    if not na(stopLine)
+        line.delete(stopLine)
+    if not na(targetLine)
+        line.delete(targetLine)
+    if not na(zoneLabel)
+        label.delete(zoneLabel)
+    if not na(stopLabel)
+        label.delete(stopLabel)
+    if not na(targetLabel)
+        label.delete(targetLabel)
+
+    if targetHit or stopHit
+        lastFinishBar := bar_index
+
+    setupActive          := false
+    tradeEntered         := false
+    awaitingConfirmation := false
+    setupBar             := na
+    firstTouchBar        := na
+    setupSignalTime      := na
+    actualEntryTime      := na
+    plannedUpper         := na
+    plannedLower         := na
+    plannedStop          := na
+    plannedTarget        := na
+    actualEntry          := na
+    activeScore          := na
+    zoneEntryCount       := 0
+    zoneDownExitCount    := 0
+    zoneVisitActive      := false
+    buyZoneBox           := na
+    stopLine             := na
+    targetLine           := na
+    zoneLabel            := na
+    stopLabel            := na
+    targetLabel          := na
+
+//=============================================================================
+// 10. ONE-TIME WEBHOOK TEST
+//=============================================================================
+
+var bool webhookTestSent = false
+if not sendWebhookTest
+    webhookTestSent := false
+
+if sendWebhookTest and not webhookTestSent and barstate.isrealtime and enableAlerts and enableMoeWebhook and str.length(moeWebhookSecret) > 0
+    float testEntry  = close
+    float testStop   = math.max(syminfo.mintick, testEntry - math.max(atr, syminfo.mintick * 10.0))
+    float testTarget = testEntry + math.max(atr * 1.5, syminfo.mintick * 20.0)
+    string testMsg   = f_webhook_message("MOERAND_V7_TEST", moeWebhookSecret, webhookSession, false, riskPercent, testEntry, testEntry, testStop, testTarget, true, 1.0, 100, time)
+    alert(testMsg, alert.freq_once_per_bar)
+    webhookTestSent := true
+
+//=============================================================================
+// 11. WHITE TRANSPARENT INFORMATION PANEL
+//    Rows: header | 4h | 1h | 15m | 5m | HTF count | score | zone bounds |
+//          entry | stop | target | zone entries | TP/SL | last result | last score | 1m local
+//=============================================================================
+
+color panelBg       = color.new(color.white, 82)
+color panelLabelBg  = color.new(color.white, 72)
+color panelHeaderBg = color.new(color.white, 58)
+color panelBorder   = color.new(color.white, 42)
+
+// 2 columns, 17 rows (indices 0 – 16)
+var table infoPanel = table.new(position.top_right, 2, 17, bgcolor = panelBg, frame_color = panelBorder, frame_width = 1, border_color = panelBorder, border_width = 1)
+
+if barstate.islast
+    if showInfoPanel
+        string currentStatus = tradeEntered ? "IN TRADE" : awaitingConfirmation ? "WAIT CONFIRM" : setupActive ? "ACTIVE" : "SEARCHING"
+        color  statusColor   = tradeEntered ? color.rgb(25, 105, 190) : awaitingConfirmation ? color.rgb(210, 145, 20) : setupActive ? color.rgb(0, 155, 80) : color.rgb(85, 85, 85)
+
+        // Row 0: header
+        table.cell(infoPanel, 0, 0, "MOERAND v7",  bgcolor = panelHeaderBg, text_color = color.rgb(25, 35, 45))
+        table.cell(infoPanel, 1, 0, currentStatus, bgcolor = color.new(statusColor, 22), text_color = color.white)
+
+        // Rows 1–4: one row per HTF (4h, 1h, 15m, 5m)
+        table.cell(infoPanel, 0, 1, "4h  " + f_htfEmoji(htf4hBullish, htf4hAcceptable)   + "  +" + str.tostring(score4h),  bgcolor = panelLabelBg, text_color = f_htfColor(htf4hBullish, htf4hAcceptable))
+        table.cell(infoPanel, 1, 1, f_htfLabel(htf4hBullish, htf4hAcceptable),   bgcolor = panelBg, text_color = f_htfColor(htf4hBullish, htf4hAcceptable))
+
+        table.cell(infoPanel, 0, 2, "1h  " + f_htfEmoji(htf1hBullish, htf1hAcceptable)   + "  +" + str.tostring(score1h),  bgcolor = panelLabelBg, text_color = f_htfColor(htf1hBullish, htf1hAcceptable))
+        table.cell(infoPanel, 1, 2, f_htfLabel(htf1hBullish, htf1hAcceptable),   bgcolor = panelBg, text_color = f_htfColor(htf1hBullish, htf1hAcceptable))
+
+        table.cell(infoPanel, 0, 3, "15m " + f_htfEmoji(htf15mBullish, htf15mAcceptable) + "  +" + str.tostring(score15m), bgcolor = panelLabelBg, text_color = f_htfColor(htf15mBullish, htf15mAcceptable))
+        table.cell(infoPanel, 1, 3, f_htfLabel(htf15mBullish, htf15mAcceptable), bgcolor = panelBg, text_color = f_htfColor(htf15mBullish, htf15mAcceptable))
+
+        table.cell(infoPanel, 0, 4, "5m  " + f_htfEmoji(htf5mBullish, htf5mAcceptable)   + "  +" + str.tostring(score5m),  bgcolor = panelLabelBg, text_color = f_htfColor(htf5mBullish, htf5mAcceptable))
+        table.cell(infoPanel, 1, 4, f_htfLabel(htf5mBullish, htf5mAcceptable),   bgcolor = panelBg, text_color = f_htfColor(htf5mBullish, htf5mAcceptable))
+
+        // Row 5: HTF alignment count
+        table.cell(infoPanel, 0, 5, "HTF Aligned",  bgcolor = panelLabelBg, text_color = color.rgb(35, 45, 55))
+        table.cell(infoPanel, 1, 5, str.tostring(confluenceBullishCount) + " / 4  (need " + str.tostring(minimumConfluentTfs) + ")", bgcolor = panelBg, text_color = minimumTfsMet ? color.rgb(0, 155, 82) : color.rgb(185, 60, 60))
+
+        // Row 6: confluence score
+        table.cell(infoPanel, 0, 6, "Confluence",   bgcolor = panelLabelBg, text_color = color.rgb(35, 45, 55))
+        table.cell(infoPanel, 1, 6, str.tostring(confluenceScore) + " / 100", bgcolor = panelBg, text_color = confluenceScore >= minimumOpportunityScore ? color.rgb(0, 150, 80) : color.rgb(180, 125, 20))
+
+        // Rows 7–8: zone bounds
+        table.cell(infoPanel, 0, 7, "Upper Buy",    bgcolor = panelLabelBg, text_color = color.rgb(35, 45, 55))
+        table.cell(infoPanel, 1, 7, setupActive ? f_price(plannedUpper) : "-", bgcolor = panelBg, text_color = color.rgb(0, 145, 80))
+
+        table.cell(infoPanel, 0, 8, "Lower Buy",    bgcolor = panelLabelBg, text_color = color.rgb(35, 45, 55))
+        table.cell(infoPanel, 1, 8, setupActive ? f_price(plannedLower) : "-", bgcolor = panelBg, text_color = color.rgb(0, 145, 80))
+
+        // Rows 9–11: entry / stop / target
+        table.cell(infoPanel, 0, 9,  "Entry",       bgcolor = panelLabelBg, text_color = color.rgb(35, 45, 55))
+        table.cell(infoPanel, 1, 9,  tradeEntered ? f_price(actualEntry)   : "-", bgcolor = panelBg, text_color = color.rgb(20, 110, 175))
+
+        table.cell(infoPanel, 0, 10, "Stop",        bgcolor = panelLabelBg, text_color = color.rgb(35, 45, 55))
+        table.cell(infoPanel, 1, 10, tradeEntered ? f_price(plannedStop)   : "-", bgcolor = panelBg, text_color = color.rgb(210, 55, 65))
+
+        table.cell(infoPanel, 0, 11, "Target",      bgcolor = panelLabelBg, text_color = color.rgb(35, 45, 55))
+        table.cell(infoPanel, 1, 11, tradeEntered ? f_price(plannedTarget) : "-", bgcolor = panelBg, text_color = color.rgb(30, 115, 220))
+
+        // Row 12: zone entry count
+        table.cell(infoPanel, 0, 12, "Zone entries", bgcolor = panelLabelBg, text_color = color.rgb(35, 45, 55))
+        table.cell(infoPanel, 1, 12, str.tostring(zoneEntryCount), bgcolor = panelBg, text_color = color.rgb(180, 125, 20))
+
+        // Row 13: session TP / SL counters
+        table.cell(infoPanel, 0, 13, "TP / SL",     bgcolor = panelLabelBg, text_color = color.rgb(35, 45, 55))
+        table.cell(infoPanel, 1, 13, str.tostring(totalTpHits) + " / " + str.tostring(totalSlHits), bgcolor = panelBg, text_color = color.rgb(20, 110, 175))
+
+        // Row 14: last trade result
+        table.cell(infoPanel, 0, 14, "Last result",  bgcolor = panelLabelBg, text_color = color.rgb(35, 45, 55))
+        table.cell(infoPanel, 1, 14, lastTradeResult, bgcolor = panelBg, text_color = lastTradeResult == "TP HIT" ? color.rgb(0, 150, 80) : lastTradeResult == "SL HIT" ? color.rgb(210, 55, 65) : color.gray)
+
+        // Row 15: last trade score
+        table.cell(infoPanel, 0, 15, "Last score",  bgcolor = panelLabelBg, text_color = color.rgb(35, 45, 55))
+        table.cell(infoPanel, 1, 15, not na(lastTradeScore) ? str.tostring(lastTradeScore) + " / 100" : "-", bgcolor = panelBg, text_color = color.rgb(180, 125, 20))
+
+        // Row 16: 1m local score contribution
+        table.cell(infoPanel, 0, 16, "1m local",    bgcolor = panelLabelBg, text_color = color.rgb(35, 45, 55))
+        table.cell(infoPanel, 1, 16, "+" + str.tostring(score1m) + " pts", bgcolor = panelBg, text_color = score1m >= 5 ? color.rgb(0, 150, 80) : color.rgb(180, 125, 20))
+    else
+        table.clear(infoPanel, 0, 0, 1, 16)
+
+//=============================================================================
+// 12. ALERT CONDITIONS
+//    Exactly three — no zone-discovery or expiry conditions.
+//=============================================================================
+
+alertcondition(entryConfirmed, "MOERAND V7 CONFIRMED BUY",   "MOERAND v7 confirmed buy on {{ticker}} {{interval}}")
+alertcondition(targetHit,      "MOERAND V7 TAKE PROFIT HIT", "MOERAND v7 take profit reached on {{ticker}} {{interval}}")
+alertcondition(stopHit,        "MOERAND V7 STOP LOSS HIT",   "MOERAND v7 stop loss reached on {{ticker}} {{interval}}")
+
+//=============================================================================
+// 13. DATA WINDOW PLOTS  (no chart display — data window only)
+//=============================================================================
+
+plot(confluenceScore,                            "Confluence Score 0-100",   display = display.data_window)
+plot(htf4hBullish  ? 2 : htf4hAcceptable  ? 1 : 0, "4h Alignment 0-2",     display = display.data_window)
+plot(htf1hBullish  ? 2 : htf1hAcceptable  ? 1 : 0, "1h Alignment 0-2",     display = display.data_window)
+plot(htf15mBullish ? 2 : htf15mAcceptable ? 1 : 0, "15m Alignment 0-2",    display = display.data_window)
+plot(htf5mBullish  ? 2 : htf5mAcceptable  ? 1 : 0, "5m Alignment 0-2",     display = display.data_window)
+plot(relativeVolume,                             "Relative Volume",          display = display.data_window)
+plot(volatilityRatio,                            "Volatility Ratio",         display = display.data_window)
+plot(setupActive   ? 1 : 0,                      "Setup Active",             display = display.data_window)
+plot(tradeEntered  ? actualEntry   : na,          "Actual Entry",            display = display.data_window)
+plot(tradeEntered  ? plannedStop   : na,          "Active Stop",             display = display.data_window)
+plot(tradeEntered  ? plannedTarget : na,          "Active Target",           display = display.data_window)
