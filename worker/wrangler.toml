@@ -35,10 +35,6 @@ compatibility_flags = ["nodejs_compat"]
 name       = "ALERT_COORDINATOR"
 class_name = "AlertCoordinator"
 
-[[migrations]]
-tag          = "v1"
-new_classes  = ["AlertCoordinator"]
-
 [vars]
 WORKER_VERSION      = "5.0.0"
 MAX_OPEN_POSITIONS  = "4"
