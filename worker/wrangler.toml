@@ -45,7 +45,7 @@ MAX_DAILY_TRADES = "8"
 MAX_DAILY_LOSS_PCT = "2"
 MAX_OPEN_RISK_PCT = "2"
 MAX_PORTFOLIO_HEAT = "6"
-ALLOWED_ORIGINS = "https://moerand-alerts.mosaprajb.workers.dev,https://moe-ai.replit.app"
+ALLOWED_ORIGINS = "https://moerand-alerts.mosaprajb.workers.dev,https://moe-ai.replit.app,https://*.replit.dev,https://*.replit.app,http://127.0.0.1"
 
 # Sandbox environment
 [env.sandbox]
