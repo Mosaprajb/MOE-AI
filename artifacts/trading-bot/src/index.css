@@ -551,23 +551,31 @@ tr:hover td { background:rgba(255,255,255,.02); }
   display:none;
   position:fixed; bottom:0; left:0; right:0;
   background:#0a1520;
-  border-top:2px solid var(--border-2);
-  padding:5px 0 calc(env(safe-area-inset-bottom) + 5px);
-  z-index:200;
+  border-top:2px solid rgba(255,255,255,.10);
+  /* safe-area: pushes content above home indicator + fills corner zones */
+  padding-top:8px;
+  padding-bottom:max(env(safe-area-inset-bottom), 10px);
+  padding-left:env(safe-area-inset-left);
+  padding-right:env(safe-area-inset-right);
+  z-index:999;
 }
 .bottom-nav-items {
   display:grid; grid-template-columns:repeat(7,1fr);
+  gap:0;
 }
 .bottom-nav-item {
-  display:flex; flex-direction:column; align-items:center; gap:3px;
+  display:flex; flex-direction:column; align-items:center; gap:4px;
   border:0; background:transparent; color:var(--muted);
-  padding:6px 2px; font-size:11px; font-weight:600;
-  cursor:pointer; transition:color .15s;
-  min-height:54px; justify-content:center;
+  padding:6px 4px; font-size:10px; font-weight:600;
+  cursor:pointer; transition:color .15s, transform .1s;
+  min-height:52px; justify-content:center;
+  -webkit-tap-highlight-color:transparent;
+  touch-action:manipulation;
 }
-.bottom-nav-item .nav-icon { font-size:22px; line-height:1; }
+.bottom-nav-item:active { transform:scale(.9); }
+.bottom-nav-item .nav-icon { font-size:24px; line-height:1; }
 .bottom-nav-item.active { color:var(--green); }
-.bottom-nav-item.active .nav-icon { filter:drop-shadow(0 0 4px var(--green)); }
+.bottom-nav-item.active .nav-icon { filter:drop-shadow(0 0 5px rgba(34,211,144,.7)); }
 
 /* ─── Responsive ─── */
 @media(max-width:1100px) {
@@ -577,7 +585,8 @@ tr:hover td { background:rgba(255,255,255,.02); }
 @media(max-width:900px) {
   .sidenav      { display:none; }
   .bottom-nav   { display:block; }
-  .main-content { padding:12px 12px 76px; }
+  /* leave room for nav (≈60px) + safe-area (up to 34px on iPhone) */
+  .main-content { padding:12px 12px calc(max(env(safe-area-inset-bottom), 10px) + 70px); }
   .gauge-grid   { grid-template-columns:repeat(3,1fr); }
   .grid-4       { grid-template-columns:repeat(2,1fr); }
   .grid-3       { grid-template-columns:1fr 1fr; }
