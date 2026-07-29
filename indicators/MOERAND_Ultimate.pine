@@ -164,8 +164,8 @@ bool buySideSweep = not na(rangeHigh) and high > rangeHigh and close < rangeHigh
 
 plot(showLiquidity ? rangeHigh : na, "Buy-side liquidity", color = color.new(color.red, 45), style = plot.style_linebr)
 plot(showLiquidity ? rangeLow : na, "Sell-side liquidity", color = color.new(color.green, 45), style = plot.style_linebr)
-plotshape(showLiquidity and sellSideSweep, "Sell-side liquidity sweep", shape = shape.triangleup, location = location.belowbar, color = color.aqua, size = size.tiny, text = "LQ")
-plotshape(showLiquidity and buySideSweep, "Buy-side liquidity sweep", shape = shape.triangledown, location = location.abovebar, color = color.orange, size = size.tiny, text = "LQ")
+plotshape(showLiquidity and sellSideSweep, "Sell-side liquidity sweep", style = shape.triangleup, location = location.belowbar, color = color.aqua, size = size.tiny, text = "LQ")
+plotshape(showLiquidity and buySideSweep, "Buy-side liquidity sweep", style = shape.triangledown, location = location.abovebar, color = color.orange, size = size.tiny, text = "LQ")
 
 //=============================================================================
 // SIGNAL SCORING, SL/TP
@@ -204,8 +204,8 @@ if buyActive and (low <= buyStop or high >= buyTarget)
 if sellActive and (high >= sellStop or low <= sellTarget)
     sellActive := false
 
-plotshape(buySignal, "MOERAND Ultimate BUY", shape = shape.labelup, location = location.belowbar, color = color.new(color.green, 0), textcolor = color.white, text = "BUY", size = size.small)
-plotshape(sellSignal, "MOERAND Ultimate SELL", shape = shape.labeldown, location = location.abovebar, color = color.new(color.red, 0), textcolor = color.white, text = "SELL", size = size.small)
+plotshape(buySignal, "MOERAND Ultimate BUY", style = shape.labelup, location = location.belowbar, color = color.new(color.green, 0), textcolor = color.white, text = "BUY", size = size.small)
+plotshape(sellSignal, "MOERAND Ultimate SELL", style = shape.labeldown, location = location.abovebar, color = color.new(color.red, 0), textcolor = color.white, text = "SELL", size = size.small)
 plot(showTargets and buyActive ? buyStop : na, "Buy Stop Loss", color = color.red, style = plot.style_linebr, linewidth = 2)
 plot(showTargets and buyActive ? buyTarget : na, "Buy Take Profit", color = color.green, style = plot.style_linebr, linewidth = 2)
 plot(showTargets and sellActive ? sellStop : na, "Sell Stop Loss", color = color.red, style = plot.style_linebr, linewidth = 2)

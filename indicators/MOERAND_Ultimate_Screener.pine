@@ -8,10 +8,10 @@ int emaFastLen = input.int(20, "Fast EMA", minval = 5, group = g)
 int emaSlowLen = input.int(50, "Slow EMA", minval = 10, group = g)
 int rsiLen = input.int(14, "RSI Length", minval = 5, group = g)
 int minScore = input.int(70, "Minimum Score", minval = 40, maxval = 100, group = g)
-string symbols = input.string("NASDAQ:AAPL,NASDAQ:MSFT,NASDAQ:NVDA,NASDAQ:TSLA,NASDAQ:AMD,NASDAQ:AMZN,NASDAQ:META,NASDAQ:GOOGL,NYSE:SPY,NYSE:QQQ", "Symbols (comma-separated)", group = g)
+string symbols = input.string("NASDAQ:AAPL,NASDAQ:MSFT,NASDAQ:NVDA,NASDAQ:TSLA,NASDAQ:AMD,NASDAQ:AMZN,NASDAQ:META,NASDAQ:GOOGL,AMEX:SPY,NASDAQ:QQQ", "Symbols (comma-separated)", group = g)
 
 f_scan(string ticker) =>
-    [c, eFast, eSlow, r, v, vAvg] = request.security(ticker, tf, [close, ta.ema(close, emaFastLen), ta.ema(close, emaSlowLen), ta.rsi(close, rsiLen), volume, ta.sma(volume, 20)], barmerge.gaps_off, barmerge.lookahead_off)
+    [c, eFast, eSlow, r, v, vAvg] = request.security(ticker, tf == "" ? timeframe.period : tf, [close, ta.ema(close, emaFastLen), ta.ema(close, emaSlowLen), ta.rsi(close, rsiLen), volume, ta.sma(volume, 20)], barmerge.gaps_off, barmerge.lookahead_off, ignore_invalid_symbol = true)
     bool bull = eFast > eSlow and r >= 50
     bool bear = eFast < eSlow and r <= 50
     float rel = vAvg > 0 ? v / vAvg : 1
@@ -41,9 +41,10 @@ if barstate.islast
             color biasColor = bull ? color.lime : bear ? color.red : color.gray
             color scoreColor = score >= minScore ? biasColor : color.gray
             table.cell(screen, 0, row, str.replace(ticker, "NASDAQ:", ""), text_color = color.white)
-            table.cell(screen, 1, row, str.tostring(price, format.mintick), text_color = color.white)
-            table.cell(screen, 2, row, str.tostring(rsi, "#.0"), text_color = rsi > 70 or rsi < 30 ? color.orange : color.white)
-            table.cell(screen, 3, row, str.tostring(relVol, "#.##") + "x", text_color = color.white)
-            table.cell(screen, 4, row, str.tostring(score), text_color = scoreColor)
-            table.cell(screen, 5, row, score >= minScore ? bull ? "BUY" : bear ? "SELL" : "—" : "WAIT", text_color = scoreColor)
+            bool valid = not na(price)
+            table.cell(screen, 1, row, valid ? str.tostring(price, format.mintick) : "INVALID", text_color = valid ? color.white : color.orange)
+            table.cell(screen, 2, row, valid ? str.tostring(rsi, "#.0") : "—", text_color = valid and (rsi > 70 or rsi < 30) ? color.orange : color.white)
+            table.cell(screen, 3, row, valid ? str.tostring(relVol, "#.##") + "x" : "—", text_color = color.white)
+            table.cell(screen, 4, row, valid ? str.tostring(score) : "—", text_color = valid ? scoreColor : color.orange)
+            table.cell(screen, 5, row, valid ? (score >= minScore ? bull ? "BUY" : bear ? "SELL" : "—" : "WAIT") : "CHECK SYMBOL", text_color = valid ? scoreColor : color.orange)
             row += 1
