@@ -12,3 +12,9 @@ id = "e7BYhdZ7VIFJc4KaAaLyY"
 uri = "file://indicators/MOERAND_Ultimate_Screener.pine"
 type = "unspecified"
 title = "MOERAND Ultimate Screener — corrected Pine v6"
+
+[[outputs]]
+id = "mxfqg5kJm0LMVMP5YGTdy"
+uri = "file://indicators/MOERAND_Simple.pine"
+type = "unspecified"
+title = "MOERAND Simple — UT Bot style (BUY opens / SELL closes)"
