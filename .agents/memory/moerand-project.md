@@ -79,3 +79,11 @@ The application-level stop loss is an optional percentage in centralized trading
 **Why:** A 15-minute candle-based SELL can arrive too late after a sharp reversal, so a broker-side protective order is needed to cap loss independently of indicator timing.
 
 **How to apply:** Keep the setting enabled in Settings → Trading Controls, verify the protective stop appears in Webull open orders after each BUY, and treat a failed protective-stop submission as an operational alert because the entry may already be filled.
+
+## Cash and margin sizing
+
+Position sizing supports cash-only, cash-plus-margin, and buying-power modes. In cash-plus-margin mode, the budget is `cash allocation % + margin %` of cash, capped by the actual Webull buying power and optional dollar cap. The selected values are centralized in CONFIG KV and shared by scanner and webhook execution.
+
+**Why:** The user wants explicit control over using personal funds versus a defined amount of margin, without allowing the strategy to exceed the broker's available buying power.
+
+**How to apply:** Keep Sandbox active while validating sizing. Select `Cash + Margin` in Settings, set cash allocation and the additional margin percentage, then confirm the next order quantity and Webull order value before enabling Live.
