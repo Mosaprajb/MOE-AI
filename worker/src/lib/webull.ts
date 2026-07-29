@@ -294,6 +294,35 @@ export class WebullClient {
     };
   }
 
+  // Protective stop is submitted as its own SELL STOP_LOSS order after the
+  // entry order. This avoids relying on stop_price being honored on a MARKET
+  // BUY request and makes the protection visible in Webull open orders.
+  async placeProtectiveStop(params: {
+    symbol: string; qty: number; stop: number; idempotencyKey: string;
+  }): Promise<{ orderId: string; status: string }> {
+    const body: Record<string, unknown> = {
+      account_id:        this.accountId,
+      client_order_id:   params.idempotencyKey,
+      symbol:            params.symbol,
+      side:              'SELL',
+      order_type:        'STOP_LOSS',
+      quantity:          String(params.qty),
+      instrument_type:   'EQUITY',
+      entrust_type:      'QTY',
+      time_in_force:     'DAY',
+      market:            'US',
+      support_trading_session: 'CORE',
+      stop_price:        String(params.stop),
+    };
+    const raw = await this.req<Record<string, unknown>>(
+      'POST', '/openapi/trade/order/place', {}, body,
+    );
+    return {
+      orderId: String(raw.order_id ?? raw.client_order_id ?? raw.id ?? 'unknown'),
+      status: String(raw.status ?? 'PENDING'),
+    };
+  }
+
   // ── Cancel order ─────────────────────────────────────────────────────────
   async cancelOrder(orderId: string): Promise<void> {
     await this.req('POST', '/openapi/trade/order/cancel', {}, {

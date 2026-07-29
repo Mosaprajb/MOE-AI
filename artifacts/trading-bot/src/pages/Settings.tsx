@@ -25,6 +25,8 @@ export default function SettingsPage({ showToast }: Props) {
   const [savingPin, setSavingPin] = useState(false);
   const [cashPct, setCashPct] = useState('25');
   const [maxPositionUsd, setMaxPositionUsd] = useState('0');
+  const [stopLossEnabled, setStopLossEnabled] = useState(true);
+  const [stopLossPct, setStopLossPct] = useState('2');
   const [sizingSource, setSizingSource] = useState<'cash' | 'buying_power'>('cash');
   const [blockIfPosition, setBlockIfPosition] = useState(true);
   const [sessionOpenOnly, setSessionOpenOnly] = useState(true);
@@ -38,7 +40,8 @@ export default function SettingsPage({ showToast }: Props) {
     fetch(`${API_BASE}/api/trading/settings`, { cache: 'no-store' })
       .then(async r => {
         const data = await r.json() as { settings?: {
-          maxCashPct?: number; maxPositionUsd?: number; sizingSource?: 'cash'|'buying_power';
+           maxCashPct?: number; maxPositionUsd?: number; stopLossEnabled?: boolean; stopLossPct?: number;
+           sizingSource?: 'cash'|'buying_power';
           blockIfPosition?: boolean; sessionOpenOnly?: boolean; sessionTz?: string;
           sessionStart?: string; sessionEnd?: string;
         }};
@@ -46,6 +49,8 @@ export default function SettingsPage({ showToast }: Props) {
         if (s) {
           setCashPct(String(s.maxCashPct ?? 25));
           setMaxPositionUsd(String(s.maxPositionUsd ?? 0));
+          setStopLossEnabled(s.stopLossEnabled !== false);
+          setStopLossPct(String(s.stopLossPct ?? 2));
           setSizingSource(s.sizingSource === 'buying_power' ? 'buying_power' : 'cash');
           setBlockIfPosition(s.blockIfPosition !== false);
           setSessionOpenOnly(s.sessionOpenOnly !== false);
@@ -85,11 +90,15 @@ export default function SettingsPage({ showToast }: Props) {
   const saveTradeSettings = async () => {
     const pct = Number(cashPct);
     const cap = Number(maxPositionUsd);
+    const slPct = Number(stopLossPct);
     if (!Number.isFinite(pct) || pct < 1 || pct > 100) {
       showToast('Cash allocation must be between 1% and 100%', 'error'); return;
     }
     if (!Number.isFinite(cap) || cap < 0) {
       showToast('Maximum position value must be 0 or greater', 'error'); return;
+    }
+    if (!Number.isFinite(slPct) || slPct < 0.1 || slPct > 50) {
+      showToast('Stop-loss percentage must be between 0.1% and 50%', 'error'); return;
     }
     setSavingTradeSettings(true);
     try {
@@ -97,7 +106,7 @@ export default function SettingsPage({ showToast }: Props) {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          maxCashPct: pct, maxPositionUsd: cap, sizingSource,
+          maxCashPct: pct, maxPositionUsd: cap, stopLossEnabled, stopLossPct: slPct, sizingSource,
           blockIfPosition, sessionOpenOnly, sessionTz, sessionStart, sessionEnd,
         }),
       });
@@ -135,7 +144,7 @@ export default function SettingsPage({ showToast }: Props) {
       </Section>
 
       {/* Position sizing and session controls */}
-      <Section title="Trading Controls">
+       <Section title="Trading Controls">
         <div style={{ padding: '10px 12px', marginBottom: 14, borderRadius: 8,
           background: 'rgba(34,211,144,.07)', border: '1px solid rgba(34,211,144,.2)',
           color: 'var(--muted)', fontSize: 12, lineHeight: 1.55 }}>
@@ -157,6 +166,27 @@ export default function SettingsPage({ showToast }: Props) {
               value={maxPositionUsd} onChange={e => setMaxPositionUsd(e.target.value)} />
             <div style={{ fontSize: 11, color: 'var(--muted)', marginTop: 5 }}>
               0 means no dollar cap.
+            </div>
+          </div>
+        </div>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 10, marginTop: 14,
+          padding: '12px', borderRadius: 10, background: 'rgba(255,184,77,.07)',
+          border: '1px solid rgba(255,184,77,.25)' }}>
+          <label className="setting-row" style={{ cursor: 'pointer' }}>
+            <span className="setting-info">
+              <b>Protect new BUY positions with a stop loss</b>
+              <small>Webull receives a protective stop with each new BUY. SELL signals still close the actual held quantity.</small>
+            </span>
+            <input type="checkbox" checked={stopLossEnabled}
+              onChange={e => setStopLossEnabled(e.target.checked)} />
+          </label>
+          <div style={{ maxWidth: 260 }}>
+            <div className="input-label">Maximum loss per position (%)</div>
+            <input className="input" type="number" min={0.1} max={50} step={0.1}
+              value={stopLossPct} onChange={e => setStopLossPct(e.target.value)}
+              disabled={!stopLossEnabled} />
+            <div style={{ fontSize: 11, color: 'var(--muted)', marginTop: 5 }}>
+              Example: 2% on a $1,000 position exits near $980.
             </div>
           </div>
         </div>

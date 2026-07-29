@@ -18,6 +18,8 @@ type TradingSettings = {
   sizingSource: 'cash' | 'buying_power';
   maxCashPct: number;
   maxPositionUsd: number;
+  stopLossEnabled: boolean;
+  stopLossPct: number;
   blockIfPosition: boolean;
   sessionOpenOnly: boolean;
   sessionTz: string;
@@ -29,6 +31,8 @@ const defaultSettings: TradingSettings = {
   sizingSource: 'cash',
   maxCashPct: 25,
   maxPositionUsd: 0,
+  stopLossEnabled: true,
+  stopLossPct: 2,
   blockIfPosition: true,
   sessionOpenOnly: true,
   sessionTz: 'America/Chicago',
@@ -53,6 +57,8 @@ trading.post('/settings', async (c) => {
     sizingSource: body.sizingSource === 'buying_power' ? ('buying_power' as const) : ('cash' as const),
     maxCashPct: Math.max(1, Math.min(100, Number(body.maxCashPct ?? defaultSettings.maxCashPct))),
     maxPositionUsd: Math.max(0, Number(body.maxPositionUsd ?? defaultSettings.maxPositionUsd)),
+    stopLossEnabled: body.stopLossEnabled !== false,
+    stopLossPct: Math.max(0.1, Math.min(50, Number(body.stopLossPct ?? defaultSettings.stopLossPct))),
     blockIfPosition: body.blockIfPosition !== false,
     sessionOpenOnly: body.sessionOpenOnly !== false,
     sessionTz: typeof body.sessionTz === 'string' ? body.sessionTz : defaultSettings.sessionTz,

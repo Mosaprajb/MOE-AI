@@ -10,6 +10,8 @@ const defaultTradingSettings = {
   sizingSource: 'cash',
   maxCashPct: 25,
   maxPositionUsd: 0,
+  stopLossEnabled: true,
+  stopLossPct: 2,
   blockIfPosition: true,
   sessionOpenOnly: true,
   sessionTz: 'America/Chicago',
@@ -219,6 +221,21 @@ webhook.post('/webhook', async (c) => {
     }
   }
 
+  // Apply the application-level protective stop to every new BUY. It is
+  // calculated from the alert's entry price, so the user-controlled loss
+  // limit is consistent across TradingView alerts.
+  let protectiveStop = stopPrice;
+  if (!isClose && side === 'BUY' && settings.stopLossEnabled) {
+    const entryForStop = Number(orderPrice ?? 0);
+    if (!(entryForStop > 0)) {
+      return c.json({
+        signalId, accepted: false,
+        reason: 'No price in alert — a price is required to calculate the configured stop loss',
+      });
+    }
+    protectiveStop = entryForStop * (1 - settings.stopLossPct / 100);
+  }
+
   // ── Place order on Webull ────────────────────────────────────────────────
   let orderId   = '';
   let orderStatus = '';
@@ -228,12 +245,32 @@ webhook.post('/webhook', async (c) => {
     const result = await client.placeOrder({
       symbol, side, type, qty,
        price: orderPrice,
-       stop:  stopPrice,
+       // The protective stop is submitted as a separate SELL STOP_LOSS order
+       // below, never mixed into the MARKET entry request.
+       stop:  undefined,
       idempotencyKey: signalId,
     });
     orderId     = result.orderId;
     orderStatus = result.status;
     console.log(`[Webhook] ✓ ${side} ${qty} ${symbol} @ ${mode} — order ${orderId} (${orderStatus})`);
+
+    if (!isClose && side === 'BUY' && protectiveStop != null) {
+      try {
+        const stopResult = await client.placeProtectiveStop({
+          symbol,
+          qty,
+          stop: protectiveStop,
+          idempotencyKey: `${signalId}-SL`,
+        });
+        console.log(`[Webhook] ✓ protective stop ${qty} ${symbol} @ ${protectiveStop.toFixed(4)} — order ${stopResult.orderId} (${stopResult.status})`);
+        orderStatus = `${orderStatus}; STOP_LOSS ${stopResult.status}`;
+      } catch (stopErr) {
+        // The BUY already executed. Report the protection failure explicitly so
+        // the operator can close or protect the position manually.
+        execError = `Entry filled but protective stop failed: ${String(stopErr)}`;
+        console.error(`[Webhook] ✗ Protective stop failed for ${symbol}:`, stopErr);
+      }
+    }
   } catch (err) {
     execError = String(err);
     console.error(`[Webhook] ✗ Order failed for ${symbol}:`, err);
@@ -246,7 +283,7 @@ webhook.post('/webhook', async (c) => {
     signalId, symbol, side,
     signal:       side === 'BUY' ? 'BUY NOW' : 'SELL NOW',
     entry:        orderPrice,
-    stop:         stopPrice,
+    stop:         protectiveStop,
     target:       targetPrice,
     accepted,
     submitted:    accepted,
