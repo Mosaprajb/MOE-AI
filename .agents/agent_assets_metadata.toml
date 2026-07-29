@@ -1,0 +1,14 @@
+uploads = []
+generated = []
+
+[[outputs]]
+id = "OEaaWnKC2RL3tEp0YktiB"
+uri = "file://indicators/MOERAND_Ultimate.pine"
+type = "unspecified"
+title = "MOERAND Ultimate — TradingView Indicator"
+
+[[outputs]]
+id = "e7BYhdZ7VIFJc4KaAaLyY"
+uri = "file://indicators/MOERAND_Ultimate_Screener.pine"
+type = "unspecified"
+title = "MOERAND Ultimate Screener — TradingView"
