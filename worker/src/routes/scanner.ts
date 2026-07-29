@@ -12,9 +12,10 @@ import { getTradingSettings } from './trading-settings';
 
 const scanner = new Hono<{ Bindings: Env }>();
 
-// ── Helpers ───────────────────────────────────────────────────────────────────
+// ── Scanner config (KV-backed, falls back to env vars) ─────────────────────────
+const SCANNER_CFG_KEY = 'scanner:config';
 
-function getScannerConfig(env: Env): ScannerConfig {
+function getScannerConfigDefaults(env: Env): ScannerConfig {
   return {
     tpPct:       Number(env.SCANNER_TP_PCT       ?? '1.5'),
     trailPct:    Number(env.SCANNER_TRAIL_PCT     ?? '1.0'),
@@ -26,6 +27,24 @@ function getScannerConfig(env: Env): ScannerConfig {
   };
 }
 
+async function getScannerConfig(env: Env): Promise<ScannerConfig> {
+  const defaults = getScannerConfigDefaults(env);
+  if (!env.CONFIG) return defaults;
+  try {
+    const saved = await env.CONFIG.get(SCANNER_CFG_KEY, 'json') as Partial<ScannerConfig> | null;
+    if (!saved) return defaults;
+    return {
+      tpPct:       saved.tpPct       ?? defaults.tpPct,
+      trailPct:    saved.trailPct    ?? defaults.trailPct,
+      hardStopPct: saved.hardStopPct ?? defaults.hardStopPct,
+      priceMin:    saved.priceMin    ?? defaults.priceMin,
+      priceMax:    saved.priceMax    ?? defaults.priceMax,
+      riskPct:     saved.riskPct     ?? defaults.riskPct,
+      maxPositions:saved.maxPositions?? defaults.maxPositions,
+    };
+  } catch { return defaults; }
+}
+
 // ── Core scan cycle (called by cron + manual trigger) ─────────────────────────
 export async function runScanCycle(env: Env): Promise<{
   mode: string; scanned: number; candidates: ScanCandidate[];
@@ -34,7 +53,7 @@ export async function runScanCycle(env: Env): Promise<{
   const start   = Date.now();
   const ks      = await getKillSwitch(env);
   const mode    = await getTradingMode(env) as TradingMode;
-  const cfg     = getScannerConfig(env);
+  const cfg     = await getScannerConfig(env);
   const errors: string[] = [];
 
   await ensureWatchlistTable(env);
@@ -204,7 +223,97 @@ scanner.get('/quotes', async (c) => {
 });
 
 /** GET /api/scanner/config */
-scanner.get('/config', (c) => c.json(getScannerConfig(c.env)));
+scanner.get('/config', async (c) => c.json(await getScannerConfig(c.env)));
+
+/** POST /api/scanner/config — save strategy params to KV */
+scanner.post('/config', async (c) => {
+  if (!c.env.CONFIG) return c.json({ error: 'CONFIG KV not bound' }, 503);
+  const body = await c.req.json<Partial<ScannerConfig>>();
+  const defaults = getScannerConfigDefaults(c.env);
+  const merged: ScannerConfig = {
+    tpPct:        clamp(Number(body.tpPct        ?? defaults.tpPct),        0.1, 20),
+    trailPct:     clamp(Number(body.trailPct     ?? defaults.trailPct),     0.1, 20),
+    hardStopPct:  clamp(Number(body.hardStopPct  ?? defaults.hardStopPct),  0.1, 30),
+    priceMin:     clamp(Number(body.priceMin     ?? defaults.priceMin),     0,  9999),
+    priceMax:     clamp(Number(body.priceMax     ?? defaults.priceMax),     1, 99999),
+    riskPct:      clamp(Number(body.riskPct      ?? defaults.riskPct),      0.1, 50),
+    maxPositions: clamp(Number(body.maxPositions ?? defaults.maxPositions), 1,  20),
+  };
+  await c.env.CONFIG.put(SCANNER_CFG_KEY, JSON.stringify(merged));
+  return c.json({ ok: true, config: merged });
+});
+
+function clamp(v: number, min: number, max: number) {
+  return Math.min(max, Math.max(min, isFinite(v) ? v : min));
+}
+
+/** POST /api/scanner/positions/:id/close — manual close */
+scanner.post('/positions/:id/close', async (c) => {
+  const posId = c.req.param('id');
+  const mode  = (await getTradingMode(c.env)) as TradingMode;
+  await ensureScannerTables(c.env);
+
+  // Load the position
+  const row = await c.env.DB?.prepare(
+    `SELECT * FROM scanner_positions WHERE id = ? AND status = 'OPEN'`
+  ).bind(posId).first<Record<string, unknown>>();
+
+  if (!row) return c.json({ error: 'Position not found or already closed' }, 404);
+
+  const sym = String(row.symbol);
+  const qty = Number(row.quantity);
+  const entryPrice = Number(row.entry_price);
+
+  // Fetch current price
+  let exitPrice = Number(row.current_price ?? row.entry_price);
+  try {
+    const { fetchQuote } = await import('../lib/market-data');
+    const q = await fetchQuote(sym);
+    exitPrice = q.price;
+  } catch { /* use stored price */ }
+
+  // Place SELL MARKET order
+  const client = WebullClient.fromEnv(c.env, mode);
+  let webullOrderId: string | undefined;
+  if (client) {
+    try {
+      const r = await client.placeOrder({
+        symbol: sym, side: 'SELL', type: 'MARKET', qty,
+        idempotencyKey: `manual-close-${posId}-${Date.now()}`,
+      });
+      webullOrderId = r.orderId;
+    } catch (e) {
+      return c.json({ error: `Webull order failed: ${String(e)}` }, 502);
+    }
+  }
+
+  const pnl    = (exitPrice - entryPrice) * qty;
+  const pnlPct = ((exitPrice - entryPrice) / entryPrice) * 100;
+  const now    = new Date().toISOString();
+
+  await c.env.DB?.prepare(`
+    UPDATE scanner_positions SET
+      status = 'CLOSED', exit_price = ?, pnl = ?, close_reason = 'MANUAL',
+      current_price = ?, closed_at = ?, updated_at = ?
+    WHERE id = ?
+  `).bind(exitPrice, pnl, exitPrice, now, now, posId).run();
+
+  // Write to unified trades table
+  await c.env.DB?.prepare(`
+    INSERT OR IGNORE INTO trades
+      (id, symbol, side, quantity, entry_price, exit_price, pnl, pnl_pct,
+       stop_loss, take_profit, signal, status, mode, opened_at, closed_at)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+  `).bind(
+    `trade-${posId}`, sym, 'BUY', qty,
+    entryPrice, exitPrice, pnl, pnlPct,
+    row.stop_loss, row.take_profit,
+    `Manual close`,
+    'CLOSED', mode, row.opened_at, now,
+  ).run();
+
+  return c.json({ ok: true, symbol: sym, exitPrice, pnl, webullOrderId });
+});
 
 /** GET /api/scanner/watchlist */
 scanner.get('/watchlist', async (c) => {

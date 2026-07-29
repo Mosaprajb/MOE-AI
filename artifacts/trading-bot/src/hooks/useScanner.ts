@@ -162,5 +162,40 @@ export function useScanner(mode: TradingMode) {
     await load();
   }, [load]);
 
-  return { positions, history, quotes, quotesAt, lastResult, runs, config, watchlist, scanning, loading, error, runScan, reload: load, loadQuotes, updateWatchlist };
+  const saveConfig = useCallback(async (cfg: Partial<ScannerConfig>): Promise<{ ok: boolean; error?: string }> => {
+    try {
+      const res = await fetch(`${API_BASE}/api/scanner/config`, {
+        method: 'POST', mode: 'cors',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(cfg),
+      });
+      const data = await res.json() as { ok?: boolean; config?: ScannerConfig; error?: string };
+      if (!res.ok) return { ok: false, error: data.error ?? `HTTP ${res.status}` };
+      if (data.config) setConfig(data.config);
+      return { ok: true };
+    } catch (e) {
+      return { ok: false, error: String(e) };
+    }
+  }, []);
+
+  const closePosition = useCallback(async (posId: string): Promise<{ ok: boolean; pnl?: number; error?: string }> => {
+    try {
+      const res = await fetch(`${API_BASE}/api/scanner/positions/${posId}/close`, {
+        method: 'POST', mode: 'cors',
+      });
+      const data = await res.json() as { ok?: boolean; pnl?: number; error?: string };
+      if (!res.ok) return { ok: false, error: data.error ?? `HTTP ${res.status}` };
+      await load(); // refresh positions
+      return { ok: true, pnl: data.pnl };
+    } catch (e) {
+      return { ok: false, error: String(e) };
+    }
+  }, [load]);
+
+  return {
+    positions, history, quotes, quotesAt, lastResult, runs, config,
+    watchlist, scanning, loading, error,
+    runScan, reload: load, loadQuotes,
+    updateWatchlist, saveConfig, closePosition,
+  };
 }

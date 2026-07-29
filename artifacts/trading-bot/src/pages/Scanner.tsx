@@ -1,9 +1,25 @@
 // MOE-AI — Scanner Page (main product)
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import type { TradingMode } from '../lib/config';
 import { useScanner } from '../hooks/useScanner';
 import { useDashboard } from '../hooks/useApi';
 import type { ScanCandidate, ScannerPosition, LiveQuote } from '../hooks/useScanner';
+
+// ── Browser notifications helper ─────────────────────────────────────────────
+async function requestNotifPermission(): Promise<boolean> {
+  if (!('Notification' in window)) return false;
+  if (Notification.permission === 'granted') return true;
+  if (Notification.permission === 'denied') return false;
+  const result = await Notification.requestPermission();
+  return result === 'granted';
+}
+
+function sendNotif(title: string, body: string, icon?: string) {
+  if (Notification.permission !== 'granted') return;
+  try {
+    new Notification(title, { body, icon: icon ?? '/favicon.ico', silent: false });
+  } catch { /* ignore in unsupported contexts */ }
+}
 
 interface Props { mode: TradingMode; showToast: (m: string, t?: 'success'|'error') => void; }
 
@@ -333,18 +349,28 @@ export default function ScannerPage({ mode, showToast }: Props) {
   // Extract candidates from lastResult
   const cands: ScanCandidate[] = lastResult?.candidates ?? [];
 
-  const handleScan = async () => {
+  const handleScan = useCallback(async () => {
     _lastScanAt = Date.now();
     const result = await runScan();
     if (result) {
-      const cnt = result.candidates.length;
-      showToast(
-        cnt > 0 ? `✓ Scan done — ${cnt} signal${cnt !== 1 ? 's' : ''} found` : '✓ Scan done — no signals',
-        cnt > 0 ? 'success' : undefined,
-      );
+      const cnt  = result.candidates.length;
+      const high = result.candidates.filter(c => c.confidence === 'HIGH').length;
+      const msg  = cnt > 0
+        ? `✓ Scan done — ${cnt} signal${cnt !== 1 ? 's' : ''} found`
+        : '✓ Scan done — no signals';
+      showToast(msg, cnt > 0 ? 'success' : undefined);
+
+      // Browser notification for BUY signals
+      if (cnt > 0) {
+        const symbols = result.candidates.slice(0, 3).map(c => c.symbol).join(', ');
+        sendNotif(
+          `MOE-AI · ${cnt} BUY Signal${cnt !== 1 ? 's' : ''}`,
+          `${high > 0 ? `${high} HIGH confidence — ` : ''}${symbols}${cnt > 3 ? ` +${cnt - 3} more` : ''}`,
+        );
+      }
     }
     await loadQuotes();
-  };
+  }, [runScan, loadQuotes, showToast]);
 
   // Auto-scan every 5 min when enabled
   useEffect(() => {
@@ -355,8 +381,7 @@ export default function ScannerPage({ mode, showToast }: Props) {
       if (autoRef.current) clearInterval(autoRef.current);
     }
     return () => { if (autoRef.current) clearInterval(autoRef.current); };
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [autoScan]);
+  }, [autoScan, handleScan]);
 
   return (
     <div>
@@ -373,18 +398,37 @@ export default function ScannerPage({ mode, showToast }: Props) {
         onRemove={sym => updateWatchlist(sym, 'remove').then(() => showToast(`Removed ${sym}`))}
       />
 
-      {/* Auto-scan toggle */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 18 }}>
+      {/* Auto-scan + notification toggle */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 14, marginBottom: 18, flexWrap: 'wrap' }}>
         <label className="toggle" style={{ cursor: 'pointer' }}>
-          <input type="checkbox" checked={autoScan} onChange={e => {
-            setAutoScan(e.target.checked);
-            showToast(e.target.checked ? 'Auto-scan ON — every 5 min' : 'Auto-scan OFF', e.target.checked ? 'success' : undefined);
+          <input type="checkbox" checked={autoScan} onChange={async e => {
+            const next = e.target.checked;
+            setAutoScan(next);
+            if (next) {
+              // Request notification permission when enabling auto-scan
+              await requestNotifPermission();
+            }
+            showToast(next ? 'Auto-scan ON — every 5 min' : 'Auto-scan OFF', next ? 'success' : undefined);
           }} />
           <div className="toggle-track" />
           <div className="toggle-thumb" />
         </label>
         <span style={{ fontSize: 13, fontWeight: 600 }}>Auto-scan every 5 min</span>
-        <span style={{ fontSize: 11, color: 'var(--muted)' }}>· Sandbox only until you switch to Live</span>
+        <span style={{ fontSize: 11, color: 'var(--muted)' }}>· Sandbox until you switch to Live</span>
+
+        {/* Notification permission indicator */}
+        {typeof Notification !== 'undefined' && (
+          <button
+            className="btn btn-ghost btn-sm"
+            style={{ fontSize: 11 }}
+            onClick={async () => {
+              const ok = await requestNotifPermission();
+              showToast(ok ? '🔔 Notifications enabled' : '🔕 Notifications blocked — check browser settings', ok ? 'success' : 'error');
+            }}
+          >
+            {Notification.permission === 'granted' ? '🔔 Notifications on' : '🔕 Enable notifications'}
+          </button>
+        )}
       </div>
 
       {/* Main grid: market + signals */}

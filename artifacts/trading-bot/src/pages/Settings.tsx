@@ -1,8 +1,9 @@
-// MOE-AI — Settings Page (simplified)
+// MOE-AI — Settings Page
 import { useEffect, useState } from 'react';
 import { API_BASE } from '../lib/config';
 import { setPin, hasPinSet } from '../lib/auth';
 import type { TradingMode } from '../lib/config';
+import type { ScannerConfig } from '../hooks/useScanner';
 
 interface Props { mode: TradingMode; showToast: (msg: string, t?: 'success'|'error') => void; }
 
@@ -36,10 +37,64 @@ export default function SettingsPage({ showToast }: Props) {
   const [loadingSettings,  setLoadingSettings]   = useState(true);
   const [savingSettings,   setSavingSettings]    = useState(false);
 
+  // Scanner strategy
+  const [scanTpPct,       setScanTpPct]       = useState('1.5');
+  const [scanTrailPct,    setScanTrailPct]     = useState('1.0');
+  const [scanHardStopPct, setScanHardStopPct] = useState('1.5');
+  const [scanPriceMin,    setScanPriceMin]     = useState('10');
+  const [scanPriceMax,    setScanPriceMax]     = useState('100');
+  const [scanMaxPos,      setScanMaxPos]       = useState('4');
+  const [loadingScanner,  setLoadingScanner]   = useState(true);
+  const [savingScanner,   setSavingScanner]    = useState(false);
+
   // PIN
   const [newPin,  setNewPin]  = useState('');
   const [confPin, setConfPin] = useState('');
   const [savingPin, setSavingPin] = useState(false);
+
+  // Load scanner config
+  useEffect(() => {
+    fetch(`${API_BASE}/api/scanner/config`, { cache: 'no-store' })
+      .then(async r => {
+        if (!r.ok) return;
+        const d = await r.json() as Partial<ScannerConfig>;
+        if (d.tpPct        != null) setScanTpPct(String(d.tpPct));
+        if (d.trailPct     != null) setScanTrailPct(String(d.trailPct));
+        if (d.hardStopPct  != null) setScanHardStopPct(String(d.hardStopPct));
+        if (d.priceMin     != null) setScanPriceMin(String(d.priceMin));
+        if (d.priceMax     != null) setScanPriceMax(String(d.priceMax));
+        if (d.maxPositions != null) setScanMaxPos(String(d.maxPositions));
+      })
+      .catch(() => {})
+      .finally(() => setLoadingScanner(false));
+  }, []);
+
+  const saveScannerStrategy = async () => {
+    const tp    = Number(scanTpPct);
+    const trail = Number(scanTrailPct);
+    const hs    = Number(scanHardStopPct);
+    const pmin  = Number(scanPriceMin);
+    const pmax  = Number(scanPriceMax);
+    const mpos  = Number(scanMaxPos);
+    if (tp < 0.1 || tp > 20)    { showToast('Take Profit must be 0.1–20%', 'error'); return; }
+    if (trail < 0.1 || trail > 20) { showToast('Trailing SL must be 0.1–20%', 'error'); return; }
+    if (hs < 0.1 || hs > 30)    { showToast('Hard Stop must be 0.1–30%', 'error'); return; }
+    if (pmin < 0 || pmax <= pmin){ showToast('Price range invalid', 'error'); return; }
+    if (mpos < 1 || mpos > 20)  { showToast('Max positions must be 1–20', 'error'); return; }
+    setSavingScanner(true);
+    try {
+      const res = await fetch(`${API_BASE}/api/scanner/config`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ tpPct: tp, trailPct: trail, hardStopPct: hs,
+          priceMin: pmin, priceMax: pmax, maxPositions: mpos }),
+      });
+      const data = await res.json() as { error?: string };
+      if (!res.ok) throw new Error(data.error ?? `HTTP ${res.status}`);
+      showToast('Scanner strategy saved ✓', 'success');
+    } catch (e) {
+      showToast(`Save failed: ${String(e).replace('Error: ', '')}`, 'error');
+    } finally { setSavingScanner(false); }
+  };
 
   useEffect(() => {
     fetch(`${API_BASE}/api/trading/settings`, { cache: 'no-store' })
@@ -246,6 +301,69 @@ export default function SettingsPage({ showToast }: Props) {
           onClick={saveTradingControls}
           disabled={savingSettings || loadingSettings}>
           {savingSettings ? 'Saving…' : loadingSettings ? 'Loading…' : 'Save Trading Controls'}
+        </button>
+      </Section>
+
+      {/* Scanner Strategy */}
+      <Section title="Scanner Strategy">
+        <div className="settings-info-box">
+          Controls how the scanner scores stocks and manages positions.
+          {loadingScanner && <span style={{ marginLeft: 8, color: 'var(--muted)' }}>Loading…</span>}
+        </div>
+
+        <div className="settings-row-grid">
+          <div>
+            <div className="input-label">Take Profit (%)</div>
+            <input className="input" type="number" min={0.1} max={20} step={0.1}
+              value={scanTpPct} onChange={e => setScanTpPct(e.target.value)} />
+            <div style={{ fontSize: 11, color: 'var(--muted)', marginTop: 4 }}>Target gain from entry. Default: 1.5%</div>
+          </div>
+          <div>
+            <div className="input-label">Trailing Stop (%)</div>
+            <input className="input" type="number" min={0.1} max={20} step={0.1}
+              value={scanTrailPct} onChange={e => setScanTrailPct(e.target.value)} />
+            <div style={{ fontSize: 11, color: 'var(--muted)', marginTop: 4 }}>Trails highest price. Default: 1.0%</div>
+          </div>
+        </div>
+
+        <div className="settings-row-grid" style={{ marginTop: 12 }}>
+          <div>
+            <div className="input-label">Hard Stop Loss (%)</div>
+            <input className="input" type="number" min={0.1} max={30} step={0.1}
+              value={scanHardStopPct} onChange={e => setScanHardStopPct(e.target.value)} />
+            <div style={{ fontSize: 11, color: 'var(--muted)', marginTop: 4 }}>Maximum loss floor. Default: 1.5%</div>
+          </div>
+          <div>
+            <div className="input-label">Max open positions</div>
+            <input className="input" type="number" min={1} max={20} step={1}
+              value={scanMaxPos} onChange={e => setScanMaxPos(e.target.value)} />
+            <div style={{ fontSize: 11, color: 'var(--muted)', marginTop: 4 }}>Scanner won't open more than this. Default: 4</div>
+          </div>
+        </div>
+
+        <div className="settings-divider" />
+        <div className="input-label" style={{ marginBottom: 8 }}>Price range filter ($)</div>
+        <div style={{ display: 'flex', gap: 10, alignItems: 'center', maxWidth: 340 }}>
+          <div style={{ flex: 1 }}>
+            <input className="input" type="number" min={0} step={1}
+              value={scanPriceMin} onChange={e => setScanPriceMin(e.target.value)}
+              placeholder="Min" />
+          </div>
+          <span style={{ color: 'var(--muted)' }}>–</span>
+          <div style={{ flex: 1 }}>
+            <input className="input" type="number" min={1} step={10}
+              value={scanPriceMax} onChange={e => setScanPriceMax(e.target.value)}
+              placeholder="Max" />
+          </div>
+        </div>
+        <div style={{ fontSize: 11, color: 'var(--muted)', marginTop: 6 }}>
+          Only scan stocks within this price range. Default: $10–$100.
+        </div>
+
+        <button className="btn btn-primary" style={{ marginTop: 16 }}
+          onClick={saveScannerStrategy}
+          disabled={savingScanner || loadingScanner}>
+          {savingScanner ? 'Saving…' : loadingScanner ? 'Loading…' : 'Save Scanner Strategy'}
         </button>
       </Section>
 

@@ -12,9 +12,9 @@ const fmt    = (n?: number) => n != null ? `$${n.toFixed(2)}` : '—';
 const fmtPct = (n: number, plus = false) => `${plus && n >= 0 ? '+' : ''}${n.toFixed(2)}%`;
 const pnlClr = (n: number) => n >= 0 ? 'var(--green)' : 'var(--red)';
 
-export default function PositionsPage({ mode }: Props) {
+export default function PositionsPage({ mode, showToast }: Props) {
   const { data, loading } = useDashboard(mode, 15_000);
-  const { positions: scanPos } = useScanner(mode);
+  const { positions: scanPos, closePosition } = useScanner(mode);
   const [tab, setTab] = useState<'webull' | 'scanner'>('webull');
 
   const webullPos: Position[] = data?.positions ?? [];
@@ -43,7 +43,7 @@ export default function PositionsPage({ mode }: Props) {
       </div>
 
       {tab === 'webull' && <WebullPositions positions={webullPos} loading={loading} />}
-      {tab === 'scanner' && <ScannerPositions positions={scanOpen} />}
+      {tab === 'scanner' && <ScannerPositions positions={scanOpen} onClose={closePosition} showToast={showToast} />}
     </div>
   );
 }
@@ -130,7 +130,32 @@ function WebullPositions({ positions, loading }: { positions: Position[]; loadin
   );
 }
 
-function ScannerPositions({ positions }: { positions: ScannerPosition[] }) {
+function ScannerPositions({
+  positions, onClose, showToast,
+}: {
+  positions: ScannerPosition[];
+  onClose: (id: string) => Promise<{ ok: boolean; pnl?: number; error?: string }>;
+  showToast: (m: string, t?: 'success'|'error') => void;
+}) {
+  const [closing, setClosing] = useState<string | null>(null);
+  const [confirmId, setConfirmId] = useState<string | null>(null);
+
+  const handleClose = async (p: ScannerPosition) => {
+    if (confirmId !== p.id) { setConfirmId(p.id); return; }
+    setConfirmId(null);
+    setClosing(p.id);
+    const r = await onClose(p.id);
+    setClosing(null);
+    if (r.ok) {
+      const pnlStr = r.pnl != null
+        ? ` · P&L ${r.pnl >= 0 ? '+' : ''}$${r.pnl.toFixed(2)}`
+        : '';
+      showToast(`${p.symbol} closed${pnlStr}`, 'success');
+    } else {
+      showToast(`Close failed: ${r.error}`, 'error');
+    }
+  };
+
   if (positions.length === 0) {
     return (
       <div className="empty-state">
@@ -151,6 +176,8 @@ function ScannerPositions({ positions }: { positions: ScannerPosition[] }) {
         const prog   = p.takeProfit > p.entryPrice
           ? Math.max(0, Math.min(100, ((p.currentPrice - p.entryPrice) / (p.takeProfit - p.entryPrice)) * 100))
           : 0;
+        const isConfirming = confirmId === p.id;
+        const isClosing    = closing   === p.id;
 
         return (
           <div key={p.id} className={`pos-card ${pnlAmt >= 0 ? 'pos-card-green' : 'pos-card-red'}`}>
@@ -167,11 +194,21 @@ function ScannerPositions({ positions }: { positions: ScannerPosition[] }) {
                   {p.quantity} shares · {new Date(p.openedAt).toLocaleString()}
                 </div>
               </div>
-              <div style={{ textAlign: 'right' }}>
+              <div style={{ textAlign: 'right', display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 6 }}>
                 <div style={{ fontWeight: 800, fontSize: 17, color: pnlClr(pnlAmt) }}>
                   {pnlAmt >= 0 ? '+' : ''}{pnlAmt.toFixed(2)}
                 </div>
                 <div style={{ fontSize: 12, color: pnlClr(pnlPct) }}>{fmtPct(pnlPct, true)}</div>
+
+                {/* Close button */}
+                <button
+                  className={`btn btn-sm ${isConfirming ? 'btn-danger' : 'btn-ghost'}`}
+                  style={{ fontSize: 11, padding: '4px 10px' }}
+                  onClick={() => handleClose(p)}
+                  disabled={isClosing}
+                  onBlur={() => setConfirmId(null)}>
+                  {isClosing ? '…' : isConfirming ? '⚠ Confirm Close' : '✕ Close'}
+                </button>
               </div>
             </div>
 
