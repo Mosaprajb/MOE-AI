@@ -71,3 +71,11 @@ description: TradingView → Cloudflare Worker → Webull automated trading brid
 3. Test webhook on demo: send test POST to webhook URL from curl or TradingView
 4. When demo validated → set live credentials + toggle LIVE in frontend
 5. User will send TradingView indicator code for review/improvement
+
+## Protective stop-loss behavior
+
+The application-level stop loss is an optional percentage in centralized trading settings. When enabled, every new BUY calculates a stop price from the alert price and submits a separate SELL STOP_LOSS order after the market entry. This protects the position even when the TradingView SELL signal has not appeared yet; indicator SELL still closes the actual held quantity. The default is enabled at 2%, with a UI range of 0.1%–50%.
+
+**Why:** A 15-minute candle-based SELL can arrive too late after a sharp reversal, so a broker-side protective order is needed to cap loss independently of indicator timing.
+
+**How to apply:** Keep the setting enabled in Settings → Trading Controls, verify the protective stop appears in Webull open orders after each BUY, and treat a failed protective-stop submission as an operational alert because the entry may already be filled.
