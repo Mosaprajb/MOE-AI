@@ -206,27 +206,86 @@ function searchStocks(q: string): { symbol: string; name: string }[] {
   ).slice(0, 10);
 }
 
+// ── Local EMA / RSI scoring engine ───────────────────────────────────────────
+function calcEMA(prices: number[], period: number): number[] {
+  if (!prices.length) return [];
+  const k = 2 / (period + 1);
+  const out = [prices[0]];
+  for (let i = 1; i < prices.length; i++) out.push(prices[i] * k + out[i - 1] * (1 - k));
+  return out;
+}
+function calcRSI(prices: number[], period = 14): number {
+  if (prices.length < period + 1) return 50;
+  const ch = prices.slice(1).map((p, i) => p - prices[i]);
+  let ag = 0, al = 0;
+  for (let i = 0; i < period; i++) { ag += Math.max(0, ch[i]); al += Math.max(0, -ch[i]); }
+  ag /= period; al /= period;
+  for (let i = period; i < ch.length; i++) {
+    ag = (ag * (period - 1) + Math.max(0,  ch[i])) / period;
+    al = (al * (period - 1) + Math.max(0, -ch[i])) / period;
+  }
+  return al === 0 ? 100 : 100 - 100 / (1 + ag / al);
+}
+interface LocalScore {
+  score: number; confidence: 'HIGH' | 'MEDIUM' | 'NONE';
+  reasons: string[]; entry: number; takeProfit: number; stopLoss: number;
+  ema9: number; ema21: number; rsi14: number; volumeRatio: number;
+}
+function scoreFromCandles(
+  candles: { close: number; volume: number }[],
+  config: import('../hooks/useScanner').ScannerConfig | null,
+): LocalScore | null {
+  if (candles.length < 22) return null;
+  const closes  = candles.map(c => c.close);
+  const volumes = candles.map(c => c.volume);
+  const e9  = calcEMA(closes, 9);
+  const e21 = calcEMA(closes, 21);
+  const rsi = calcRSI(closes);
+  const price = closes.at(-1)!;
+  const prev  = closes.at(-2) ?? price;
+  const ema9  = e9.at(-1)!;
+  const ema21 = e21.at(-1)!;
+  const v20   = volumes.slice(-20);
+  const avgV  = v20.reduce((a, b) => a + b, 0) / Math.max(v20.length, 1);
+  const volR  = avgV > 0 ? (volumes.at(-1) ?? 0) / avgV : 1;
+  let score = 0; const reasons: string[] = [];
+  if (ema9 > ema21)               { score += 3; reasons.push('EMA9 > EMA21'); }
+  if (rsi >= 45 && rsi <= 65)     { score += 2; reasons.push(`RSI ${rsi.toFixed(0)}`); }
+  else if (rsi >= 40)             { score += 1; reasons.push(`RSI ${rsi.toFixed(0)}`); }
+  if (volR >= 1.5)                { score += 2; reasons.push(`Vol ${volR.toFixed(1)}x`); }
+  else if (volR >= 1.2)           { score += 1; reasons.push(`Vol ${volR.toFixed(1)}x`); }
+  if (price > ema9)               { score += 2; reasons.push('Price > EMA9'); }
+  if (price > prev)               { score += 1; reasons.push('Bullish candle'); }
+  const confidence: 'HIGH' | 'MEDIUM' | 'NONE' = score >= 7 ? 'HIGH' : score >= 5 ? 'MEDIUM' : 'NONE';
+  const tpPct = config?.tpPct       ?? 3;
+  const slPct = config?.hardStopPct ?? 2;
+  return { score, confidence, reasons, entry: price,
+    takeProfit: price * (1 + tpPct / 100), stopLoss: price * (1 - slPct / 100),
+    ema9, ema21, rsi14: rsi, volumeRatio: volR };
+}
+
 interface SearchResult { symbol: string; name: string; exchange: string; type: string; }
-interface QuoteDetail {
-  symbol: string;
-  quote:  { price: number; changeAmt: number; changePct: number; volume: number; high: number; low: number; };
-  scored: { score: number; confidence: string; reasons: string[]; takeProfit: number; stopLoss: number; entry: number; } | null;
+interface StockDetail {
+  symbol: string; price: number; changeAmt: number; changePct: number;
+  volume: number; high: number; low: number; score: LocalScore | null;
 }
 
 function StockSearch({
-  onAdd, showToast,
+  onAdd, showToast, config, onFocusScan, scanning,
 }: {
-  onAdd: (sym: string) => void;
+  onAdd: (sym: string) => Promise<void>;
   showToast: (m: string, t?: 'success'|'error') => void;
+  config: import('../hooks/useScanner').ScannerConfig | null;
+  onFocusScan: (sym: string) => Promise<void>;
+  scanning: boolean;
 }) {
   const [query,    setQuery]    = useState('');
   const [results,  setResults]  = useState<SearchResult[]>([]);
-  const [detail,   setDetail]   = useState<QuoteDetail | null>(null);
+  const [detail,   setDetail]   = useState<StockDetail | null>(null);
   const [open,     setOpen]     = useState(false);
-  const [loadingS, setLoadingS] = useState(false);
-  const [loadingD, setLoadingD] = useState(false);
-  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const wrapRef     = useRef<HTMLDivElement>(null);
+  const [loading,  setLoading]  = useState(false);
+  const [focusing, setFocusing] = useState(false);
+  const wrapRef = useRef<HTMLDivElement>(null);
 
   // Close on outside click
   useEffect(() => {
@@ -239,129 +298,106 @@ function StockSearch({
 
   // Instant local search — no network, no CORS issues
   const search = (q: string) => {
-    if (debounceRef.current) clearTimeout(debounceRef.current);
     setQuery(q);
     if (!q.trim()) { setResults([]); setOpen(false); return; }
     const hits = searchStocks(q);
-    const mapped: SearchResult[] = hits.map(h => ({
-      symbol: h.symbol, name: h.name, exchange: 'US', type: 'EQUITY',
-    }));
-    setResults(mapped);
-    setOpen(mapped.length > 0);
+    setResults(hits.map(h => ({ symbol: h.symbol, name: h.name, exchange: 'US', type: 'EQUITY' })));
+    setOpen(hits.length > 0);
   };
 
   const selectSymbol = async (sym: string) => {
     setOpen(false);
     setQuery(sym);
     setDetail(null);
-    setLoadingD(true);
+    setLoading(true);
     try {
-      // 1️⃣ Try Worker quote endpoint (works after Worker deployment)
-      const workerRes = await fetch(`${API_BASE}/api/scanner/quote/${sym}`, { mode: 'cors' }).catch(() => null);
-      if (workerRes?.ok) {
-        const d = await workerRes.json() as QuoteDetail;
-        setDetail(d);
-        return;
-      }
-
-      // 2️⃣ Fallback: Yahoo Finance v8 chart (works with CORS from browsers)
+      // 15-minute candles give price meta AND candle history for local scoring
       const yfRes = await fetch(
-        `https://query2.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(sym)}?interval=1d&range=5d&includePrePost=false`,
+        `https://query2.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(sym)}?interval=15m&range=5d&includePrePost=false`,
         { mode: 'cors', headers: { Accept: 'application/json' } }
       ).catch(() => null);
-
       if (yfRes?.ok) {
-        type YfChart = {
-          chart?: {
-            result?: [{
-              meta?: {
-                regularMarketPrice?: number;
-                chartPreviousClose?: number;
-                regularMarketVolume?: number;
-                regularMarketDayHigh?: number;
-                regularMarketDayLow?: number;
-              };
-            }];
-            error?: unknown;
-          };
+        const data  = await yfRes.json() as {
+          chart?: { result?: [{ meta?: Record<string, number | null>; indicators?: { quote?: [{ close?: (number|null)[]; volume?: (number|null)[] }] } }] };
         };
-        const yfData = await yfRes.json() as YfChart;
-        const meta = yfData?.chart?.result?.[0]?.meta;
-        if (meta) {
-          const price     = meta.regularMarketPrice     ?? 0;
-          const prevClose = meta.chartPreviousClose     ?? price;
-          const changeAmt = price - prevClose;
-          const changePct = prevClose > 0 ? (changeAmt / prevClose) * 100 : 0;
+        const r     = data?.chart?.result?.[0];
+        const meta  = r?.meta;
+        const q0    = r?.indicators?.quote?.[0];
+        if (meta && q0) {
+          const rawC = q0.close  ?? [];
+          const rawV = q0.volume ?? [];
+          const candles = rawC.reduce<{ close: number; volume: number }[]>((acc, c, i) => {
+            if (c !== null && c > 0) acc.push({ close: c, volume: Number(rawV[i] ?? 0) });
+            return acc;
+          }, []);
+          const price     = Number(meta.regularMarketPrice)     || (candles.at(-1)?.close ?? 0);
+          const prevClose = Number(meta.chartPreviousClose)      || price;
           setDetail({
-            symbol: sym,
-            quote: {
-              price,
-              changeAmt,
-              changePct,
-              volume:  meta.regularMarketVolume  ?? 0,
-              high:    meta.regularMarketDayHigh ?? 0,
-              low:     meta.regularMarketDayLow  ?? 0,
-            },
-            scored: null, // scoring requires deployed Worker
+            symbol: sym, price,
+            changeAmt: price - prevClose,
+            changePct: prevClose > 0 ? ((price - prevClose) / prevClose) * 100 : 0,
+            volume: Number(meta.regularMarketVolume)  || 0,
+            high:   Number(meta.regularMarketDayHigh) || 0,
+            low:    Number(meta.regularMarketDayLow)  || 0,
+            score:  scoreFromCandles(candles, config),
           });
           return;
         }
       }
-
       showToast(`No data for ${sym}`, 'error');
     } catch { showToast(`Failed to load ${sym}`, 'error'); }
-    finally { setLoadingD(false); }
+    finally { setLoading(false); }
   };
 
-  const pnlClr = (n: number) => n >= 0 ? 'var(--green)' : 'var(--red)';
-  const fmt    = (n?: number) => n != null ? `$${n.toFixed(2)}` : '—';
-  const fmtK   = (n: number) => n >= 1e6 ? `${(n/1e6).toFixed(1)}M` : n >= 1e3 ? `${(n/1e3).toFixed(0)}K` : String(n);
+  const doFocusScan = async () => {
+    if (!detail || focusing || scanning) return;
+    setFocusing(true);
+    try { await onFocusScan(detail.symbol); }
+    finally { setFocusing(false); }
+  };
+
+  const fmtL  = (n?: number) => n != null ? `$${n.toFixed(2)}` : '—';
+  const fmtKL = (n: number) => n >= 1e6 ? `${(n / 1e6).toFixed(1)}M` : n >= 1e3 ? `${(n / 1e3).toFixed(0)}K` : String(n);
+  const chClr = (n: number) => n >= 0 ? 'var(--green)' : 'var(--red)';
+  const s = detail?.score;
+  const ctaBg    = !s ? '#334155' : s.confidence === 'HIGH' ? 'var(--green)' : s.confidence === 'MEDIUM' ? '#d97706' : '#475569';
+  const ctaLabel = !s ? '🎯 Focus Scan'
+    : s.confidence === 'HIGH'   ? '🟢 BUY Signal — Focus Scan'
+    : s.confidence === 'MEDIUM' ? '🟡 Setup Found — Focus Scan'
+    :                             '🔍 No Setup — Add & Watch';
 
   return (
     <div ref={wrapRef} style={{ marginBottom: 14, position: 'relative' }}>
       {/* Search input */}
       <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
         <div style={{ position: 'relative', flex: 1, maxWidth: 440 }}>
-          <span style={{
-            position: 'absolute', left: 11, top: '50%', transform: 'translateY(-50%)',
-            fontSize: 16, pointerEvents: 'none', color: 'var(--muted)',
-          }}>🔍</span>
+          <span style={{ position: 'absolute', left: 11, top: '50%', transform: 'translateY(-50%)', fontSize: 16, pointerEvents: 'none', color: 'var(--muted)' }}>🔍</span>
           <input
             className="input"
             style={{ paddingLeft: 34, fontSize: 14 }}
-            placeholder="Search any stock — TSLA, AAPL, NVDA…"
+            placeholder="Search to analyze — TSLA, AAPL, NVDA…"
             value={query}
             onChange={e => search(e.target.value)}
             onFocus={() => results.length > 0 && setOpen(true)}
+            onKeyDown={e => { if (e.key === 'Enter' && query.trim()) { setOpen(false); selectSymbol(query.trim().toUpperCase()); } }}
           />
-          {loadingS && (
-            <span style={{
-              position: 'absolute', right: 10, top: '50%', transform: 'translateY(-50%)',
-            }}><span className="spinner" style={{ width: 14, height: 14 }} /></span>
+          {loading && (
+            <span style={{ position: 'absolute', right: 10, top: '50%', transform: 'translateY(-50%)' }}>
+              <span className="spinner" style={{ width: 14, height: 14 }} />
+            </span>
           )}
         </div>
         {query && (
-          <button className="btn btn-ghost btn-sm" onClick={() => { setQuery(''); setResults([]); setDetail(null); setOpen(false); }}>
-            Clear
-          </button>
+          <button className="btn btn-ghost btn-sm" onClick={() => { setQuery(''); setResults([]); setDetail(null); setOpen(false); }}>Clear</button>
         )}
       </div>
 
-      {/* Dropdown results */}
+      {/* Dropdown */}
       {open && results.length > 0 && (
-        <div style={{
-          position: 'absolute', top: '100%', left: 0, right: 0, maxWidth: 440,
-          background: 'var(--surface)', border: '1px solid var(--border)',
-          borderRadius: 10, marginTop: 4, zIndex: 200,
-          boxShadow: '0 12px 40px rgba(0,0,0,.5)', overflow: 'hidden',
-        }}>
+        <div style={{ position: 'absolute', top: '100%', left: 0, right: 0, maxWidth: 440, background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 10, marginTop: 4, zIndex: 200, boxShadow: '0 12px 40px rgba(0,0,0,.5)', overflow: 'hidden' }}>
           {results.map(r => (
             <div key={r.symbol}
-              style={{
-                display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-                padding: '10px 14px', cursor: 'pointer', borderBottom: '1px solid var(--border)',
-                transition: 'background .12s',
-              }}
+              style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '10px 14px', cursor: 'pointer', borderBottom: '1px solid var(--border)', transition: 'background .12s' }}
               onMouseEnter={e => (e.currentTarget.style.background = 'var(--surface-2)')}
               onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}
               onClick={() => selectSymbol(r.symbol)}
@@ -370,90 +406,94 @@ function StockSearch({
                 <span style={{ fontWeight: 800, fontSize: 14 }}>{r.symbol}</span>
                 <span style={{ marginLeft: 8, color: 'var(--muted)', fontSize: 12 }}>{r.name}</span>
               </div>
-              <span style={{ fontSize: 10, color: 'var(--dim)', marginLeft: 8, flexShrink: 0 }}>{r.exchange}</span>
+              <span style={{ fontSize: 10, color: 'var(--cyan)', marginLeft: 8 }}>Analyze →</span>
             </div>
           ))}
         </div>
       )}
 
-      {/* Detail card */}
-      {loadingD && (
-        <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: 10, color: 'var(--muted)', fontSize: 13 }}>
-          <span className="spinner" /> Loading data…
+      {/* Loading state */}
+      {loading && !detail && (
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: 12, color: 'var(--muted)', fontSize: 13 }}>
+          <span className="spinner" /> Analyzing {query}…
         </div>
       )}
-      {detail && !loadingD && (
-        <div style={{
-          marginTop: 10, padding: '14px 16px', borderRadius: 12,
-          background: 'var(--surface)', border: '1px solid var(--border)',
-          display: 'flex', flexWrap: 'wrap', gap: 16, alignItems: 'flex-start',
-        }}>
-          {/* Symbol + price */}
-          <div style={{ minWidth: 160 }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 4 }}>
-              <span style={{ fontSize: 20, fontWeight: 900 }}>{detail.symbol}</span>
-              {detail.scored && (
-                <span className={`signal-pill ${detail.scored.confidence === 'HIGH' ? 'signal-high' : detail.scored.confidence === 'MEDIUM' ? 'signal-med' : 'badge-muted badge'}`}>
-                  {detail.scored.confidence === 'NONE' ? 'WAIT' : detail.scored.confidence}
-                </span>
-              )}
-            </div>
-            <div style={{ fontSize: 24, fontWeight: 900 }}>{fmt(detail.quote.price)}</div>
-            <div style={{ fontSize: 13, color: pnlClr(detail.quote.changeAmt), fontWeight: 700 }}>
-              {detail.quote.changeAmt >= 0 ? '+' : ''}{detail.quote.changeAmt.toFixed(2)} ({detail.quote.changePct >= 0 ? '+' : ''}{detail.quote.changePct.toFixed(2)}%)
-            </div>
-            <div style={{ fontSize: 11, color: 'var(--muted)', marginTop: 4 }}>
-              Vol {fmtK(detail.quote.volume)} · H {fmt(detail.quote.high)} · L {fmt(detail.quote.low)}
-            </div>
-          </div>
 
-          {/* Score + levels */}
-          {detail.scored && detail.scored.confidence !== 'NONE' && (
-            <div style={{ flex: 1, minWidth: 200 }}>
-              <div style={{ display: 'flex', gap: 14, marginBottom: 8 }}>
-                <div>
-                  <div style={{ fontSize: 10, color: 'var(--muted)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.04em' }}>Score</div>
-                  <div style={{ fontSize: 22, fontWeight: 900, color: 'var(--cyan)' }}>{detail.scored.score}/10</div>
+      {/* Analysis card */}
+      {detail && !loading && (
+        <div style={{
+          marginTop: 10, borderRadius: 14, overflow: 'hidden',
+          background: 'var(--surface)',
+          border: `1px solid ${s?.confidence === 'HIGH' ? '#22d39066' : s?.confidence === 'MEDIUM' ? '#d9770644' : 'var(--border)'}`,
+        }}>
+          {/* Price row */}
+          <div style={{ padding: '14px 16px 10px', display: 'flex', alignItems: 'flex-start', gap: 14, flexWrap: 'wrap' }}>
+            <div style={{ minWidth: 140 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 2 }}>
+                <span style={{ fontSize: 18, fontWeight: 900 }}>{detail.symbol}</span>
+                {s && (
+                  <span className={`signal-pill ${s.confidence === 'HIGH' ? 'signal-high' : s.confidence === 'MEDIUM' ? 'signal-med' : 'badge badge-muted'}`}>
+                    {s.confidence === 'NONE' ? 'WAIT' : s.confidence}
+                  </span>
+                )}
+              </div>
+              <div style={{ fontSize: 22, fontWeight: 900, lineHeight: 1.1 }}>{fmtL(detail.price)}</div>
+              <div style={{ fontSize: 12, color: chClr(detail.changeAmt), fontWeight: 700, marginTop: 2 }}>
+                {detail.changeAmt >= 0 ? '+' : ''}{detail.changeAmt.toFixed(2)} ({detail.changePct >= 0 ? '+' : ''}{detail.changePct.toFixed(2)}%)
+              </div>
+              <div style={{ fontSize: 10, color: 'var(--muted)', marginTop: 3 }}>
+                Vol {fmtKL(detail.volume)} · H {fmtL(detail.high)} · L {fmtL(detail.low)}
+              </div>
+            </div>
+
+            {/* Score block */}
+            {s ? (
+              <div style={{ flex: 1, minWidth: 200 }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8 }}>
+                  <div style={{ flex: 1, height: 8, background: 'var(--border)', borderRadius: 4, overflow: 'hidden' }}>
+                    <div style={{ width: `${s.score * 10}%`, height: '100%', borderRadius: 4, transition: 'width .5s ease', background: s.score >= 7 ? 'var(--green)' : s.score >= 5 ? '#d97706' : '#64748b' }} />
+                  </div>
+                  <span style={{ fontWeight: 900, fontSize: 16, minWidth: 36, color: s.score >= 7 ? 'var(--green)' : s.score >= 5 ? '#d97706' : 'var(--muted)' }}>{s.score}/10</span>
                 </div>
-                <div>
-                  <div style={{ fontSize: 10, color: 'var(--muted)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.04em' }}>Entry</div>
-                  <div style={{ fontWeight: 700 }}>{fmt(detail.scored.entry)}</div>
-                </div>
-                <div>
-                  <div style={{ fontSize: 10, color: 'var(--muted)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.04em' }}>TP</div>
-                  <div style={{ fontWeight: 700, color: 'var(--green)' }}>{fmt(detail.scored.takeProfit)}</div>
-                </div>
-                <div>
-                  <div style={{ fontSize: 10, color: 'var(--muted)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.04em' }}>SL</div>
-                  <div style={{ fontWeight: 700, color: 'var(--red)' }}>{fmt(detail.scored.stopLoss)}</div>
+                {s.confidence !== 'NONE' && (
+                  <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginBottom: 8 }}>
+                    {[
+                      { label: 'Entry', val: fmtL(s.entry),      clr: '' },
+                      { label: 'TP',    val: fmtL(s.takeProfit), clr: 'var(--green)' },
+                      { label: 'SL',    val: fmtL(s.stopLoss),   clr: 'var(--red)' },
+                      { label: 'EMA9',  val: fmtL(s.ema9),       clr: '' },
+                      { label: 'RSI',   val: s.rsi14.toFixed(0), clr: '' },
+                    ].map(it => (
+                      <div key={it.label}>
+                        <div style={{ fontSize: 9, color: 'var(--muted)', fontWeight: 700, textTransform: 'uppercase' }}>{it.label}</div>
+                        <div style={{ fontWeight: 700, fontSize: 12, color: it.clr || 'var(--text)' }}>{it.val}</div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
+                  {s.reasons.map((r, i) => <span key={i} className="reason-tag">{r}</span>)}
+                  {s.confidence === 'NONE' && <span style={{ fontSize: 11, color: 'var(--muted)' }}>No BUY setup — conditions not aligned.</span>}
                 </div>
               </div>
-              {detail.scored.reasons.length > 0 && (
-                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
-                  {detail.scored.reasons.slice(0, 4).map((r, i) => (
-                    <span key={i} className="reason-tag">{r}</span>
-                  ))}
-                </div>
-              )}
-            </div>
-          )}
-          {detail.scored && detail.scored.confidence === 'NONE' && (
-            <div style={{ color: 'var(--muted)', fontSize: 13, padding: '4px 0' }}>
-              No setup detected — conditions not aligned for a BUY signal.
-            </div>
-          )}
+            ) : (
+              <div style={{ flex: 1, color: 'var(--muted)', fontSize: 12, paddingTop: 6 }}>Insufficient candle history for scoring.</div>
+            )}
+          </div>
 
-          {/* Actions */}
-          <div style={{ display: 'flex', gap: 8, alignSelf: 'center', flexShrink: 0 }}>
-            <button className="btn btn-primary btn-sm" onClick={() => {
-              onAdd(detail.symbol);
-              showToast(`${detail.symbol} added to watchlist`, 'success');
-            }}>
-              + Add to Watchlist
+          {/* Action bar */}
+          <div style={{ padding: '10px 16px 14px', display: 'flex', gap: 8, borderTop: '1px solid var(--border)' }}>
+            <button
+              className="btn"
+              disabled={focusing || scanning}
+              onClick={doFocusScan}
+              style={{ flex: 1, fontWeight: 800, fontSize: 13, background: ctaBg, color: '#fff', border: 'none', opacity: (focusing || scanning) ? 0.7 : 1 }}
+            >
+              {(focusing || scanning)
+                ? <><span className="spinner" style={{ width: 13, height: 13, marginRight: 6 }} />Scanning…</>
+                : ctaLabel}
             </button>
-            <button className="btn btn-ghost btn-sm" onClick={() => { setDetail(null); setQuery(''); }}>
-              ✕
-            </button>
+            <button className="btn btn-ghost btn-sm" onClick={() => { setDetail(null); setQuery(''); }}>✕</button>
           </div>
         </div>
       )}
@@ -757,7 +797,7 @@ function OpenPositionsStrip({ positions }: { positions: ScannerPosition[] }) {
 // ── Scanner Page Root ─────────────────────────────────────────────────────────
 export default function ScannerPage({ mode, showToast }: Props) {
   const {
-    positions, quotes, watchlist, scanning, lastResult,
+    positions, quotes, watchlist, scanning, lastResult, config,
     runScan, loadQuotes, updateWatchlist,
   } = useScanner(mode);
 
@@ -810,10 +850,17 @@ export default function ScannerPage({ mode, showToast }: Props) {
       {/* Account metrics strip */}
       <AccountBar mode={mode} />
 
-      {/* Stock search */}
+      {/* Stock search + analysis */}
       <StockSearch
         onAdd={sym => updateWatchlist(sym, 'add')}
         showToast={showToast}
+        config={config}
+        scanning={scanning}
+        onFocusScan={async (sym) => {
+          await updateWatchlist(sym, 'add');
+          showToast(`Focusing on ${sym} — scanning…`, 'success');
+          await handleScanRef.current();
+        }}
       />
 
       {/* Controls: run scan + watchlist */}
