@@ -8,6 +8,7 @@ import { loadWatchlist, ensureWatchlistTable, addToWatchlist, removeFromWatchlis
 import { ensureScannerTables, savePosition, managePositions, loadOpenPositions } from '../lib/position-manager';
 import { getKillSwitch, getTradingMode } from '../lib/risk';
 import { WebullClient } from '../lib/webull';
+import { getTradingSettings } from './trading-settings';
 
 const scanner = new Hono<{ Bindings: Env }>();
 
@@ -87,9 +88,22 @@ export async function runScanCycle(env: Env): Promise<{
     try {
       // Calculate qty based on confidence + risk %
       const acct       = await client.getAccount();
-      const buyPower   = acct.buyingPower > 0 ? acct.buyingPower : acct.cash;
+      const tradeSettings = await getTradingSettings(env);
+      const cashBudget = acct.cash * (tradeSettings.maxCashPct / 100);
+      const marginBudget = tradeSettings.sizingSource === 'cash_plus_margin'
+        ? acct.cash * (tradeSettings.marginPct / 100)
+        : 0;
+      const requestedBudget = tradeSettings.sizingSource === 'buying_power'
+        ? (acct.buyingPower > 0 ? acct.buyingPower : acct.cash) * (tradeSettings.maxCashPct / 100)
+        : cashBudget + marginBudget;
+      const budget = tradeSettings.sizingSource === 'cash_plus_margin'
+        ? Math.min(requestedBudget, acct.buyingPower > 0 ? acct.buyingPower : requestedBudget)
+        : requestedBudget;
       const multiplier = confidenceMultiplier(cand.confidence);
-      const qty        = Math.max(1, Math.floor((buyPower * (cfg.riskPct / 100) * multiplier) / cand.price));
+      const cappedBudget = tradeSettings.maxPositionUsd > 0
+        ? Math.min(budget, tradeSettings.maxPositionUsd)
+        : budget;
+      const qty        = Math.max(1, Math.floor((cappedBudget * multiplier) / cand.price));
 
       const result = await client.placeOrder({
         symbol: cand.symbol, side: 'BUY', type: 'MARKET',

@@ -7,6 +7,7 @@ import {
   getKillSwitch, setKillSwitch,
   getTradingMode, setTradingMode,
 } from '../lib/risk';
+import { getTradingSettings, type TradingSettings } from './trading-settings';
 
 const trading = new Hono<{ Bindings: Env }>();
 
@@ -14,56 +15,30 @@ const trading = new Hono<{ Bindings: Env }>();
 // Stored in the optional CONFIG KV namespace so the value set in the app is
 // shared by TradingView webhooks and survives Worker restarts.
 const SETTINGS_KEY = 'trading:settings';
-type TradingSettings = {
-  sizingSource: 'cash' | 'buying_power';
-  maxCashPct: number;
-  maxPositionUsd: number;
-  stopLossEnabled: boolean;
-  stopLossPct: number;
-  blockIfPosition: boolean;
-  sessionOpenOnly: boolean;
-  sessionTz: string;
-  sessionStart: string;
-  sessionEnd: string;
-};
-
-const defaultSettings: TradingSettings = {
-  sizingSource: 'cash',
-  maxCashPct: 25,
-  maxPositionUsd: 0,
-  stopLossEnabled: true,
-  stopLossPct: 2,
-  blockIfPosition: true,
-  sessionOpenOnly: true,
-  sessionTz: 'America/Chicago',
-  sessionStart: '08:30',
-  sessionEnd: '15:00',
-};
-
 trading.get('/settings', async (c) => {
-  let settings = defaultSettings;
-  if (c.env.CONFIG) {
-    try {
-      const saved = await c.env.CONFIG.get(SETTINGS_KEY, 'json') as Partial<typeof defaultSettings> | null;
-      if (saved) settings = { ...defaultSettings, ...saved };
-    } catch { /* use defaults when KV is unavailable */ }
-  }
+  const settings = await getTradingSettings(c.env);
   return c.json({ settings, persisted: !!c.env.CONFIG });
 });
 
 trading.post('/settings', async (c) => {
-  const body = await c.req.json<Partial<typeof defaultSettings>>();
+  const body = await c.req.json<Partial<TradingSettings>>();
+  const current = await getTradingSettings(c.env);
   const settings = {
-    sizingSource: body.sizingSource === 'buying_power' ? ('buying_power' as const) : ('cash' as const),
-    maxCashPct: Math.max(1, Math.min(100, Number(body.maxCashPct ?? defaultSettings.maxCashPct))),
-    maxPositionUsd: Math.max(0, Number(body.maxPositionUsd ?? defaultSettings.maxPositionUsd)),
+    sizingSource: body.sizingSource === 'buying_power'
+      ? ('buying_power' as const)
+      : body.sizingSource === 'cash'
+        ? ('cash' as const)
+        : ('cash_plus_margin' as const),
+    maxCashPct: Math.max(1, Math.min(100, Number(body.maxCashPct ?? current.maxCashPct))),
+    marginPct: Math.max(0, Math.min(100, Number(body.marginPct ?? current.marginPct))),
+    maxPositionUsd: Math.max(0, Number(body.maxPositionUsd ?? current.maxPositionUsd)),
     stopLossEnabled: body.stopLossEnabled !== false,
-    stopLossPct: Math.max(0.1, Math.min(50, Number(body.stopLossPct ?? defaultSettings.stopLossPct))),
+    stopLossPct: Math.max(0.1, Math.min(50, Number(body.stopLossPct ?? current.stopLossPct))),
     blockIfPosition: body.blockIfPosition !== false,
     sessionOpenOnly: body.sessionOpenOnly !== false,
-    sessionTz: typeof body.sessionTz === 'string' ? body.sessionTz : defaultSettings.sessionTz,
-    sessionStart: typeof body.sessionStart === 'string' ? body.sessionStart : defaultSettings.sessionStart,
-    sessionEnd: typeof body.sessionEnd === 'string' ? body.sessionEnd : defaultSettings.sessionEnd,
+    sessionTz: typeof body.sessionTz === 'string' ? body.sessionTz : current.sessionTz,
+    sessionStart: typeof body.sessionStart === 'string' ? body.sessionStart : current.sessionStart,
+    sessionEnd: typeof body.sessionEnd === 'string' ? body.sessionEnd : current.sessionEnd,
   };
   if (!c.env.CONFIG) {
     return c.json({ error: 'CONFIG KV is not configured; settings cannot be saved from the app yet', settings, persisted: false }, 503);

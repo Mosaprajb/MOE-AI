@@ -24,10 +24,11 @@ export default function SettingsPage({ showToast }: Props) {
   const [notifs,    setNotifs]    = useState(false);
   const [savingPin, setSavingPin] = useState(false);
   const [cashPct, setCashPct] = useState('25');
+  const [marginPct, setMarginPct] = useState('50');
   const [maxPositionUsd, setMaxPositionUsd] = useState('0');
   const [stopLossEnabled, setStopLossEnabled] = useState(true);
   const [stopLossPct, setStopLossPct] = useState('2');
-  const [sizingSource, setSizingSource] = useState<'cash' | 'buying_power'>('cash');
+  const [sizingSource, setSizingSource] = useState<'cash' | 'cash_plus_margin' | 'buying_power'>('cash_plus_margin');
   const [blockIfPosition, setBlockIfPosition] = useState(true);
   const [sessionOpenOnly, setSessionOpenOnly] = useState(true);
   const [sessionTz, setSessionTz] = useState('America/Chicago');
@@ -40,18 +41,23 @@ export default function SettingsPage({ showToast }: Props) {
     fetch(`${API_BASE}/api/trading/settings`, { cache: 'no-store' })
       .then(async r => {
         const data = await r.json() as { settings?: {
-           maxCashPct?: number; maxPositionUsd?: number; stopLossEnabled?: boolean; stopLossPct?: number;
-           sizingSource?: 'cash'|'buying_power';
+           maxCashPct?: number; marginPct?: number; maxPositionUsd?: number; stopLossEnabled?: boolean; stopLossPct?: number;
+           sizingSource?: 'cash'|'cash_plus_margin'|'buying_power';
           blockIfPosition?: boolean; sessionOpenOnly?: boolean; sessionTz?: string;
           sessionStart?: string; sessionEnd?: string;
         }};
         const s = data.settings;
         if (s) {
           setCashPct(String(s.maxCashPct ?? 25));
+          setMarginPct(String(s.marginPct ?? 50));
           setMaxPositionUsd(String(s.maxPositionUsd ?? 0));
           setStopLossEnabled(s.stopLossEnabled !== false);
           setStopLossPct(String(s.stopLossPct ?? 2));
-          setSizingSource(s.sizingSource === 'buying_power' ? 'buying_power' : 'cash');
+           setSizingSource(s.sizingSource === 'buying_power'
+             ? 'buying_power'
+             : s.sizingSource === 'cash'
+               ? 'cash'
+               : 'cash_plus_margin');
           setBlockIfPosition(s.blockIfPosition !== false);
           setSessionOpenOnly(s.sessionOpenOnly !== false);
           setSessionTz(s.sessionTz ?? 'America/Chicago');
@@ -89,6 +95,7 @@ export default function SettingsPage({ showToast }: Props) {
 
   const saveTradeSettings = async () => {
     const pct = Number(cashPct);
+    const margin = Number(marginPct);
     const cap = Number(maxPositionUsd);
     const slPct = Number(stopLossPct);
     if (!Number.isFinite(pct) || pct < 1 || pct > 100) {
@@ -96,6 +103,9 @@ export default function SettingsPage({ showToast }: Props) {
     }
     if (!Number.isFinite(cap) || cap < 0) {
       showToast('Maximum position value must be 0 or greater', 'error'); return;
+    }
+    if (!Number.isFinite(margin) || margin < 0 || margin > 100) {
+      showToast('Margin percentage must be between 0% and 100%', 'error'); return;
     }
     if (!Number.isFinite(slPct) || slPct < 0.1 || slPct > 50) {
       showToast('Stop-loss percentage must be between 0.1% and 50%', 'error'); return;
@@ -106,7 +116,7 @@ export default function SettingsPage({ showToast }: Props) {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          maxCashPct: pct, maxPositionUsd: cap, stopLossEnabled, stopLossPct: slPct, sizingSource,
+          maxCashPct: pct, marginPct: margin, maxPositionUsd: cap, stopLossEnabled, stopLossPct: slPct, sizingSource,
           blockIfPosition, sessionOpenOnly, sessionTz, sessionStart, sessionEnd,
         }),
       });
@@ -194,8 +204,9 @@ export default function SettingsPage({ showToast }: Props) {
           <div>
             <div className="input-label">Sizing source</div>
             <select className="input" value={sizingSource}
-              onChange={e => setSizingSource(e.target.value as 'cash'|'buying_power')}>
+              onChange={e => setSizingSource(e.target.value as 'cash'|'cash_plus_margin'|'buying_power')}>
               <option value="cash">Cash Balance (recommended)</option>
+              <option value="cash_plus_margin">Cash + Margin</option>
               <option value="buying_power">Buying Power (may use margin)</option>
             </select>
           </div>
@@ -210,6 +221,16 @@ export default function SettingsPage({ showToast }: Props) {
             </select>
           </div>
         </div>
+        {sizingSource === 'cash_plus_margin' && (
+          <div style={{ marginTop: 12, maxWidth: 260 }}>
+            <div className="input-label">Additional margin over cash (%)</div>
+            <input className="input" type="number" min={0} max={100} step={0.5}
+              value={marginPct} onChange={e => setMarginPct(e.target.value)} />
+            <div style={{ fontSize: 11, color: 'var(--muted)', marginTop: 5 }}>
+              Example: 25% cash + 50% margin = up to 75% of cash balance, capped by Webull Buying Power.
+            </div>
+          </div>
+        )}
         <div style={{ display: 'flex', flexDirection: 'column', gap: 10, marginTop: 14 }}>
           <label className="setting-row" style={{ cursor: 'pointer' }}>
             <span className="setting-info"><b>Open trades only during regular session</b>

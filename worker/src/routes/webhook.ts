@@ -3,31 +3,9 @@ import { Hono } from 'hono';
 import type { Env, TVWebhookPayload, Decision } from '../lib/types';
 import { getKillSwitch, getTradingMode } from '../lib/risk';
 import { WebullClient } from '../lib/webull';
+import { getTradingSettings } from './trading-settings';
 
 const webhook = new Hono<{ Bindings: Env }>();
-const SETTINGS_KEY = 'trading:settings';
-const defaultTradingSettings = {
-  sizingSource: 'cash',
-  maxCashPct: 25,
-  maxPositionUsd: 0,
-  stopLossEnabled: true,
-  stopLossPct: 2,
-  blockIfPosition: true,
-  sessionOpenOnly: true,
-  sessionTz: 'America/Chicago',
-  sessionStart: '08:30',
-  sessionEnd: '15:00',
-};
-
-async function getTradingSettings(env: Env) {
-  if (!env.CONFIG) return defaultTradingSettings;
-  try {
-    const saved = await env.CONFIG.get(SETTINGS_KEY, 'json') as Partial<typeof defaultTradingSettings> | null;
-    return { ...defaultTradingSettings, ...(saved ?? {}) };
-  } catch {
-    return defaultTradingSettings;
-  }
-}
 
 // ── Regular-session gate ──────────────────────────────────────────────────────
 // Opening trades is only allowed inside the configured session window
@@ -199,19 +177,28 @@ webhook.post('/webhook', async (c) => {
       try {
         const acct = await client.getAccount();
         const useBuyingPower = settings.sizingSource === 'buying_power';
-        const base = useBuyingPower
-          ? (acct.buyingPower > 0 ? acct.buyingPower : acct.cash)
-          : acct.cash;
-        const allocPct = settings.maxCashPct / 100;
-        let budget = base * allocPct;
+        const cashBudget = acct.cash * (settings.maxCashPct / 100);
+        const marginBudget = settings.sizingSource === 'cash_plus_margin'
+          ? acct.cash * (settings.marginPct / 100)
+          : 0;
+        const requestedBudget = useBuyingPower
+          ? (acct.buyingPower > 0 ? acct.buyingPower : acct.cash) * (settings.maxCashPct / 100)
+          : cashBudget + marginBudget;
+        const budgetBeforeCap = useBuyingPower || settings.sizingSource === 'cash_plus_margin'
+          ? Math.min(requestedBudget, acct.buyingPower > 0 ? acct.buyingPower : requestedBudget)
+          : requestedBudget;
+        let budget = budgetBeforeCap;
         const capUsd = settings.maxPositionUsd;
         if (capUsd > 0) budget = Math.min(budget, capUsd);
         qty = Math.floor(budget / price);
-        console.log(`[Webhook] cash sizing: floor(min($${base.toFixed(2)} × ${(allocPct*100).toFixed(0)}%${capUsd > 0 ? `, $${capUsd}` : ''}) ÷ $${price}) = ${qty} (${useBuyingPower ? 'buying power' : 'cash'})`);
+        const sizingLabel = settings.sizingSource === 'cash_plus_margin'
+          ? `${settings.maxCashPct}% cash + ${settings.marginPct}% margin`
+          : settings.sizingSource === 'buying_power' ? 'buying power' : 'cash';
+        console.log(`[Webhook] ${sizingLabel} sizing: budget $${budget.toFixed(2)}${capUsd > 0 ? ` (cap $${capUsd})` : ''} ÷ $${price} = ${qty}`);
         if (qty < 1) {
           return c.json({
             signalId, accepted: false,
-            reason: `Insufficient ${useBuyingPower ? 'buying power' : 'cash'} — budget $${budget.toFixed(2)} < 1 share at $${price}`,
+            reason: `Insufficient ${sizingLabel} — budget $${budget.toFixed(2)} < 1 share at $${price}`,
           });
         }
       } catch (err) {
