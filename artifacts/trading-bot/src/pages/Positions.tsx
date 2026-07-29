@@ -1,120 +1,208 @@
-// MOE-AI Positions Page
+// MOE-AI — Positions Page
+import { useState } from 'react';
 import { useDashboard } from '../hooks/useApi';
+import { useScanner } from '../hooks/useScanner';
 import type { TradingMode } from '../lib/config';
 import type { Position } from '../lib/types';
+import type { ScannerPosition } from '../hooks/useScanner';
 
-const fmt    = (v: number | undefined) =>
-  Number.isFinite(v) ? new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(v!) : '—';
-const fmtPct = (v: number | undefined) =>
-  Number.isFinite(v) ? `${v! >= 0 ? '+' : ''}${v!.toFixed(2)}%` : '—';
-const fmtNum = (v: number | undefined) => Number.isFinite(v) ? v!.toFixed(0) : '—';
+interface Props { mode: TradingMode; showToast: (m: string, t?: 'success'|'error') => void; }
 
-interface Props { mode: TradingMode; showToast: (msg: string, t?: 'success'|'error') => void; }
+const fmt    = (n?: number) => n != null ? `$${n.toFixed(2)}` : '—';
+const fmtPct = (n: number, plus = false) => `${plus && n >= 0 ? '+' : ''}${n.toFixed(2)}%`;
+const pnlClr = (n: number) => n >= 0 ? 'var(--green)' : 'var(--red)';
 
 export default function PositionsPage({ mode }: Props) {
-  const { data, loading, error, refresh, lastUpdated } = useDashboard(mode, 15_000);
-  const positions: Position[] = data?.positions ?? [];
+  const { data, loading } = useDashboard(mode, 15_000);
+  const { positions: scanPos } = useScanner(mode);
+  const [tab, setTab] = useState<'webull' | 'scanner'>('webull');
 
-  const totalPnl  = positions.reduce((s, p) => s + (p.unrealizedPnl ?? 0), 0);
-  const totalMkt  = positions.reduce((s, p) => s + (p.marketValue   ?? 0), 0);
-  const longCount = positions.filter(p => p.side === 'LONG').length;
+  const webullPos: Position[] = data?.positions ?? [];
+  const scanOpen = scanPos.filter(p => p.status === 'OPEN');
 
   return (
     <div>
       <div className="page-header">
         <div>
           <div className="page-title">Positions</div>
-          <div className="page-sub">
-            {loading && !data ? 'Loading…' : error ? `Error: ${error}` : lastUpdated ? `Updated ${lastUpdated.toLocaleTimeString()}` : 'Open positions via Webull'}
-          </div>
+          <div className="page-sub">Live Webull positions &amp; Scanner trades</div>
         </div>
-        <div className="page-actions">
+        <div style={{ display: 'flex', gap: 8 }}>
           <span className={`badge ${mode === 'LIVE' ? 'badge-red' : 'badge-green'}`}>{mode}</span>
-          <button className="btn btn-ghost btn-sm" onClick={refresh}>↻ Refresh</button>
         </div>
       </div>
 
-      {/* Summary metrics */}
-      <div className="grid-4" style={{ marginBottom: 14 }}>
-        <div className="metric-card">
-          <div className="metric-label">Open Positions</div>
-          <div className="metric-value neutral">{positions.length}</div>
-          <div className="metric-change">{longCount} long · {positions.length - longCount} short</div>
+      {/* Tab toggle */}
+      <div className="tab-row">
+        <button className={`tab-btn${tab === 'webull' ? ' active' : ''}`} onClick={() => setTab('webull')}>
+          Webull <span className="tab-count">{webullPos.length}</span>
+        </button>
+        <button className={`tab-btn${tab === 'scanner' ? ' active' : ''}`} onClick={() => setTab('scanner')}>
+          Scanner <span className="tab-count">{scanOpen.length}</span>
+        </button>
+      </div>
+
+      {tab === 'webull' && <WebullPositions positions={webullPos} loading={loading} />}
+      {tab === 'scanner' && <ScannerPositions positions={scanOpen} />}
+    </div>
+  );
+}
+
+function WebullPositions({ positions, loading }: { positions: Position[]; loading: boolean }) {
+  if (loading && positions.length === 0) {
+    return <div className="empty-state"><div className="spinner" /><div>Loading…</div></div>;
+  }
+  if (positions.length === 0) {
+    return (
+      <div className="empty-state">
+        <div style={{ fontSize: 40 }}>📭</div>
+        <div style={{ fontWeight: 700 }}>No open positions</div>
+        <div style={{ color: 'var(--muted)', fontSize: 12 }}>Webull account is flat</div>
+      </div>
+    );
+  }
+
+  const totalPnl = positions.reduce((s, p) => s + (p.unrealizedPnl ?? 0), 0);
+
+  return (
+    <div>
+      {/* Summary bar */}
+      <div className="pos-summary">
+        <div className="pos-summary-item">
+          <span className="pos-summary-label">Positions</span>
+          <span className="pos-summary-val">{positions.length}</span>
         </div>
-        <div className="metric-card">
-          <div className="metric-label">Market Value</div>
-          <div className="metric-value neutral">{fmt(totalMkt)}</div>
-        </div>
-        <div className="metric-card">
-          <div className="metric-label">Unrealized P&amp;L</div>
-          <div className={`metric-value ${totalPnl >= 0 ? 'profit' : 'loss'}`}>{fmt(totalPnl)}</div>
-        </div>
-        <div className="metric-card">
-          <div className="metric-label">Avg P&amp;L %</div>
-          <div className={`metric-value ${totalPnl >= 0 ? 'profit' : 'loss'}`}>
-            {fmtPct(positions.length ? positions.reduce((s, p) => s + (p.pnlPercent ?? 0), 0) / positions.length : undefined)}
-          </div>
+        <div className="pos-summary-item">
+          <span className="pos-summary-label">Unrealized P&L</span>
+          <span className="pos-summary-val" style={{ color: pnlClr(totalPnl) }}>
+            {totalPnl >= 0 ? '+' : ''}{fmt(totalPnl)}
+          </span>
         </div>
       </div>
 
-      <div className="card">
-        {loading && !data
-          ? <div className="empty"><span className="spinner" /></div>
-          : positions.length === 0
-            ? (
-              <div className="empty" style={{ padding: 48 }}>
-                <div style={{ fontSize: 32, marginBottom: 12 }}>◈</div>
-                <div style={{ fontWeight: 700, marginBottom: 6 }}>No open positions</div>
-                <div style={{ color: 'var(--muted)', fontSize: 13 }}>
-                  Positions appear here once TradingView alerts are executed on Webull
+      <div className="pos-cards">
+        {positions.map(p => {
+          const pnl = p.unrealizedPnl ?? 0;
+          const pnlPct = p.averagePrice ? pnl / (p.averagePrice * p.quantity) * 100 : 0;
+          return (
+            <div key={p.id} className={`pos-card ${pnl >= 0 ? 'pos-card-green' : 'pos-card-red'}`}>
+              <div className="pos-card-header">
+                <div>
+                  <div className="pos-card-sym">{p.symbol}</div>
+                  <div style={{ fontSize: 11, color: 'var(--muted)', marginTop: 2 }}>
+                    {p.quantity} shares · {p.side}
+                  </div>
+                </div>
+                <div style={{ textAlign: 'right' }}>
+                  <div style={{ fontWeight: 800, fontSize: 17, color: pnlClr(pnl) }}>
+                    {pnl >= 0 ? '+' : ''}{fmt(pnl)}
+                  </div>
+                  <div style={{ fontSize: 12, color: pnlClr(pnlPct) }}>{fmtPct(pnlPct, true)}</div>
                 </div>
               </div>
-            )
-            : (
-              <div className="table-wrap">
-                <table>
-                  <thead><tr>
-                    <th>Symbol</th>
-                    <th>Side</th>
-                    <th>Qty</th>
-                    <th>Avg Price</th>
-                    <th>Current Price</th>
-                    <th>Market Value</th>
-                    <th>Stop Loss</th>
-                    <th>Take Profit</th>
-                    <th>P&amp;L</th>
-                    <th>P&amp;L %</th>
-                  </tr></thead>
-                  <tbody>
-                    {positions.map((p: Position) => (
-                      <tr key={p.id}>
-                        <td className="col-symbol">{p.symbol}</td>
-                        <td>
-                          <span className={`badge ${p.side === 'LONG' ? 'badge-green' : 'badge-red'}`}>{p.side}</span>
-                        </td>
-                        <td className="col-number">{fmtNum(p.quantity)}</td>
-                        <td className="col-number">{fmt(p.averagePrice)}</td>
-                        <td className="col-number">{fmt(p.currentPrice)}</td>
-                        <td className="col-number">{fmt(p.marketValue)}</td>
-                        <td className="col-number" style={{ color: 'var(--red)' }}>{fmt(p.stopLoss) ?? '—'}</td>
-                        <td className="col-number" style={{ color: 'var(--green)' }}>{fmt(p.takeProfit) ?? '—'}</td>
-                        <td>
-                          <span className={p.unrealizedPnl >= 0 ? 'col-profit' : 'col-loss'}>
-                            {fmt(p.unrealizedPnl)}
-                          </span>
-                        </td>
-                        <td>
-                          <span className={p.pnlPercent >= 0 ? 'col-profit' : 'col-loss'}>
-                            {fmtPct(p.pnlPercent)}
-                          </span>
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
+              <div className="pos-card-grid">
+                <div className="pos-cell">
+                  <span className="pos-cell-label">Avg Price</span>
+                  <span>{fmt(p.averagePrice)}</span>
+                </div>
+                <div className="pos-cell">
+                  <span className="pos-cell-label">Current</span>
+                  <span style={{ fontWeight: 700 }}>{fmt(p.currentPrice)}</span>
+                </div>
+                {p.stopLoss != null && (
+                  <div className="pos-cell">
+                    <span className="pos-cell-label">Stop Loss</span>
+                    <span style={{ color: 'var(--red)' }}>{fmt(p.stopLoss)}</span>
+                  </div>
+                )}
+                {p.takeProfit != null && (
+                  <div className="pos-cell">
+                    <span className="pos-cell-label">Take Profit</span>
+                    <span style={{ color: 'var(--green)' }}>{fmt(p.takeProfit)}</span>
+                  </div>
+                )}
               </div>
-            )}
+            </div>
+          );
+        })}
       </div>
+    </div>
+  );
+}
+
+function ScannerPositions({ positions }: { positions: ScannerPosition[] }) {
+  if (positions.length === 0) {
+    return (
+      <div className="empty-state">
+        <div style={{ fontSize: 40 }}>🔍</div>
+        <div style={{ fontWeight: 700 }}>No scanner positions</div>
+        <div style={{ color: 'var(--muted)', fontSize: 12 }}>Scanner opens positions when high-confidence signals are found</div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="pos-cards">
+      {positions.map(p => {
+        const pnlAmt = (p.currentPrice - p.entryPrice) * p.quantity;
+        const pnlPct = ((p.currentPrice - p.entryPrice) / p.entryPrice) * 100;
+        const slPct  = ((p.stopLoss - p.entryPrice) / p.entryPrice) * 100;
+        const tpPct  = ((p.takeProfit - p.entryPrice) / p.entryPrice) * 100;
+        const prog   = p.takeProfit > p.entryPrice
+          ? Math.max(0, Math.min(100, ((p.currentPrice - p.entryPrice) / (p.takeProfit - p.entryPrice)) * 100))
+          : 0;
+
+        return (
+          <div key={p.id} className={`pos-card ${pnlAmt >= 0 ? 'pos-card-green' : 'pos-card-red'}`}>
+            <div className="pos-card-header">
+              <div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <span className="pos-card-sym">{p.symbol}</span>
+                  <span className={`signal-pill ${p.confidence === 'HIGH' ? 'signal-high' : 'signal-med'}`}>
+                    {p.confidence}
+                  </span>
+                  <span style={{ fontSize: 11, color: 'var(--muted)' }}>Score {p.score}/10</span>
+                </div>
+                <div style={{ fontSize: 11, color: 'var(--muted)', marginTop: 2 }}>
+                  {p.quantity} shares · {new Date(p.openedAt).toLocaleString()}
+                </div>
+              </div>
+              <div style={{ textAlign: 'right' }}>
+                <div style={{ fontWeight: 800, fontSize: 17, color: pnlClr(pnlAmt) }}>
+                  {pnlAmt >= 0 ? '+' : ''}{pnlAmt.toFixed(2)}
+                </div>
+                <div style={{ fontSize: 12, color: pnlClr(pnlPct) }}>{fmtPct(pnlPct, true)}</div>
+              </div>
+            </div>
+
+            {/* Progress toward TP */}
+            <div style={{ margin: '10px 0 4px', height: 4, background: 'var(--border)', borderRadius: 99, overflow: 'hidden' }}>
+              <div style={{ width: `${prog}%`, height: '100%',
+                background: pnlAmt >= 0 ? 'var(--green)' : 'var(--red)', borderRadius: 99,
+                transition: 'width .4s' }} />
+            </div>
+
+            <div className="pos-card-grid" style={{ marginTop: 10 }}>
+              <div className="pos-cell">
+                <span className="pos-cell-label">Entry</span>
+                <span>{fmt(p.entryPrice)}</span>
+              </div>
+              <div className="pos-cell">
+                <span className="pos-cell-label">Current</span>
+                <span style={{ fontWeight: 700 }}>{fmt(p.currentPrice)}</span>
+              </div>
+              <div className="pos-cell">
+                <span className="pos-cell-label">Stop Loss</span>
+                <span style={{ color: 'var(--red)' }}>{fmt(p.stopLoss)} <span style={{ fontSize: 10 }}>({slPct.toFixed(1)}%)</span></span>
+              </div>
+              <div className="pos-cell">
+                <span className="pos-cell-label">Take Profit</span>
+                <span style={{ color: 'var(--green)' }}>{fmt(p.takeProfit)} <span style={{ fontSize: 10 }}>(+{tpPct.toFixed(1)}%)</span></span>
+              </div>
+            </div>
+          </div>
+        );
+      })}
     </div>
   );
 }
