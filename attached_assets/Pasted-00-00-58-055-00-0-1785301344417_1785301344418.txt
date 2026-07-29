@@ -1,0 +1,88 @@
+00:00:58.055
+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+00:00:58.903
+Progress: resolved 539, reused 0, downloaded 37, added 28
+00:00:59.914
+Progress: resolved 539, reused 0, downloaded 179, added 179
+00:01:00.916
+Progress: resolved 539, reused 0, downloaded 291, added 280
+00:01:01.917
+Progress: resolved 539, reused 0, downloaded 304, added 292
+00:01:02.921
+Progress: resolved 539, reused 0, downloaded 345, added 343
+00:01:03.929
+Progress: resolved 539, reused 0, downloaded 412, added 398
+00:01:04.924
+Progress: resolved 539, reused 0, downloaded 514, added 505
+00:01:05.943
+Progress: resolved 539, reused 0, downloaded 538, added 537
+00:01:06.339
+Progress: resolved 539, reused 0, downloaded 539, added 539, done
+00:01:06.779
+.../esbuild@0.27.3/node_modules/esbuild postinstall$ node install.js
+00:01:06.779
+.../esbuild@0.18.20/node_modules/esbuild postinstall$ node install.js
+00:01:06.843
+.../node_modules/workerd postinstall$ node install.js
+00:01:06.843
+.../esbuild@0.28.1/node_modules/esbuild postinstall$ node install.js
+00:01:07.167
+.../esbuild@0.25.12/node_modules/esbuild postinstall$ node install.js
+00:01:07.325
+.../esbuild@0.27.3/node_modules/esbuild postinstall: Done
+00:01:07.364
+.../esbuild@0.18.20/node_modules/esbuild postinstall: Done
+00:01:07.510
+.../sharp@0.33.5/node_modules/sharp install$ node install/check
+00:01:07.552
+.../esbuild@0.17.19/node_modules/esbuild postinstall$ node install.js
+00:01:10.698
+.../node_modules/workerd postinstall: Done
+00:01:11.058
+.../esbuild@0.28.1/node_modules/esbuild postinstall: Done
+00:01:11.352
+.../esbuild@0.25.12/node_modules/esbuild postinstall: Done
+00:01:11.458
+.../esbuild@0.17.19/node_modules/esbuild postinstall: Done
+00:01:11.749
+.../sharp@0.33.5/node_modules/sharp install: Done
+00:01:12.727
+00:01:12.733
+dependencies:
+00:01:12.733
++ @replit/connectors-sdk 0.4.1
+00:01:12.733
+00:01:12.740
+devDependencies:
+00:01:12.740
++ prettier 3.9.6
+00:01:12.740
++ typescript 5.9.3
+00:01:12.740
+00:01:12.908
+. preinstall$ sh -c 'rm -f package-lock.json yarn.lock; case "$npm_config_user_agent" in pnpm/*) ;; *) echo "Warning: use pnpm instead of npm in this workspace" >&2 ;; esac'
+00:01:12.935
+. preinstall: Done
+00:01:13.178
+Done in 17s
+00:01:13.766
+Executing user deploy command: npx wrangler deploy
+00:01:21.376
+npm warn exec The following package was not found and will be installed: wrangler@4.115.0
+00:01:44.680
+00:01:44.682
+ ⛅️ wrangler 4.115.0
+00:01:44.683
+────────────────────
+00:01:45.706
+00:01:45.708
+Cloudflare collects anonymous telemetry about your usage of Wrangler. Learn more at https://github.com/cloudflare/workers-sdk/tree/main/packages/wrangler/telemetry.md
+00:01:45.709
+00:01:45.825
+✘ [ERROR] The Cloudflare application detection logic has been run in the root of a workspace instead of targeting a specific project. Change your working directory to one of the applications in the workspace and try again.
+00:01:45.825
+00:01:45.825
+00:01:45.904
+🪵  Logs were written to "/opt/buildhome/.config/.wrangler/logs/wrangler-2026-07-29_05-01-44_174.log"
+00:01:46.088
+Failed: error occurred while running deploy command
