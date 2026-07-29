@@ -14,8 +14,19 @@ const trading = new Hono<{ Bindings: Env }>();
 // Stored in the optional CONFIG KV namespace so the value set in the app is
 // shared by TradingView webhooks and survives Worker restarts.
 const SETTINGS_KEY = 'trading:settings';
-const defaultSettings = {
-  sizingSource: 'cash' as const,
+type TradingSettings = {
+  sizingSource: 'cash' | 'buying_power';
+  maxCashPct: number;
+  maxPositionUsd: number;
+  blockIfPosition: boolean;
+  sessionOpenOnly: boolean;
+  sessionTz: string;
+  sessionStart: string;
+  sessionEnd: string;
+};
+
+const defaultSettings: TradingSettings = {
+  sizingSource: 'cash',
   maxCashPct: 25,
   maxPositionUsd: 0,
   blockIfPosition: true,
@@ -39,7 +50,7 @@ trading.get('/settings', async (c) => {
 trading.post('/settings', async (c) => {
   const body = await c.req.json<Partial<typeof defaultSettings>>();
   const settings = {
-    sizingSource: body.sizingSource === 'buying_power' ? 'buying_power' : 'cash' as const,
+    sizingSource: body.sizingSource === 'buying_power' ? ('buying_power' as const) : ('cash' as const),
     maxCashPct: Math.max(1, Math.min(100, Number(body.maxCashPct ?? defaultSettings.maxCashPct))),
     maxPositionUsd: Math.max(0, Number(body.maxPositionUsd ?? defaultSettings.maxPositionUsd)),
     blockIfPosition: body.blockIfPosition !== false,

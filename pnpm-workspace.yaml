@@ -9,6 +9,7 @@ minimumReleaseAgeExclude:
 
 packages:
   - artifacts/*
+  - worker
   - lib/*
   - lib/integrations/*
   - scripts
