@@ -127,7 +127,18 @@ export function useScanner(mode: TradingMode) {
       if (histRes.ok) { const d = await histRes.json(); setHistory(d.data ?? []); }
       if (runsRes.ok) { const d = await runsRes.json(); setRuns(d.data ?? []); }
       if (cfgRes.ok)  { setConfig(await cfgRes.json()); }
-      if (wlRes.ok)   { const d = await wlRes.json(); setWatchlist(d.symbols ?? []); }
+      if (wlRes.ok) {
+        const d = await wlRes.json();
+        const syms: string[] = d.symbols ?? [];
+        setWatchlist(syms);
+        try { localStorage.setItem('moe_watchlist', JSON.stringify(syms)); } catch {}
+      } else {
+        // Worker not deployed yet — fall back to localStorage
+        try {
+          const stored = localStorage.getItem('moe_watchlist');
+          if (stored) { const p = JSON.parse(stored); if (Array.isArray(p)) setWatchlist(p); }
+        } catch {}
+      }
       setError('');
     } catch (e) { setError(String(e)); }
     finally { setLoading(false); }
@@ -166,13 +177,22 @@ export function useScanner(mode: TradingMode) {
   }, [load]);
 
   const updateWatchlist = useCallback(async (symbol: string, action: 'add' | 'remove') => {
-    await fetch(`${API_BASE}/api/scanner/watchlist`, {
+    const sym = symbol.toUpperCase();
+    // Best-effort sync to Worker (fire-and-forget)
+    fetch(`${API_BASE}/api/scanner/watchlist`, {
       method: 'POST', mode: 'cors',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ symbol: symbol.toUpperCase(), action }),
+      body: JSON.stringify({ symbol: sym, action }),
+    }).catch(() => {});
+    // Update local state + localStorage immediately (works offline / without Worker)
+    setWatchlist(prev => {
+      const next = action === 'add'
+        ? [...new Set([...prev, sym])]
+        : prev.filter(s => s !== sym);
+      try { localStorage.setItem('moe_watchlist', JSON.stringify(next)); } catch {}
+      return next;
     });
-    await load();
-  }, [load]);
+  }, []);
 
   const saveConfig = useCallback(async (cfg: Partial<ScannerConfig>): Promise<{ ok: boolean; error?: string }> => {
     try {

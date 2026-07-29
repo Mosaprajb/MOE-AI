@@ -4,7 +4,7 @@ import type { TradingMode } from '../lib/config';
 import { API_BASE } from '../lib/config';
 import { useScanner } from '../hooks/useScanner';
 import { useDashboard } from '../hooks/useApi';
-import type { ScanCandidate, ScannerPosition, LiveQuote } from '../hooks/useScanner';
+import type { ScanCandidate, ScanResult, ScannerPosition, LiveQuote } from '../hooks/useScanner';
 
 // ── Browser notifications helper (safe in iframes / restricted contexts) ──────
 function getNotifPerm(): NotificationPermission | 'unsupported' {
@@ -802,27 +802,100 @@ export default function ScannerPage({ mode, showToast }: Props) {
   } = useScanner(mode);
 
   const autoRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const [autoScan, setAutoScan] = useState(false);
+  const [autoScan,      setAutoScan]      = useState(false);
+  const [localScanning, setLocalScanning] = useState(false);
+  const [localResult,   setLocalResult]   = useState<ScanResult | null>(null);
+  const scanLock = useRef(false);
 
-  // Extract candidates from lastResult
-  const cands: ScanCandidate[] = lastResult?.candidates ?? [];
+  // Extract candidates from local result
+  const cands: ScanCandidate[] = localResult?.candidates ?? [];
+  const isScanning = localScanning;
+
+  // ── Local scan — runs entirely in the browser using Yahoo Finance ─────────
+  const runLocalScan = async (): Promise<ScanResult | null> => {
+    if (scanLock.current) return null;
+    scanLock.current = true;
+    setLocalScanning(true);
+    const t0 = Date.now();
+    try {
+      const syms = watchlist.length > 0
+        ? watchlist
+        : STOCK_LIST.slice(0, 30).map(s => s.symbol);
+
+      // Fetch in batches of 5 to stay within Yahoo Finance rate limits
+      const BATCH = 5;
+      const allCands: ScanCandidate[] = [];
+
+      for (let i = 0; i < syms.length; i += BATCH) {
+        const batch = syms.slice(i, i + BATCH);
+        const settled = await Promise.allSettled(batch.map(async (sym) => {
+          try {
+            const r = await fetch(
+              `https://query2.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(sym)}?interval=15m&range=5d&includePrePost=false`,
+              { mode: 'cors', headers: { Accept: 'application/json' } }
+            ).catch(() => null);
+            if (!r?.ok) return null;
+            const data = await r.json() as {
+              chart?: { result?: [{
+                meta?: Record<string, number | null>;
+                indicators?: { quote?: [{ close?: (number|null)[]; volume?: (number|null)[] }] };
+              }] };
+            };
+            const q0   = data?.chart?.result?.[0];
+            const meta = q0?.meta;
+            const q    = q0?.indicators?.quote?.[0];
+            if (!meta || !q) return null;
+            const rawC = q.close  ?? [];
+            const rawV = q.volume ?? [];
+            const candles = rawC.reduce<{ close: number; volume: number }[]>((acc, c, idx) => {
+              if (c !== null && c > 0) acc.push({ close: c, volume: Number(rawV[idx] ?? 0) });
+              return acc;
+            }, []);
+            const price = Number(meta.regularMarketPrice) || (candles.at(-1)?.close ?? 0);
+            if (price < (config?.priceMin ?? 1) || price > (config?.priceMax ?? 999)) return null;
+            const sc = scoreFromCandles(candles, config);
+            if (!sc || sc.confidence === 'NONE') return null;
+            return {
+              symbol: sym, score: sc.score, confidence: sc.confidence,
+              price, ema9: sc.ema9, ema21: sc.ema21, rsi14: sc.rsi14,
+              volumeRatio: sc.volumeRatio, reasons: sc.reasons,
+              entry: sc.entry, stopLoss: sc.stopLoss, takeProfit: sc.takeProfit,
+              trailPct: config?.trailPct ?? 2,
+              scannedAt: new Date().toISOString(),
+            } as ScanCandidate;
+          } catch { return null; }
+        }));
+        settled.forEach(r => { if (r.status === 'fulfilled' && r.value) allCands.push(r.value); });
+      }
+
+      allCands.sort((a, b) => b.score - a.score);
+      const result: ScanResult = {
+        mode, scanned: syms.length, candidates: allCands,
+        ordersPlaced: 0, positionsManaged: 0, errors: [], ms: Date.now() - t0,
+      };
+      setLocalResult(result);
+      return result;
+    } finally {
+      scanLock.current = false;
+      setLocalScanning(false);
+    }
+  };
 
   // Use a stable ref so the auto-scan interval never re-registers on re-renders
   const handleScanRef = useRef<() => Promise<void>>(async () => {});
 
   const handleScan = async () => {
     _lastScanAt = Date.now();
-    const result = await runScan();
+    const result = await runLocalScan();
     if (result) {
-      const cands = result.candidates ?? [];
-      const cnt  = cands.length;
-      const high = cands.filter(c => c.confidence === 'HIGH').length;
+      const cnt  = result.candidates.length;
+      const high = result.candidates.filter(c => c.confidence === 'HIGH').length;
       showToast(
         cnt > 0 ? `✓ Scan done — ${cnt} signal${cnt !== 1 ? 's' : ''} found` : '✓ Scan done — no signals',
         cnt > 0 ? 'success' : undefined,
       );
       if (cnt > 0) {
-        const symbols = cands.slice(0, 3).map(c => c.symbol).join(', ');
+        const symbols = result.candidates.slice(0, 3).map(c => c.symbol).join(', ');
         sendNotif(
           `MOE-AI · ${cnt} BUY Signal${cnt !== 1 ? 's' : ''}`,
           `${high > 0 ? `${high} HIGH — ` : ''}${symbols}${cnt > 3 ? ` +${cnt - 3} more` : ''}`,
@@ -866,8 +939,8 @@ export default function ScannerPage({ mode, showToast }: Props) {
       {/* Controls: run scan + watchlist */}
       <ScannerControls
         watchlist={watchlist}
-        scanning={scanning}
-        lastResult={lastResult}
+        scanning={isScanning}
+        lastResult={localResult}
         onScan={handleScan}
         onAdd={sym => updateWatchlist(sym, 'add').then(() => showToast(`Added ${sym}`, 'success'))}
         onRemove={sym => updateWatchlist(sym, 'remove').then(() => showToast(`Removed ${sym}`))}
@@ -912,7 +985,7 @@ export default function ScannerPage({ mode, showToast }: Props) {
           <MarketGrid
             quotes={quotes}
             watchlist={watchlist}
-            scanning={scanning}
+            scanning={isScanning}
             candidates={cands}
           />
         </div>
