@@ -1,0 +1,49 @@
+//@version=6
+// MOERAND Ultimate Screener — compact multi-symbol companion to the chart indicator.
+indicator("MOERAND Ultimate Screener", "MOE Screener", overlay = true)
+
+string g = "Screening"
+string tf = input.timeframe("", "Scan Timeframe", group = g)
+int emaFastLen = input.int(20, "Fast EMA", minval = 5, group = g)
+int emaSlowLen = input.int(50, "Slow EMA", minval = 10, group = g)
+int rsiLen = input.int(14, "RSI Length", minval = 5, group = g)
+int minScore = input.int(70, "Minimum Score", minval = 40, maxval = 100, group = g)
+string symbols = input.string("NASDAQ:AAPL,NASDAQ:MSFT,NASDAQ:NVDA,NASDAQ:TSLA,NASDAQ:AMD,NASDAQ:AMZN,NASDAQ:META,NASDAQ:GOOGL,NYSE:SPY,NYSE:QQQ", "Symbols (comma-separated)", group = g)
+
+f_scan(string ticker) =>
+    [c, eFast, eSlow, r, v, vAvg] = request.security(ticker, tf, [close, ta.ema(close, emaFastLen), ta.ema(close, emaSlowLen), ta.rsi(close, rsiLen), volume, ta.sma(volume, 20)], barmerge.gaps_off, barmerge.lookahead_off)
+    bool bull = eFast > eSlow and r >= 50
+    bool bear = eFast < eSlow and r <= 50
+    float rel = vAvg > 0 ? v / vAvg : 1
+    int score = (bull or bear ? 35 : 0) + (r > 55 or r < 45 ? 25 : 0) + (rel >= 1 ? 20 : 0) + (c > eFast and bull or c < eFast and bear ? 20 : 0)
+    [c, r, rel, score, bull, bear]
+
+var table screen = table.new(position.top_right, 6, 16, bgcolor = color.new(color.black, 10), frame_color = color.new(color.white, 70), frame_width = 1)
+var string[] list = array.new_string()
+if barstate.isfirst
+    list := str.split(symbols, ",")
+
+if barstate.islast
+    table.clear(screen, 0, 0, 5, 15)
+    table.cell(screen, 0, 0, "MOERAND SCREENER", bgcolor = color.new(color.blue, 60), text_color = color.white)
+    table.merge_cells(screen, 0, 0, 5, 0)
+    table.cell(screen, 0, 1, "Symbol", text_color = color.gray)
+    table.cell(screen, 1, 1, "Price", text_color = color.gray)
+    table.cell(screen, 2, 1, "RSI", text_color = color.gray)
+    table.cell(screen, 3, 1, "Vol", text_color = color.gray)
+    table.cell(screen, 4, 1, "Score", text_color = color.gray)
+    table.cell(screen, 5, 1, "Bias", text_color = color.gray)
+    int row = 2
+    for i = 0 to array.size(list) - 1
+        if row <= 15
+            string ticker = str.trim(array.get(list, i))
+            [price, rsi, relVol, score, bull, bear] = f_scan(ticker)
+            color biasColor = bull ? color.lime : bear ? color.red : color.gray
+            color scoreColor = score >= minScore ? biasColor : color.gray
+            table.cell(screen, 0, row, str.replace(ticker, "NASDAQ:", ""), text_color = color.white)
+            table.cell(screen, 1, row, str.tostring(price, format.mintick), text_color = color.white)
+            table.cell(screen, 2, row, str.tostring(rsi, "#.0"), text_color = rsi > 70 or rsi < 30 ? color.orange : color.white)
+            table.cell(screen, 3, row, str.tostring(relVol, "#.##") + "x", text_color = color.white)
+            table.cell(screen, 4, row, str.tostring(score), text_color = scoreColor)
+            table.cell(screen, 5, row, score >= minScore ? bull ? "BUY" : bear ? "SELL" : "—" : "WAIT", text_color = scoreColor)
+            row += 1
