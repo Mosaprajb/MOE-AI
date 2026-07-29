@@ -5,6 +5,27 @@ import { getKillSwitch, getTradingMode } from '../lib/risk';
 import { WebullClient } from '../lib/webull';
 
 const webhook = new Hono<{ Bindings: Env }>();
+const SETTINGS_KEY = 'trading:settings';
+const defaultTradingSettings = {
+  sizingSource: 'cash',
+  maxCashPct: 25,
+  maxPositionUsd: 0,
+  blockIfPosition: true,
+  sessionOpenOnly: true,
+  sessionTz: 'America/Chicago',
+  sessionStart: '08:30',
+  sessionEnd: '15:00',
+};
+
+async function getTradingSettings(env: Env) {
+  if (!env.CONFIG) return defaultTradingSettings;
+  try {
+    const saved = await env.CONFIG.get(SETTINGS_KEY, 'json') as Partial<typeof defaultTradingSettings> | null;
+    return { ...defaultTradingSettings, ...(saved ?? {}) };
+  } catch {
+    return defaultTradingSettings;
+  }
+}
 
 // ── Regular-session gate ──────────────────────────────────────────────────────
 // Opening trades is only allowed inside the configured session window
@@ -48,6 +69,7 @@ function isWithinSession(env: Env): { ok: boolean; now: string; window: string }
 
 webhook.post('/webhook', async (c) => {
   const env = c.env;
+  const settings = await getTradingSettings(env);
   let payload: TVWebhookPayload;
   try {
     payload = await c.req.json<TVWebhookPayload>();
@@ -127,8 +149,13 @@ webhook.post('/webhook', async (c) => {
   } else {
     // ── Opening a new trade ─────────────────────────────────────────────────
     // 1. Session gate — new trades only inside the regular-session window.
-    if ((env.SESSION_OPEN_ONLY ?? 'true') !== 'false') {
-      const session = isWithinSession(env);
+    if (settings.sessionOpenOnly) {
+      const session = isWithinSession({
+        ...env,
+        SESSION_TZ: settings.sessionTz,
+        SESSION_START: settings.sessionStart,
+        SESSION_END: settings.sessionEnd,
+      });
       if (!session.ok) {
         console.log(`[Webhook] ${symbol} open rejected — outside session (now ${session.now}, window ${session.window})`);
         return c.json({
@@ -139,7 +166,7 @@ webhook.post('/webhook', async (c) => {
     }
 
     // 2. One position per symbol — reject BUY if the symbol is already held.
-    if (side === 'BUY' && (env.BLOCK_IF_POSITION ?? 'true') !== 'false') {
+    if (side === 'BUY' && settings.blockIfPosition) {
       try {
         const positions = await client.getPositions();
         const existing = positions.find(p => p.symbol === symbol && p.quantity > 0);
@@ -169,13 +196,13 @@ webhook.post('/webhook', async (c) => {
       }
       try {
         const acct = await client.getAccount();
-        const useBuyingPower = (env.SIZING_SOURCE ?? 'cash') === 'buying_power';
+        const useBuyingPower = settings.sizingSource === 'buying_power';
         const base = useBuyingPower
           ? (acct.buyingPower > 0 ? acct.buyingPower : acct.cash)
           : acct.cash;
-        const allocPct = Math.max(1, Math.min(100, Number(env.MAX_CASH_PCT ?? '25'))) / 100;
+        const allocPct = settings.maxCashPct / 100;
         let budget = base * allocPct;
-        const capUsd = Number(env.MAX_POSITION_USD ?? '0');
+        const capUsd = settings.maxPositionUsd;
         if (capUsd > 0) budget = Math.min(budget, capUsd);
         qty = Math.floor(budget / price);
         console.log(`[Webhook] cash sizing: floor(min($${base.toFixed(2)} × ${(allocPct*100).toFixed(0)}%${capUsd > 0 ? `, $${capUsd}` : ''}) ÷ $${price}) = ${qty} (${useBuyingPower ? 'buying power' : 'cash'})`);

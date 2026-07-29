@@ -1,6 +1,6 @@
 // MOE-AI Settings Page
-import { useState } from 'react';
-import { LS_SETTINGS } from '../lib/config';
+import { useEffect, useState } from 'react';
+import { API_BASE, LS_SETTINGS } from '../lib/config';
 import { setPin, hasPinSet } from '../lib/auth';
 import type { TradingMode } from '../lib/config';
 
@@ -23,6 +23,40 @@ export default function SettingsPage({ showToast }: Props) {
   const [confPin,   setConfPin]   = useState('');
   const [notifs,    setNotifs]    = useState(false);
   const [savingPin, setSavingPin] = useState(false);
+  const [cashPct, setCashPct] = useState('25');
+  const [maxPositionUsd, setMaxPositionUsd] = useState('0');
+  const [sizingSource, setSizingSource] = useState<'cash' | 'buying_power'>('cash');
+  const [blockIfPosition, setBlockIfPosition] = useState(true);
+  const [sessionOpenOnly, setSessionOpenOnly] = useState(true);
+  const [sessionTz, setSessionTz] = useState('America/Chicago');
+  const [sessionStart, setSessionStart] = useState('08:30');
+  const [sessionEnd, setSessionEnd] = useState('15:00');
+  const [loadingTradeSettings, setLoadingTradeSettings] = useState(true);
+  const [savingTradeSettings, setSavingTradeSettings] = useState(false);
+
+  useEffect(() => {
+    fetch(`${API_BASE}/api/trading/settings`, { cache: 'no-store' })
+      .then(async r => {
+        const data = await r.json() as { settings?: {
+          maxCashPct?: number; maxPositionUsd?: number; sizingSource?: 'cash'|'buying_power';
+          blockIfPosition?: boolean; sessionOpenOnly?: boolean; sessionTz?: string;
+          sessionStart?: string; sessionEnd?: string;
+        }};
+        const s = data.settings;
+        if (s) {
+          setCashPct(String(s.maxCashPct ?? 25));
+          setMaxPositionUsd(String(s.maxPositionUsd ?? 0));
+          setSizingSource(s.sizingSource === 'buying_power' ? 'buying_power' : 'cash');
+          setBlockIfPosition(s.blockIfPosition !== false);
+          setSessionOpenOnly(s.sessionOpenOnly !== false);
+          setSessionTz(s.sessionTz ?? 'America/Chicago');
+          setSessionStart(s.sessionStart ?? '08:30');
+          setSessionEnd(s.sessionEnd ?? '15:00');
+        }
+      })
+      .catch(() => {})
+      .finally(() => setLoadingTradeSettings(false));
+  }, []);
 
   const saveApiBase = () => {
     localStorage.setItem('moe-api-base', apiBase.trim().replace(/\/$/, ''));
@@ -48,6 +82,35 @@ export default function SettingsPage({ showToast }: Props) {
     localStorage.setItem(LS_SETTINGS, JSON.stringify({ ...current, [key]: val }));
   };
 
+  const saveTradeSettings = async () => {
+    const pct = Number(cashPct);
+    const cap = Number(maxPositionUsd);
+    if (!Number.isFinite(pct) || pct < 1 || pct > 100) {
+      showToast('Cash allocation must be between 1% and 100%', 'error'); return;
+    }
+    if (!Number.isFinite(cap) || cap < 0) {
+      showToast('Maximum position value must be 0 or greater', 'error'); return;
+    }
+    setSavingTradeSettings(true);
+    try {
+      const res = await fetch(`${API_BASE}/api/trading/settings`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          maxCashPct: pct, maxPositionUsd: cap, sizingSource,
+          blockIfPosition, sessionOpenOnly, sessionTz, sessionStart, sessionEnd,
+        }),
+      });
+      const data = await res.json() as { settings?: { maxCashPct?: number }; error?: string };
+      if (!res.ok) throw new Error(data.error ?? `Worker returned HTTP ${res.status}`);
+      showToast(`Trading settings saved — ${data.settings?.maxCashPct ?? pct}% of cash per BUY ✓`, 'success');
+    } catch (err) {
+      showToast(`Could not save trading settings: ${String(err).replace('Error: ', '')}`, 'error');
+    } finally {
+      setSavingTradeSettings(false);
+    }
+  };
+
   return (
     <div>
       <div className="page-header">
@@ -69,6 +132,80 @@ export default function SettingsPage({ showToast }: Props) {
             Override the Worker URL if you deploy to a different Cloudflare account. Requires a page reload.
           </div>
         </div>
+      </Section>
+
+      {/* Position sizing and session controls */}
+      <Section title="Trading Controls">
+        <div style={{ padding: '10px 12px', marginBottom: 14, borderRadius: 8,
+          background: 'rgba(34,211,144,.07)', border: '1px solid rgba(34,211,144,.2)',
+          color: 'var(--muted)', fontSize: 12, lineHeight: 1.55 }}>
+          These settings are saved on the Worker and apply to the next TradingView BUY.
+          SELL signals always close the actual open quantity.
+        </div>
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+          <div>
+            <div className="input-label">Cash allocation per BUY (%)</div>
+            <input className="input" type="number" min={1} max={100} step={1}
+              value={cashPct} onChange={e => setCashPct(e.target.value)} />
+            <div style={{ fontSize: 11, color: 'var(--muted)', marginTop: 5 }}>
+              Example: 25% of Cash Balance, not margin.
+            </div>
+          </div>
+          <div>
+            <div className="input-label">Maximum position value ($)</div>
+            <input className="input" type="number" min={0} step={100}
+              value={maxPositionUsd} onChange={e => setMaxPositionUsd(e.target.value)} />
+            <div style={{ fontSize: 11, color: 'var(--muted)', marginTop: 5 }}>
+              0 means no dollar cap.
+            </div>
+          </div>
+        </div>
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginTop: 12 }}>
+          <div>
+            <div className="input-label">Sizing source</div>
+            <select className="input" value={sizingSource}
+              onChange={e => setSizingSource(e.target.value as 'cash'|'buying_power')}>
+              <option value="cash">Cash Balance (recommended)</option>
+              <option value="buying_power">Buying Power (may use margin)</option>
+            </select>
+          </div>
+          <div>
+            <div className="input-label">Session timezone</div>
+            <select className="input" value={sessionTz} onChange={e => setSessionTz(e.target.value)}>
+              <option value="America/Chicago">Central — America/Chicago</option>
+              <option value="America/New_York">Eastern — America/New_York</option>
+              <option value="America/Los_Angeles">Pacific — America/Los_Angeles</option>
+              <option value="Asia/Riyadh">Riyadh — Asia/Riyadh</option>
+              <option value="UTC">UTC</option>
+            </select>
+          </div>
+        </div>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 10, marginTop: 14 }}>
+          <label className="setting-row" style={{ cursor: 'pointer' }}>
+            <span className="setting-info"><b>Open trades only during regular session</b>
+              <small>Default: 08:30–15:00. SELL remains allowed outside the session.</small></span>
+            <input type="checkbox" checked={sessionOpenOnly} onChange={e => setSessionOpenOnly(e.target.checked)} />
+          </label>
+          <label className="setting-row" style={{ cursor: 'pointer' }}>
+            <span className="setting-info"><b>Block BUY when this symbol is already held</b>
+              <small>Prevents duplicate positions and accidental over-allocation.</small></span>
+            <input type="checkbox" checked={blockIfPosition} onChange={e => setBlockIfPosition(e.target.checked)} />
+          </label>
+        </div>
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginTop: 12 }}>
+          <div>
+            <div className="input-label">Session start</div>
+            <input className="input" type="time" value={sessionStart} onChange={e => setSessionStart(e.target.value)} />
+          </div>
+          <div>
+            <div className="input-label">Session end</div>
+            <input className="input" type="time" value={sessionEnd} onChange={e => setSessionEnd(e.target.value)} />
+          </div>
+        </div>
+        <button className="btn btn-primary" style={{ marginTop: 14 }}
+          onClick={saveTradeSettings} disabled={savingTradeSettings || loadingTradeSettings}>
+          {savingTradeSettings ? 'Saving…' : loadingTradeSettings ? 'Loading…' : 'Save Trading Controls'}
+        </button>
       </Section>
 
       {/* Security */}

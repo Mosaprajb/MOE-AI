@@ -10,6 +10,51 @@ import {
 
 const trading = new Hono<{ Bindings: Env }>();
 
+// ── Position sizing settings ───────────────────────────────────────────────────
+// Stored in the optional CONFIG KV namespace so the value set in the app is
+// shared by TradingView webhooks and survives Worker restarts.
+const SETTINGS_KEY = 'trading:settings';
+const defaultSettings = {
+  sizingSource: 'cash' as const,
+  maxCashPct: 25,
+  maxPositionUsd: 0,
+  blockIfPosition: true,
+  sessionOpenOnly: true,
+  sessionTz: 'America/Chicago',
+  sessionStart: '08:30',
+  sessionEnd: '15:00',
+};
+
+trading.get('/settings', async (c) => {
+  let settings = defaultSettings;
+  if (c.env.CONFIG) {
+    try {
+      const saved = await c.env.CONFIG.get(SETTINGS_KEY, 'json') as Partial<typeof defaultSettings> | null;
+      if (saved) settings = { ...defaultSettings, ...saved };
+    } catch { /* use defaults when KV is unavailable */ }
+  }
+  return c.json({ settings, persisted: !!c.env.CONFIG });
+});
+
+trading.post('/settings', async (c) => {
+  const body = await c.req.json<Partial<typeof defaultSettings>>();
+  const settings = {
+    sizingSource: body.sizingSource === 'buying_power' ? 'buying_power' : 'cash' as const,
+    maxCashPct: Math.max(1, Math.min(100, Number(body.maxCashPct ?? defaultSettings.maxCashPct))),
+    maxPositionUsd: Math.max(0, Number(body.maxPositionUsd ?? defaultSettings.maxPositionUsd)),
+    blockIfPosition: body.blockIfPosition !== false,
+    sessionOpenOnly: body.sessionOpenOnly !== false,
+    sessionTz: typeof body.sessionTz === 'string' ? body.sessionTz : defaultSettings.sessionTz,
+    sessionStart: typeof body.sessionStart === 'string' ? body.sessionStart : defaultSettings.sessionStart,
+    sessionEnd: typeof body.sessionEnd === 'string' ? body.sessionEnd : defaultSettings.sessionEnd,
+  };
+  if (!c.env.CONFIG) {
+    return c.json({ error: 'CONFIG KV is not configured; settings cannot be saved from the app yet', settings, persisted: false }, 503);
+  }
+  await c.env.CONFIG.put(SETTINGS_KEY, JSON.stringify(settings));
+  return c.json({ success: true, settings, persisted: true });
+});
+
 // ── Dashboard (composite: account + positions + orders) ───────────────────────
 trading.get('/:mode/dashboard', async (c) => {
   const env  = c.env;
