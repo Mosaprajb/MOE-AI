@@ -12,7 +12,12 @@ float keyValue = input.float(1.0, "Key Value (sensitivity)", minval = 0.1, step 
 int atrPeriod = input.int(10, "ATR Period", minval = 1, group = gLogic)
 bool useHeikin = input.bool(false, "Signals From Heikin Ashi Candles", group = gLogic)
 
-string gHook = "2. MOE AI Webhook"
+string gSession = "2. Trading Session"
+bool sessionOnly = input.bool(true, "Open Trades In Regular Session Only", group = gSession)
+string sessionWindow = input.session("0830-1500", "Session Window", group = gSession)
+string sessionTz = input.string("America/Chicago", "Session Timezone", options = ["America/Chicago", "America/New_York", "America/Los_Angeles", "Asia/Riyadh", "UTC"], group = gSession)
+
+string gHook = "3. MOE AI Webhook"
 bool enableWebhook = input.bool(true, "Enable MOE AI Webhook", group = gHook)
 string webhookSecret = input.string("", "MOE Webhook Secret", group = gHook)
 bool requestSandbox = input.bool(false, "Request Sandbox Submission", group = gHook)
@@ -69,7 +74,10 @@ bool sellRaw = src < trailingStop and below
 var bool inPosition = false
 var float entryPrice = na
 
-bool buySignal = barstate.isconfirmed and buyRaw and not inPosition
+// Session gate — BUY only inside the regular session (Mon–Fri); SELL any time.
+bool inSession = not sessionOnly or not na(time(timeframe.period, sessionWindow + ":23456", sessionTz))
+
+bool buySignal = barstate.isconfirmed and buyRaw and not inPosition and inSession
 bool sellSignal = barstate.isconfirmed and sellRaw and inPosition
 
 if buySignal
@@ -108,7 +116,7 @@ alertcondition(sellSignal, "MOERAND Simple SELL", "MOERAND Simple SELL {{ticker}
 //=============================================================================
 // INFORMATION PANEL
 //=============================================================================
-var table panel = table.new(position.top_right, 2, 4, bgcolor = color.new(color.black, 15), frame_color = color.new(color.white, 70), frame_width = 1)
+var table panel = table.new(position.top_right, 2, 5, bgcolor = color.new(color.black, 15), frame_color = color.new(color.white, 70), frame_width = 1)
 if barstate.islast and showPanel
     table.cell(panel, 0, 0, "MOERAND SIMPLE", bgcolor = color.new(color.blue, 65), text_color = color.white)
     table.cell(panel, 1, 0, syminfo.ticker, bgcolor = color.new(color.blue, 65), text_color = color.white)
@@ -118,5 +126,7 @@ if barstate.islast and showPanel
     table.cell(panel, 1, 2, inPosition ? str.tostring(entryPrice, format.mintick) : "—", text_color = color.white)
     table.cell(panel, 0, 3, "Trailing Stop", text_color = color.white)
     table.cell(panel, 1, 3, str.tostring(trailingStop, format.mintick), text_color = pos == 1 ? color.lime : color.red)
+    table.cell(panel, 0, 4, "Session", text_color = color.white)
+    table.cell(panel, 1, 4, inSession ? "OPEN" : "CLOSED (no new trades)", text_color = inSession ? color.lime : color.orange)
 else if barstate.islast and not showPanel
-    table.clear(panel, 0, 0, 1, 3)
+    table.clear(panel, 0, 0, 1, 4)

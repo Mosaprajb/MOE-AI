@@ -6,6 +6,29 @@ import { WebullClient } from '../lib/webull';
 
 const webhook = new Hono<{ Bindings: Env }>();
 
+// ── Regular-session gate ──────────────────────────────────────────────────────
+// Opening trades is only allowed inside the configured session window
+// (default 08:30–15:00 America/Chicago, Mon–Fri). Closing is always allowed.
+function isWithinSession(env: Env): { ok: boolean; now: string; window: string } {
+  const tz    = env.SESSION_TZ || 'America/Chicago';
+  const start = env.SESSION_START || '08:30';
+  const end   = env.SESSION_END   || '15:00';
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: tz, hour12: false, weekday: 'short', hour: '2-digit', minute: '2-digit',
+  }).formatToParts(new Date());
+  const get = (t: string) => parts.find(p => p.type === t)?.value ?? '';
+  const weekday = get('weekday');
+  const hh = Number(get('hour') === '24' ? '0' : get('hour'));
+  const mm = Number(get('minute'));
+  const nowMin = hh * 60 + mm;
+  const [sH, sM] = start.split(':').map(Number);
+  const [eH, eM] = end.split(':').map(Number);
+  const isWeekday = !['Sat', 'Sun'].includes(weekday);
+  const ok = isWeekday && nowMin >= sH * 60 + sM && nowMin < eH * 60 + eM;
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return { ok, now: `${weekday} ${pad(hh)}:${pad(mm)} (${tz})`, window: `${start}–${end} ${tz}, Mon–Fri` };
+}
+
 // ── POST /api/tradingview/webhook ─────────────────────────────────────────────
 // Called by TradingView when an alert fires. Validates the secret, checks the
 // kill switch, determines SANDBOX vs LIVE mode, then places the order on Webull.
@@ -101,25 +124,71 @@ webhook.post('/webhook', async (c) => {
       console.error(`[Webhook] ${symbol} close rejected — failed to fetch positions:`, err);
       return c.json({ signalId, accepted: false, reason: 'Failed to fetch positions to close — order not placed' });
     }
-  } else if (payload.qty != null) {
-    qty = Math.max(1, Math.round(Number(payload.qty)));
-    console.log(`[Webhook] qty from alert: ${qty}`);
   } else {
-    const price = Number(orderPrice ?? 0);
-    const riskPct = Math.max(0.1, Math.min(50, Number(env.RISK_PCT ?? '5'))) / 100;
-    if (price > 0) {
+    // ── Opening a new trade ─────────────────────────────────────────────────
+    // 1. Session gate — new trades only inside the regular-session window.
+    if ((env.SESSION_OPEN_ONLY ?? 'true') !== 'false') {
+      const session = isWithinSession(env);
+      if (!session.ok) {
+        console.log(`[Webhook] ${symbol} open rejected — outside session (now ${session.now}, window ${session.window})`);
+        return c.json({
+          signalId, accepted: false,
+          reason: `Outside trading session — new trades allowed only ${session.window} (now: ${session.now}). Open positions still close on SELL signals.`,
+        });
+      }
+    }
+
+    // 2. One position per symbol — reject BUY if the symbol is already held.
+    if (side === 'BUY' && (env.BLOCK_IF_POSITION ?? 'true') !== 'false') {
+      try {
+        const positions = await client.getPositions();
+        const existing = positions.find(p => p.symbol === symbol && p.quantity > 0);
+        if (existing) {
+          console.log(`[Webhook] ${symbol} BUY rejected — position already open (${existing.quantity} shares)`);
+          return c.json({
+            signalId, accepted: false,
+            reason: `Position already open in ${symbol} (${existing.quantity} shares) — BUY skipped`,
+          });
+        }
+      } catch (err) {
+        console.warn(`[Webhook] ${symbol} — position check failed, continuing:`, err);
+      }
+    }
+
+    // 3. Sizing — from CASH balance by default (no margin / no intraday BP).
+    if (payload.qty != null) {
+      qty = Math.max(1, Math.round(Number(payload.qty)));
+      console.log(`[Webhook] qty from alert: ${qty}`);
+    } else {
+      const price = Number(orderPrice ?? 0);
+      if (!(price > 0)) {
+        return c.json({
+          signalId, accepted: false,
+          reason: 'No price in alert — add "price": {{close}} to your TradingView alert so position size can be calculated',
+        });
+      }
       try {
         const acct = await client.getAccount();
-        const buyingPower = acct.buyingPower > 0 ? acct.buyingPower : acct.cash;
-        qty = Math.max(1, Math.floor((buyingPower * riskPct) / price));
-        console.log(`[Webhook] smart qty: floor($${buyingPower.toFixed(2)} × ${(riskPct*100).toFixed(1)}% ÷ $${price}) = ${qty}`);
+        const useBuyingPower = (env.SIZING_SOURCE ?? 'cash') === 'buying_power';
+        const base = useBuyingPower
+          ? (acct.buyingPower > 0 ? acct.buyingPower : acct.cash)
+          : acct.cash;
+        const allocPct = Math.max(1, Math.min(100, Number(env.MAX_CASH_PCT ?? '25'))) / 100;
+        let budget = base * allocPct;
+        const capUsd = Number(env.MAX_POSITION_USD ?? '0');
+        if (capUsd > 0) budget = Math.min(budget, capUsd);
+        qty = Math.floor(budget / price);
+        console.log(`[Webhook] cash sizing: floor(min($${base.toFixed(2)} × ${(allocPct*100).toFixed(0)}%${capUsd > 0 ? `, $${capUsd}` : ''}) ÷ $${price}) = ${qty} (${useBuyingPower ? 'buying power' : 'cash'})`);
+        if (qty < 1) {
+          return c.json({
+            signalId, accepted: false,
+            reason: `Insufficient ${useBuyingPower ? 'buying power' : 'cash'} — budget $${budget.toFixed(2)} < 1 share at $${price}`,
+          });
+        }
       } catch (err) {
-        qty = 1;
-        console.warn(`[Webhook] balance fetch failed, defaulting qty=1:`, err);
+        console.error(`[Webhook] ${symbol} open rejected — balance fetch failed:`, err);
+        return c.json({ signalId, accepted: false, reason: 'Failed to fetch account balance — order not placed' });
       }
-    } else {
-      qty = 1;
-      console.warn(`[Webhook] no price in alert — add "price": {{close}} to your TradingView alert for smart sizing. Defaulting qty=1.`);
     }
   }
 

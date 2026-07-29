@@ -35,7 +35,17 @@ export interface Env {
   MAX_OPEN_RISK_PCT:  string;
   MAX_PORTFOLIO_HEAT: string;
   ALLOWED_ORIGINS:    string;
-  RISK_PCT?:          string;   // % of buying power per trade (default 5)
+  RISK_PCT?:          string;   // legacy — % of buying power per trade (default 5)
+  // Position sizing (cash-based)
+  SIZING_SOURCE?:     string;   // "cash" (default — no margin) | "buying_power"
+  MAX_CASH_PCT?:      string;   // % of cash balance per trade (default 25)
+  MAX_POSITION_USD?:  string;   // hard cap on position value in dollars (optional)
+  BLOCK_IF_POSITION?: string;   // "true" (default) — reject BUY if symbol already held
+  // Regular-session gate (opening trades only; closes always allowed)
+  SESSION_OPEN_ONLY?: string;   // "true" (default) — only open trades inside the session window
+  SESSION_TZ?:        string;   // IANA timezone (default "America/Chicago")
+  SESSION_START?:     string;   // "HH:MM" (default "08:30")
+  SESSION_END?:       string;   // "HH:MM" (default "15:00")
   // Scanner vars
   SCANNER_TP_PCT?:        string;   // take profit % (default 1.5)
   SCANNER_TRAIL_PCT?:     string;   // trailing stop % (default 1.0)
