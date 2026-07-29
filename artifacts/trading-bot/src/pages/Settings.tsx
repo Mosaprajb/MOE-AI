@@ -16,6 +16,9 @@ function Section({ title, children }: { title: string; children: React.ReactNode
 }
 
 export default function SettingsPage({ showToast }: Props) {
+  const notificationPermission = typeof Notification !== 'undefined'
+    ? Notification.permission
+    : 'unsupported';
   const [apiBase,   setApiBase]   = useState(() =>
     localStorage.getItem('moe-api-base') ?? 'https://moerand-alerts.mosaprajb.workers.dev'
   );
@@ -313,8 +316,8 @@ export default function SettingsPage({ showToast }: Props) {
             <b>Permission status</b>
             <small>{typeof Notification !== 'undefined' ? Notification.permission : 'Not supported'}</small>
           </div>
-          <span className={`badge ${Notification?.permission === 'granted' ? 'badge-green' : 'badge-yellow'}`}>
-            {Notification?.permission ?? 'N/A'}
+           <span className={`badge ${notificationPermission === 'granted' ? 'badge-green' : 'badge-yellow'}`}>
+             {notificationPermission}
           </span>
         </div>
       </Section>
