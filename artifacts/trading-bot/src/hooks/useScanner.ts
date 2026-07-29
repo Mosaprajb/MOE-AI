@@ -144,8 +144,20 @@ export function useScanner(mode: TradingMode) {
   const runScan = useCallback(async (): Promise<ScanResult | null> => {
     setScanning(true);
     try {
-      const res  = await fetch(`${API_BASE}/api/scanner/run`, { method: 'POST', mode: 'cors' });
-      const data = await res.json() as ScanResult;
+      const res = await fetch(`${API_BASE}/api/scanner/run`, { method: 'POST', mode: 'cors' });
+      const raw = await res.json() as Record<string, unknown>;
+      // Normalize: old Worker may use 'signals' instead of 'candidates'
+      const data: ScanResult = {
+        mode:             String(raw.mode             ?? 'SANDBOX'),
+        scanned:          Number(raw.scanned           ?? 0),
+        candidates:       Array.isArray(raw.candidates) ? (raw.candidates as ScanCandidate[])
+                        : Array.isArray(raw.signals)    ? (raw.signals    as ScanCandidate[])
+                        : [],
+        ordersPlaced:     Number(raw.ordersPlaced      ?? 0),
+        positionsManaged: Number(raw.positionsManaged  ?? 0),
+        errors:           Array.isArray(raw.errors) ? (raw.errors as string[]) : [],
+        ms:               Number(raw.ms               ?? 0),
+      };
       setLastResult(data);
       await load(); // refresh positions + runs
       return data;

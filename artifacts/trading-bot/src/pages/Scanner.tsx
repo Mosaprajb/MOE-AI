@@ -386,7 +386,7 @@ function ScannerControls({
             <>
               <span className="scan-stat"><b>{lastResult.scanned}</b> <span>scanned</span></span>
               <span className="scan-sep" />
-              <span className="scan-stat"><b style={{ color: lastResult.candidates.length ? 'var(--green)' : 'var(--muted)' }}>{lastResult.candidates.length}</b> <span>signals</span></span>
+              <span className="scan-stat"><b style={{ color: (lastResult.candidates?.length ?? 0) > 0 ? 'var(--green)' : 'var(--muted)' }}>{lastResult.candidates?.length ?? 0}</b> <span>signals</span></span>
               <span className="scan-sep" />
               <span className="scan-stat"><b>{lastResult.ordersPlaced}</b> <span>orders</span></span>
               <span className="scan-sep" />
@@ -629,14 +629,15 @@ export default function ScannerPage({ mode, showToast }: Props) {
     _lastScanAt = Date.now();
     const result = await runScan();
     if (result) {
-      const cnt  = result.candidates.length;
-      const high = result.candidates.filter(c => c.confidence === 'HIGH').length;
+      const cands = result.candidates ?? [];
+      const cnt  = cands.length;
+      const high = cands.filter(c => c.confidence === 'HIGH').length;
       showToast(
         cnt > 0 ? `✓ Scan done — ${cnt} signal${cnt !== 1 ? 's' : ''} found` : '✓ Scan done — no signals',
         cnt > 0 ? 'success' : undefined,
       );
       if (cnt > 0) {
-        const symbols = result.candidates.slice(0, 3).map(c => c.symbol).join(', ');
+        const symbols = cands.slice(0, 3).map(c => c.symbol).join(', ');
         sendNotif(
           `MOE-AI · ${cnt} BUY Signal${cnt !== 1 ? 's' : ''}`,
           `${high > 0 ? `${high} HIGH — ` : ''}${symbols}${cnt > 3 ? ` +${cnt - 3} more` : ''}`,
