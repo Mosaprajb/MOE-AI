@@ -1,5 +1,5 @@
 // MOE-AI — Scanner Page (main product)
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import type { TradingMode } from '../lib/config';
 import { API_BASE } from '../lib/config';
 import { useScanner } from '../hooks/useScanner';
@@ -206,78 +206,155 @@ function searchStocks(q: string): { symbol: string; name: string }[] {
   ).slice(0, 10);
 }
 
-// ── Local EMA / RSI scoring engine ───────────────────────────────────────────
-function calcEMA(prices: number[], period: number): number[] {
-  if (!prices.length) return [];
-  const k = 2 / (period + 1);
-  const out = [prices[0]];
-  for (let i = 1; i < prices.length; i++) out.push(prices[i] * k + out[i - 1] * (1 - k));
-  return out;
+// ── UT Bot — MOERAND Simple signal engine ────────────────────────────────────
+type YFCandle = { open: number; high: number; low: number; close: number; volume: number };
+
+/** Wilder's ATR */
+function calcATR(highs: number[], lows: number[], closes: number[], period: number): number[] {
+  const n = highs.length;
+  if (n < 2) return highs.map(() => 0);
+  const tr = highs.map((h, i) => {
+    const l = lows[i], pc = i > 0 ? closes[i - 1] : l;
+    return Math.max(h - l, Math.abs(h - pc), Math.abs(l - pc));
+  });
+  const warmup = Math.min(period, n);
+  const seed = tr.slice(0, warmup).reduce((a, b) => a + b, 0) / warmup;
+  const out: number[] = new Array(warmup).fill(seed);
+  for (let i = warmup; i < n; i++) out.push((out[out.length - 1] * (period - 1) + tr[i]) / period);
+  return out.slice(0, n);
 }
-function calcRSI(prices: number[], period = 14): number {
-  if (prices.length < period + 1) return 50;
-  const ch = prices.slice(1).map((p, i) => p - prices[i]);
-  let ag = 0, al = 0;
-  for (let i = 0; i < period; i++) { ag += Math.max(0, ch[i]); al += Math.max(0, -ch[i]); }
-  ag /= period; al /= period;
-  for (let i = period; i < ch.length; i++) {
-    ag = (ag * (period - 1) + Math.max(0,  ch[i])) / period;
-    al = (al * (period - 1) + Math.max(0, -ch[i])) / period;
+
+/** Heikin Ashi conversion */
+function toHA(o: number[], h: number[], l: number[], c: number[]) {
+  const haC = o.map((_, i) => (o[i] + h[i] + l[i] + c[i]) / 4);
+  const haO: number[] = [(o[0] + c[0]) / 2];
+  for (let i = 1; i < o.length; i++) haO.push((haO[i - 1] + haC[i - 1]) / 2);
+  return { haO, haH: h.map((v, i) => Math.max(v, haO[i], haC[i])), haL: l.map((v, i) => Math.min(v, haO[i], haC[i])), haC };
+}
+
+interface UTBotResult {
+  signal:       'BUY' | 'SELL' | null;
+  trailingStop: number;
+  atrNow:       number;
+  entry:        number;   // actual close price
+  takeProfit:   number;
+  stopLoss:     number;
+  aboveTS:      boolean;  // price currently above trailing stop
+}
+
+function calcUTBot(
+  candles: YFCandle[],
+  keyValue: number, atrPeriod: number, useHA: boolean, tpPct: number, slPct: number,
+): UTBotResult | null {
+  if (candles.length < atrPeriod + 2) return null;
+  let opens  = candles.map(c => c.open);
+  let highs  = candles.map(c => c.high);
+  let lows   = candles.map(c => c.low);
+  let closes = candles.map(c => c.close);
+  if (useHA) { const ha = toHA(opens, highs, lows, closes); opens = ha.haO; highs = ha.haH; lows = ha.haL; closes = ha.haC; }
+
+  const atr = calcATR(highs, lows, closes, atrPeriod);
+  const n = closes.length;
+  const ts: number[] = new Array(n).fill(0);
+  ts[0] = closes[0];
+  for (let i = 1; i < n; i++) {
+    const prev = ts[i - 1], c = closes[i], pc = closes[i - 1];
+    const nl = keyValue * (atr[i] ?? atr[atr.length - 1]);
+    if      (c > prev && pc > prev) ts[i] = Math.max(prev, c - nl);
+    else if (c < prev && pc < prev) ts[i] = Math.min(prev, c + nl);
+    else if (c > prev)              ts[i] = c - nl;
+    else                            ts[i] = c + nl;
   }
-  return al === 0 ? 100 : 100 - 100 / (1 + ag / al);
+
+  let lastSignal: 'BUY' | 'SELL' | null = null;
+  for (let i = 1; i < n; i++) {
+    const c = closes[i], pc = closes[i - 1];
+    if      (c > ts[i] && pc <= ts[i - 1]) lastSignal = 'BUY';
+    else if (c < ts[i] && pc >= ts[i - 1]) lastSignal = 'SELL';
+  }
+
+  const price = candles.at(-1)!.close;   // always use real close for price display
+  const tsNow = ts.at(-1)!;
+  const atrNow = atr.at(-1) ?? 0;
+  return {
+    signal: lastSignal, trailingStop: tsNow, atrNow, entry: price,
+    takeProfit: price * (1 + tpPct / 100),
+    stopLoss: Math.max(tsNow, price * (1 - slPct / 100)),
+    aboveTS: price > tsNow,
+  };
 }
-interface LocalScore {
-  score: number; confidence: 'HIGH' | 'MEDIUM' | 'NONE';
-  reasons: string[]; entry: number; takeProfit: number; stopLoss: number;
-  ema9: number; ema21: number; rsi14: number; volumeRatio: number;
+
+// ── Local Positions (localStorage) ───────────────────────────────────────────
+interface LocalPosition {
+  id: string; symbol: string;
+  entryPrice: number; takeProfit: number; stopLoss: number; currentPrice: number;
+  openedAt: string; status: 'OPEN' | 'CLOSED';
+  exitPrice?: number; pnlPct?: number;
+  closeReason?: 'TP' | 'SL' | 'SIGNAL' | 'MANUAL'; closedAt?: string; useSL: boolean;
 }
-function scoreFromCandles(
-  candles: { close: number; volume: number }[],
-  config: import('../hooks/useScanner').ScannerConfig | null,
-): LocalScore | null {
-  if (candles.length < 22) return null;
-  const closes  = candles.map(c => c.close);
-  const volumes = candles.map(c => c.volume);
-  const e9  = calcEMA(closes, 9);
-  const e21 = calcEMA(closes, 21);
-  const rsi = calcRSI(closes);
-  const price = closes.at(-1)!;
-  const prev  = closes.at(-2) ?? price;
-  const ema9  = e9.at(-1)!;
-  const ema21 = e21.at(-1)!;
-  const v20   = volumes.slice(-20);
-  const avgV  = v20.reduce((a, b) => a + b, 0) / Math.max(v20.length, 1);
-  const volR  = avgV > 0 ? (volumes.at(-1) ?? 0) / avgV : 1;
-  let score = 0; const reasons: string[] = [];
-  if (ema9 > ema21)               { score += 3; reasons.push('EMA9 > EMA21'); }
-  if (rsi >= 45 && rsi <= 65)     { score += 2; reasons.push(`RSI ${rsi.toFixed(0)}`); }
-  else if (rsi >= 40)             { score += 1; reasons.push(`RSI ${rsi.toFixed(0)}`); }
-  if (volR >= 1.5)                { score += 2; reasons.push(`Vol ${volR.toFixed(1)}x`); }
-  else if (volR >= 1.2)           { score += 1; reasons.push(`Vol ${volR.toFixed(1)}x`); }
-  if (price > ema9)               { score += 2; reasons.push('Price > EMA9'); }
-  if (price > prev)               { score += 1; reasons.push('Bullish candle'); }
-  const confidence: 'HIGH' | 'MEDIUM' | 'NONE' = score >= 7 ? 'HIGH' : score >= 5 ? 'MEDIUM' : 'NONE';
-  const tpPct = config?.tpPct       ?? 3;
-  const slPct = config?.hardStopPct ?? 2;
-  return { score, confidence, reasons, entry: price,
-    takeProfit: price * (1 + tpPct / 100), stopLoss: price * (1 - slPct / 100),
-    ema9, ema21, rsi14: rsi, volumeRatio: volR };
+
+function useLocalPositions() {
+  const [positions, setPositions] = useState<LocalPosition[]>(() => {
+    try { const s = localStorage.getItem('moe_positions'); return s ? JSON.parse(s) : []; } catch { return []; }
+  });
+  const posRef = useRef<LocalPosition[]>([]);
+  posRef.current = positions;
+
+  const save = (ps: LocalPosition[]) => {
+    setPositions(ps);
+    try { localStorage.setItem('moe_positions', JSON.stringify(ps)); } catch {}
+  };
+
+  const openPos = useCallback((sym: string, entry: number, tp: number, sl: number, useSL: boolean) => {
+    if (posRef.current.some(p => p.symbol === sym && p.status === 'OPEN')) return false;
+    save([...posRef.current, {
+      id: Date.now().toString(36), symbol: sym, entryPrice: entry,
+      takeProfit: tp, stopLoss: sl, currentPrice: entry,
+      openedAt: new Date().toISOString(), status: 'OPEN', useSL,
+    }]);
+    return true;
+  }, []);
+
+  const closePos = useCallback((id: string, reason: LocalPosition['closeReason'], exitPrice: number) => {
+    save(posRef.current.map(p => p.id !== id || p.status !== 'OPEN' ? p : {
+      ...p, status: 'CLOSED' as const, exitPrice, closeReason: reason,
+      closedAt: new Date().toISOString(), pnlPct: ((exitPrice - p.entryPrice) / p.entryPrice) * 100,
+    }));
+  }, []);
+
+  // Accept a symbol→price map to batch-update all open positions from live quotes
+  const updateAndCheck = useCallback((priceMap: Record<string, number>) => {
+    const next = posRef.current.map(p => {
+      if (p.status !== 'OPEN') return p;
+      const price = priceMap[p.symbol];
+      if (price == null || price <= 0) return p;
+      const up = { ...p, currentPrice: price };
+      const pnlPct = ((price - p.entryPrice) / p.entryPrice) * 100;
+      if (price >= p.takeProfit)          return { ...up, status: 'CLOSED' as const, exitPrice: price, closeReason: 'TP'     as const, closedAt: new Date().toISOString(), pnlPct };
+      if (p.useSL && price <= p.stopLoss) return { ...up, status: 'CLOSED' as const, exitPrice: price, closeReason: 'SL'     as const, closedAt: new Date().toISOString(), pnlPct };
+      return up;
+    });
+    save(next);
+  }, []);
+
+  return { positions, openPos, closePos, updateAndCheck };
 }
 
 interface SearchResult { symbol: string; name: string; exchange: string; type: string; }
 interface StockDetail {
   symbol: string; price: number; changeAmt: number; changePct: number;
-  volume: number; high: number; low: number; score: LocalScore | null;
+  volume: number; high: number; low: number; signal: UTBotResult | null;
 }
 
 function StockSearch({
-  onAdd, showToast, config, onFocusScan, scanning,
+  onAdd, showToast, config, onFocusScan, scanning, onOpenTrade,
 }: {
   onAdd: (sym: string) => Promise<void>;
   showToast: (m: string, t?: 'success'|'error') => void;
   config: import('../hooks/useScanner').ScannerConfig | null;
   onFocusScan: (sym: string) => Promise<void>;
   scanning: boolean;
+  onOpenTrade: (sym: string, sig: UTBotResult) => void;
 }) {
   const [query,    setQuery]    = useState('');
   const [results,  setResults]  = useState<SearchResult[]>([]);
@@ -287,16 +364,12 @@ function StockSearch({
   const [focusing, setFocusing] = useState(false);
   const wrapRef = useRef<HTMLDivElement>(null);
 
-  // Close on outside click
   useEffect(() => {
-    const fn = (e: MouseEvent) => {
-      if (wrapRef.current && !wrapRef.current.contains(e.target as Node)) setOpen(false);
-    };
+    const fn = (e: MouseEvent) => { if (wrapRef.current && !wrapRef.current.contains(e.target as Node)) setOpen(false); };
     document.addEventListener('mousedown', fn);
     return () => document.removeEventListener('mousedown', fn);
   }, []);
 
-  // Instant local search — no network, no CORS issues
   const search = (q: string) => {
     setQuery(q);
     if (!q.trim()) { setResults([]); setOpen(false); return; }
@@ -306,32 +379,33 @@ function StockSearch({
   };
 
   const selectSymbol = async (sym: string) => {
-    setOpen(false);
-    setQuery(sym);
-    setDetail(null);
-    setLoading(true);
+    setOpen(false); setQuery(sym); setDetail(null); setLoading(true);
     try {
-      // 15-minute candles give price meta AND candle history for local scoring
       const yfRes = await fetch(
         `https://query2.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(sym)}?interval=15m&range=5d&includePrePost=false`,
         { mode: 'cors', headers: { Accept: 'application/json' } }
       ).catch(() => null);
       if (yfRes?.ok) {
-        const data  = await yfRes.json() as {
-          chart?: { result?: [{ meta?: Record<string, number | null>; indicators?: { quote?: [{ close?: (number|null)[]; volume?: (number|null)[] }] } }] };
+        const data = await yfRes.json() as {
+          chart?: { result?: [{ meta?: Record<string, number | null>; indicators?: { quote?: [{
+            open?: (number|null)[]; high?: (number|null)[]; low?: (number|null)[];
+            close?: (number|null)[]; volume?: (number|null)[];
+          }] } }] };
         };
-        const r     = data?.chart?.result?.[0];
-        const meta  = r?.meta;
-        const q0    = r?.indicators?.quote?.[0];
+        const r = data?.chart?.result?.[0], meta = r?.meta, q0 = r?.indicators?.quote?.[0];
         if (meta && q0) {
-          const rawC = q0.close  ?? [];
-          const rawV = q0.volume ?? [];
-          const candles = rawC.reduce<{ close: number; volume: number }[]>((acc, c, i) => {
-            if (c !== null && c > 0) acc.push({ close: c, volume: Number(rawV[i] ?? 0) });
-            return acc;
-          }, []);
-          const price     = Number(meta.regularMarketPrice)     || (candles.at(-1)?.close ?? 0);
-          const prevClose = Number(meta.chartPreviousClose)      || price;
+          const rawO = q0.open ?? [], rawH = q0.high ?? [], rawL = q0.low ?? [];
+          const rawC = q0.close ?? [], rawV = q0.volume ?? [];
+          const candles: YFCandle[] = [];
+          rawC.forEach((c, i) => {
+            if (c !== null && c > 0) candles.push({
+              open: Number(rawO[i] ?? c), high: Number(rawH[i] ?? c),
+              low:  Number(rawL[i] ?? c), close: c, volume: Number(rawV[i] ?? 0),
+            });
+          });
+          const price     = Number(meta.regularMarketPrice) || (candles.at(-1)?.close ?? 0);
+          const prevClose = Number(meta.chartPreviousClose)  || price;
+          const kv = config?.keyValue ?? 1, atrP = config?.atrPeriod ?? 8;
           setDetail({
             symbol: sym, price,
             changeAmt: price - prevClose,
@@ -339,7 +413,7 @@ function StockSearch({
             volume: Number(meta.regularMarketVolume)  || 0,
             high:   Number(meta.regularMarketDayHigh) || 0,
             low:    Number(meta.regularMarketDayLow)  || 0,
-            score:  scoreFromCandles(candles, config),
+            signal: calcUTBot(candles, kv, atrP, config?.useHeikinAshi ?? false, config?.tpPct ?? 3, config?.hardStopPct ?? 2),
           });
           return;
         }
@@ -349,22 +423,32 @@ function StockSearch({
     finally { setLoading(false); }
   };
 
-  const doFocusScan = async () => {
+  const doAction = async () => {
     if (!detail || focusing || scanning) return;
     setFocusing(true);
-    try { await onFocusScan(detail.symbol); }
-    finally { setFocusing(false); }
+    try {
+      await onAdd(detail.symbol);
+      if (detail.signal?.signal === 'BUY') {
+        onOpenTrade(detail.symbol, detail.signal);
+      } else {
+        await onFocusScan(detail.symbol);
+      }
+    } finally { setFocusing(false); }
   };
 
   const fmtL  = (n?: number) => n != null ? `$${n.toFixed(2)}` : '—';
   const fmtKL = (n: number) => n >= 1e6 ? `${(n / 1e6).toFixed(1)}M` : n >= 1e3 ? `${(n / 1e3).toFixed(0)}K` : String(n);
   const chClr = (n: number) => n >= 0 ? 'var(--green)' : 'var(--red)';
-  const s = detail?.score;
-  const ctaBg    = !s ? '#334155' : s.confidence === 'HIGH' ? 'var(--green)' : s.confidence === 'MEDIUM' ? '#d97706' : '#475569';
-  const ctaLabel = !s ? '🎯 Focus Scan'
-    : s.confidence === 'HIGH'   ? '🟢 BUY Signal — Focus Scan'
-    : s.confidence === 'MEDIUM' ? '🟡 Setup Found — Focus Scan'
-    :                             '🔍 No Setup — Add & Watch';
+  const sig = detail?.signal;
+  const ctaBg = !sig ? '#334155'
+    : sig.signal === 'BUY'  ? '#16a34a'
+    : sig.signal === 'SELL' ? '#7f1d1d'
+    : sig.aboveTS ? '#0ea5e9' : '#475569';
+  const ctaLabel = !sig ? '🔍 Analyzing…'
+    : sig.signal === 'BUY'  ? '🟢 Open Trade'
+    : sig.signal === 'SELL' ? '🔴 Sell Signal — Watch'
+    : sig.aboveTS           ? '📊 Above TS — Add & Watch'
+    :                         '⏳ Below Trailing Stop';
 
   return (
     <div ref={wrapRef} style={{ marginBottom: 14, position: 'relative' }}>
@@ -372,24 +456,16 @@ function StockSearch({
       <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
         <div style={{ position: 'relative', flex: 1, maxWidth: 440 }}>
           <span style={{ position: 'absolute', left: 11, top: '50%', transform: 'translateY(-50%)', fontSize: 16, pointerEvents: 'none', color: 'var(--muted)' }}>🔍</span>
-          <input
-            className="input"
-            style={{ paddingLeft: 34, fontSize: 14 }}
-            placeholder="Search to analyze — TSLA, AAPL, NVDA…"
+          <input className="input" style={{ paddingLeft: 34, fontSize: 14 }}
+            placeholder="Search ticker — PATH, TSLA, NVDA…"
             value={query}
             onChange={e => search(e.target.value)}
             onFocus={() => results.length > 0 && setOpen(true)}
             onKeyDown={e => { if (e.key === 'Enter' && query.trim()) { setOpen(false); selectSymbol(query.trim().toUpperCase()); } }}
           />
-          {loading && (
-            <span style={{ position: 'absolute', right: 10, top: '50%', transform: 'translateY(-50%)' }}>
-              <span className="spinner" style={{ width: 14, height: 14 }} />
-            </span>
-          )}
+          {loading && <span style={{ position: 'absolute', right: 10, top: '50%', transform: 'translateY(-50%)' }}><span className="spinner" style={{ width: 14, height: 14 }} /></span>}
         </div>
-        {query && (
-          <button className="btn btn-ghost btn-sm" onClick={() => { setQuery(''); setResults([]); setDetail(null); setOpen(false); }}>Clear</button>
-        )}
+        {query && <button className="btn btn-ghost btn-sm" onClick={() => { setQuery(''); setResults([]); setDetail(null); setOpen(false); }}>Clear</button>}
       </div>
 
       {/* Dropdown */}
@@ -412,32 +488,30 @@ function StockSearch({
         </div>
       )}
 
-      {/* Loading state */}
       {loading && !detail && (
         <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: 12, color: 'var(--muted)', fontSize: 13 }}>
           <span className="spinner" /> Analyzing {query}…
         </div>
       )}
 
-      {/* Analysis card */}
+      {/* UT Bot analysis card */}
       {detail && !loading && (
         <div style={{
-          marginTop: 10, borderRadius: 14, overflow: 'hidden',
-          background: 'var(--surface)',
-          border: `1px solid ${s?.confidence === 'HIGH' ? '#22d39066' : s?.confidence === 'MEDIUM' ? '#d9770644' : 'var(--border)'}`,
+          marginTop: 10, borderRadius: 14, overflow: 'hidden', background: 'var(--surface)',
+          border: `1px solid ${sig?.signal === 'BUY' ? '#22d39066' : sig?.signal === 'SELL' ? '#dc262644' : 'var(--border)'}`,
         }}>
-          {/* Price row */}
-          <div style={{ padding: '14px 16px 10px', display: 'flex', alignItems: 'flex-start', gap: 14, flexWrap: 'wrap' }}>
-            <div style={{ minWidth: 140 }}>
+          {/* Price + signal */}
+          <div style={{ padding: '14px 16px 10px', display: 'flex', gap: 14, flexWrap: 'wrap', alignItems: 'flex-start' }}>
+            <div style={{ minWidth: 150 }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 2 }}>
                 <span style={{ fontSize: 18, fontWeight: 900 }}>{detail.symbol}</span>
-                {s && (
-                  <span className={`signal-pill ${s.confidence === 'HIGH' ? 'signal-high' : s.confidence === 'MEDIUM' ? 'signal-med' : 'badge badge-muted'}`}>
-                    {s.confidence === 'NONE' ? 'WAIT' : s.confidence}
+                {sig && (
+                  <span className={`signal-pill ${sig.signal === 'BUY' ? 'signal-high' : sig.signal === 'SELL' ? 'badge badge-red' : 'badge badge-muted'}`}>
+                    {sig.signal ?? (sig.aboveTS ? 'ABOVE TS' : 'BELOW TS')}
                   </span>
                 )}
               </div>
-              <div style={{ fontSize: 22, fontWeight: 900, lineHeight: 1.1 }}>{fmtL(detail.price)}</div>
+              <div style={{ fontSize: 22, fontWeight: 900 }}>{fmtL(detail.price)}</div>
               <div style={{ fontSize: 12, color: chClr(detail.changeAmt), fontWeight: 700, marginTop: 2 }}>
                 {detail.changeAmt >= 0 ? '+' : ''}{detail.changeAmt.toFixed(2)} ({detail.changePct >= 0 ? '+' : ''}{detail.changePct.toFixed(2)}%)
               </div>
@@ -446,38 +520,37 @@ function StockSearch({
               </div>
             </div>
 
-            {/* Score block */}
-            {s ? (
-              <div style={{ flex: 1, minWidth: 200 }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8 }}>
-                  <div style={{ flex: 1, height: 8, background: 'var(--border)', borderRadius: 4, overflow: 'hidden' }}>
-                    <div style={{ width: `${s.score * 10}%`, height: '100%', borderRadius: 4, transition: 'width .5s ease', background: s.score >= 7 ? 'var(--green)' : s.score >= 5 ? '#d97706' : '#64748b' }} />
-                  </div>
-                  <span style={{ fontWeight: 900, fontSize: 16, minWidth: 36, color: s.score >= 7 ? 'var(--green)' : s.score >= 5 ? '#d97706' : 'var(--muted)' }}>{s.score}/10</span>
+            {sig ? (
+              <div style={{ flex: 1, minWidth: 220 }}>
+                <div style={{ fontSize: 10, color: 'var(--muted)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.04em', marginBottom: 8 }}>
+                  UT Bot · Key {config?.keyValue ?? 1} · ATR({config?.atrPeriod ?? 8}){config?.useHeikinAshi ? ' · HA' : ''}
                 </div>
-                {s.confidence !== 'NONE' && (
-                  <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginBottom: 8 }}>
-                    {[
-                      { label: 'Entry', val: fmtL(s.entry),      clr: '' },
-                      { label: 'TP',    val: fmtL(s.takeProfit), clr: 'var(--green)' },
-                      { label: 'SL',    val: fmtL(s.stopLoss),   clr: 'var(--red)' },
-                      { label: 'EMA9',  val: fmtL(s.ema9),       clr: '' },
-                      { label: 'RSI',   val: s.rsi14.toFixed(0), clr: '' },
-                    ].map(it => (
-                      <div key={it.label}>
-                        <div style={{ fontSize: 9, color: 'var(--muted)', fontWeight: 700, textTransform: 'uppercase' }}>{it.label}</div>
-                        <div style={{ fontWeight: 700, fontSize: 12, color: it.clr || 'var(--text)' }}>{it.val}</div>
-                      </div>
-                    ))}
+                <div style={{ display: 'flex', gap: 14, flexWrap: 'wrap', marginBottom: 10 }}>
+                  {[
+                    { label: 'Trail Stop', val: fmtL(sig.trailingStop), clr: sig.aboveTS ? 'var(--green)' : 'var(--red)' },
+                    { label: 'ATR',        val: sig.atrNow.toFixed(3),  clr: '' },
+                    { label: `TP +${config?.tpPct ?? 3}%`, val: fmtL(sig.takeProfit), clr: 'var(--green)' },
+                    { label: 'SL',         val: fmtL(sig.stopLoss),     clr: 'var(--red)' },
+                  ].map(it => (
+                    <div key={it.label}>
+                      <div style={{ fontSize: 9, color: 'var(--muted)', fontWeight: 700, textTransform: 'uppercase' }}>{it.label}</div>
+                      <div style={{ fontWeight: 700, fontSize: 13, color: it.clr || 'var(--text)' }}>{it.val}</div>
+                    </div>
+                  ))}
+                </div>
+                <div style={{ fontSize: 11, fontWeight: 600, color: sig.aboveTS ? 'var(--green)' : 'var(--red)' }}>
+                  {sig.aboveTS ? '▲ Price above trailing stop' : '▼ Price below trailing stop'}
+                </div>
+                {sig.signal && (
+                  <div style={{ marginTop: 4, fontSize: 11, fontWeight: 700, color: sig.signal === 'BUY' ? 'var(--green)' : 'var(--red)' }}>
+                    {sig.signal === 'BUY' ? '🟢 BUY crossover — entry confirmed' : '🔴 SELL crossover — avoid entry'}
                   </div>
                 )}
-                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
-                  {s.reasons.map((r, i) => <span key={i} className="reason-tag">{r}</span>)}
-                  {s.confidence === 'NONE' && <span style={{ fontSize: 11, color: 'var(--muted)' }}>No BUY setup — conditions not aligned.</span>}
-                </div>
               </div>
             ) : (
-              <div style={{ flex: 1, color: 'var(--muted)', fontSize: 12, paddingTop: 6 }}>Insufficient candle history for scoring.</div>
+              <div style={{ flex: 1, color: 'var(--muted)', fontSize: 12, paddingTop: 6 }}>
+                Not enough candle history for UT Bot (need {(config?.atrPeriod ?? 8) + 2}+ candles).
+              </div>
             )}
           </div>
 
@@ -486,12 +559,10 @@ function StockSearch({
             <button
               className="btn"
               disabled={focusing || scanning}
-              onClick={doFocusScan}
+              onClick={doAction}
               style={{ flex: 1, fontWeight: 800, fontSize: 13, background: ctaBg, color: '#fff', border: 'none', opacity: (focusing || scanning) ? 0.7 : 1 }}
             >
-              {(focusing || scanning)
-                ? <><span className="spinner" style={{ width: 13, height: 13, marginRight: 6 }} />Scanning…</>
-                : ctaLabel}
+              {(focusing || scanning) ? <><span className="spinner" style={{ width: 13, height: 13, marginRight: 6 }} />Processing…</> : ctaLabel}
             </button>
             <button className="btn btn-ghost btn-sm" onClick={() => { setDetail(null); setQuery(''); }}>✕</button>
           </div>
@@ -738,12 +809,12 @@ function SignalsPanel({ candidates }: { candidates: ScanCandidate[] }) {
                 <span style={{ color: 'var(--red)' }}>{slPct.toFixed(1)}%</span>
               </div>
               <div className="sig-px-item">
-                <span className="sig-px-label">RSI</span>
-                <span>{c.rsi14.toFixed(0)}</span>
+                <span className="sig-px-label">ATR</span>
+                <span>{c.rsi14.toFixed(3)}</span>
               </div>
               <div className="sig-px-item">
-                <span className="sig-px-label">Vol×</span>
-                <span>{c.volumeRatio.toFixed(1)}</span>
+                <span className="sig-px-label">TS Dist</span>
+                <span style={{ color: 'var(--green)' }}>{c.volumeRatio.toFixed(2)}%</span>
               </div>
             </div>
             {c.reasons.length > 0 && (
@@ -758,38 +829,84 @@ function SignalsPanel({ candidates }: { candidates: ScanCandidate[] }) {
   );
 }
 
-// ── Open Positions Strip ──────────────────────────────────────────────────────
-function OpenPositionsStrip({ positions }: { positions: ScannerPosition[] }) {
+// ── Positions Panel ───────────────────────────────────────────────────────────
+function PositionsPanel({ positions, onClose }: {
+  positions: LocalPosition[];
+  onClose: (id: string, reason: LocalPosition['closeReason'], price: number) => void;
+}) {
+  const open   = positions.filter(p => p.status === 'OPEN');
+  const closed = positions.filter(p => p.status === 'CLOSED').slice(-5).reverse();
   if (positions.length === 0) return null;
-
   return (
-    <div className="open-strip">
-      <div className="panel-title" style={{ marginBottom: 10 }}>Open Positions · {positions.length}</div>
-      <div className="pos-strip-grid">
-        {positions.map(p => {
-          const pnlAmt = (p.currentPrice - p.entryPrice) * p.quantity;
-          const pnlPct = ((p.currentPrice - p.entryPrice) / p.entryPrice) * 100;
-          const slPct  = ((p.stopLoss - p.entryPrice) / p.entryPrice) * 100;
-          return (
-            <div key={p.id} className={`pos-strip-card ${pnlAmt >= 0 ? 'pos-green' : 'pos-red'}`}>
-              <div className="pos-strip-top">
-                <span className="pos-strip-sym">{p.symbol}</span>
-                <span style={{ fontWeight: 800, color: pnlClr(pnlAmt) }}>
-                  {pnlAmt >= 0 ? '+' : ''}{pnlAmt.toFixed(2)}
+    <div style={{ marginTop: 16, marginBottom: 18 }}>
+      {open.length > 0 && (
+        <>
+          <div className="panel-title" style={{ marginBottom: 10 }}>Open Trades · {open.length}</div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+            {open.map(p => {
+              const pnlPct = ((p.currentPrice - p.entryPrice) / p.entryPrice) * 100;
+              const clr = pnlPct >= 0 ? 'var(--green)' : 'var(--red)';
+              const tpHit = p.currentPrice >= p.takeProfit;
+              const slHit = p.useSL && p.currentPrice <= p.stopLoss;
+              return (
+                <div key={p.id} style={{
+                  padding: '12px 14px', borderRadius: 12, background: 'var(--surface)',
+                  border: `1px solid ${tpHit ? 'var(--green)' : slHit ? 'var(--red)' : 'var(--border)'}`,
+                }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                      <span style={{ fontWeight: 900, fontSize: 15 }}>{p.symbol}</span>
+                      <span className="badge badge-green">OPEN</span>
+                    </div>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                      <span style={{ fontSize: 15, fontWeight: 900, color: clr }}>{pnlPct >= 0 ? '+' : ''}{pnlPct.toFixed(2)}%</span>
+                      <button className="btn btn-ghost btn-sm" style={{ fontSize: 11 }} onClick={() => onClose(p.id, 'MANUAL', p.currentPrice)}>Close</button>
+                    </div>
+                  </div>
+                  <div style={{ display: 'flex', gap: 16, fontSize: 12, flexWrap: 'wrap' }}>
+                    {[
+                      { label: 'Entry',   val: fmt(p.entryPrice),    clr: '' },
+                      { label: 'Current', val: fmt(p.currentPrice),  clr },
+                      { label: 'TP',      val: fmt(p.takeProfit),    clr: 'var(--green)' },
+                      ...(p.useSL ? [{ label: 'SL', val: fmt(p.stopLoss), clr: 'var(--red)' }] : []),
+                    ].map(it => (
+                      <div key={it.label}>
+                        <div style={{ color: 'var(--muted)', fontSize: 9, fontWeight: 700, textTransform: 'uppercase' }}>{it.label}</div>
+                        <div style={{ fontWeight: 700, color: it.clr || 'var(--text)' }}>{it.val}</div>
+                      </div>
+                    ))}
+                  </div>
+                  {(tpHit || slHit) && (
+                    <div style={{ marginTop: 8, fontSize: 11, fontWeight: 700, color: tpHit ? 'var(--green)' : 'var(--red)' }}>
+                      {tpHit ? '🎯 Take Profit reached!' : '⚠️ Stop Loss reached!'}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </>
+      )}
+      {closed.length > 0 && (
+        <>
+          <div className="panel-title" style={{ marginBottom: 8, marginTop: 14 }}>Recent Closed · {closed.length}</div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 5 }}>
+            {closed.map(p => (
+              <div key={p.id} style={{ padding: '9px 14px', borderRadius: 10, background: 'var(--surface)', border: '1px solid var(--border)', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                <div>
+                  <span style={{ fontWeight: 800, fontSize: 13 }}>{p.symbol}</span>
+                  <span style={{ marginLeft: 8, fontSize: 11, color: 'var(--muted)' }}>
+                    {p.closeReason === 'TP' ? '🎯 TP' : p.closeReason === 'SL' ? '🛑 SL' : p.closeReason === 'SIGNAL' ? '📊 Signal' : '✋ Manual'}
+                  </span>
+                </div>
+                <span style={{ fontWeight: 900, color: (p.pnlPct ?? 0) >= 0 ? 'var(--green)' : 'var(--red)' }}>
+                  {(p.pnlPct ?? 0) >= 0 ? '+' : ''}{(p.pnlPct ?? 0).toFixed(2)}%
                 </span>
               </div>
-              <div className="pos-strip-row">
-                <span style={{ color: 'var(--muted)', fontSize: 11 }}>Entry {fmt(p.entryPrice)}</span>
-                <span style={{ color: pnlClr(pnlAmt), fontWeight: 700 }}>{fmtPct(pnlPct, true)}</span>
-              </div>
-              <div className="pos-strip-row">
-                <span style={{ color: 'var(--muted)', fontSize: 11 }}>SL {fmt(p.stopLoss)}</span>
-                <span style={{ color: 'var(--red)', fontSize: 11 }}>{slPct.toFixed(1)}%</span>
-              </div>
-            </div>
-          );
-        })}
-      </div>
+            ))}
+          </div>
+        </>
+      )}
     </div>
   );
 }
@@ -797,34 +914,48 @@ function OpenPositionsStrip({ positions }: { positions: ScannerPosition[] }) {
 // ── Scanner Page Root ─────────────────────────────────────────────────────────
 export default function ScannerPage({ mode, showToast }: Props) {
   const {
-    positions, quotes, watchlist, scanning, lastResult, config,
+    positions, quotes, watchlist, scanning, lastResult, config, saveConfig,
     runScan, loadQuotes, updateWatchlist,
   } = useScanner(mode);
 
-  const autoRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const localPos = useLocalPositions();
+  const autoRef  = useRef<ReturnType<typeof setInterval> | null>(null);
   const [autoScan,      setAutoScan]      = useState(false);
   const [localScanning, setLocalScanning] = useState(false);
   const [localResult,   setLocalResult]   = useState<ScanResult | null>(null);
+  const [showConfig,    setShowConfig]    = useState(false);
   const scanLock = useRef(false);
 
-  // Extract candidates from local result
+  // Refresh positions on quote updates
+  useEffect(() => {
+    if (quotes.length === 0) return;
+    const pm = Object.fromEntries(quotes.map((q: { symbol: string; price?: number; lastPrice?: number }) => [q.symbol, q.price ?? q.lastPrice ?? 0]));
+    localPos.updateAndCheck(pm);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [quotes]);
+
   const cands: ScanCandidate[] = localResult?.candidates ?? [];
   const isScanning = localScanning;
 
-  // ── Local scan — runs entirely in the browser using Yahoo Finance ─────────
+  // ── Open trade handler ────────────────────────────────────────────────────
+  const onOpenTrade = (sym: string, sig: UTBotResult) => {
+    localPos.openPos(sym, sig.entry, sig.takeProfit, sig.stopLoss, config?.useSL ?? true);
+    showToast(`🟢 Paper trade opened: ${sym} @ $${sig.entry.toFixed(2)}`, 'success');
+  };
+
+  // ── Local scan — UT Bot strategy, runs entirely in browser ───────────────
   const runLocalScan = async (): Promise<ScanResult | null> => {
     if (scanLock.current) return null;
     scanLock.current = true;
     setLocalScanning(true);
     const t0 = Date.now();
     try {
-      const syms = watchlist.length > 0
-        ? watchlist
-        : STOCK_LIST.slice(0, 30).map(s => s.symbol);
-
-      // Fetch in batches of 5 to stay within Yahoo Finance rate limits
+      const syms = watchlist.length > 0 ? watchlist : STOCK_LIST.slice(0, 30).map(s => s.symbol);
       const BATCH = 5;
       const allCands: ScanCandidate[] = [];
+      const kv  = config?.keyValue ?? 1, atrP = config?.atrPeriod ?? 8;
+      const useHA = config?.useHeikinAshi ?? false;
+      const tpPct = config?.tpPct ?? 3, slPct = config?.hardStopPct ?? 2;
 
       for (let i = 0; i < syms.length; i += BATCH) {
         const batch = syms.slice(i, i + BATCH);
@@ -836,37 +967,46 @@ export default function ScannerPage({ mode, showToast }: Props) {
             ).catch(() => null);
             if (!r?.ok) return null;
             const data = await r.json() as {
-              chart?: { result?: [{
-                meta?: Record<string, number | null>;
-                indicators?: { quote?: [{ close?: (number|null)[]; volume?: (number|null)[] }] };
-              }] };
+              chart?: { result?: [{ meta?: Record<string, number | null>; indicators?: { quote?: [{
+                open?: (number|null)[]; high?: (number|null)[]; low?: (number|null)[];
+                close?: (number|null)[]; volume?: (number|null)[];
+              }] } }] };
             };
-            const q0   = data?.chart?.result?.[0];
-            const meta = q0?.meta;
-            const q    = q0?.indicators?.quote?.[0];
+            const q0 = data?.chart?.result?.[0], meta = q0?.meta, q = q0?.indicators?.quote?.[0];
             if (!meta || !q) return null;
-            const rawC = q.close  ?? [];
-            const rawV = q.volume ?? [];
-            const candles = rawC.reduce<{ close: number; volume: number }[]>((acc, c, idx) => {
-              if (c !== null && c > 0) acc.push({ close: c, volume: Number(rawV[idx] ?? 0) });
-              return acc;
-            }, []);
+            const rawO = q.open ?? [], rawH = q.high ?? [], rawL = q.low ?? [];
+            const rawC = q.close ?? [], rawV = q.volume ?? [];
+            const candles: YFCandle[] = [];
+            rawC.forEach((c, idx) => {
+              if (c !== null && c > 0) candles.push({
+                open: Number(rawO[idx] ?? c), high: Number(rawH[idx] ?? c),
+                low: Number(rawL[idx] ?? c), close: c, volume: Number(rawV[idx] ?? 0),
+              });
+            });
             const price = Number(meta.regularMarketPrice) || (candles.at(-1)?.close ?? 0);
             if (price < (config?.priceMin ?? 1) || price > (config?.priceMax ?? 999)) return null;
-            const sc = scoreFromCandles(candles, config);
-            if (!sc || sc.confidence === 'NONE') return null;
+            const sc = calcUTBot(candles, kv, atrP, useHA, tpPct, slPct);
+            if (!sc || sc.signal !== 'BUY') return null;
+            const tsDist = sc.trailingStop > 0 ? ((price - sc.trailingStop) / price) * 100 : 0;
             return {
-              symbol: sym, score: sc.score, confidence: sc.confidence,
-              price, ema9: sc.ema9, ema21: sc.ema21, rsi14: sc.rsi14,
-              volumeRatio: sc.volumeRatio, reasons: sc.reasons,
+              symbol: sym, score: 9, confidence: 'HIGH',
+              price, ema9: sc.trailingStop, ema21: sc.trailingStop,
+              rsi14: sc.atrNow, volumeRatio: tsDist,
+              reasons: ['✅ UT Bot BUY crossover'],
               entry: sc.entry, stopLoss: sc.stopLoss, takeProfit: sc.takeProfit,
-              trailPct: config?.trailPct ?? 2,
-              scannedAt: new Date().toISOString(),
+              trailPct: config?.trailPct ?? 2, scannedAt: new Date().toISOString(),
             } as ScanCandidate;
           } catch { return null; }
         }));
         settled.forEach(r => { if (r.status === 'fulfilled' && r.value) allCands.push(r.value); });
       }
+
+      // Auto-open for watchlist symbols that have a BUY signal (no duplicate)
+      allCands.forEach(c => {
+        if (!watchlist.includes(c.symbol)) return;
+        if (localPos.positions.some(p => p.symbol === c.symbol && p.status === 'OPEN')) return;
+        localPos.openPos(c.symbol, c.entry, c.takeProfit, c.stopLoss, config?.useSL ?? true);
+      });
 
       allCands.sort((a, b) => b.score - a.score);
       const result: ScanResult = {
@@ -875,31 +1015,22 @@ export default function ScannerPage({ mode, showToast }: Props) {
       };
       setLocalResult(result);
       return result;
-    } finally {
-      scanLock.current = false;
-      setLocalScanning(false);
-    }
+    } finally { scanLock.current = false; setLocalScanning(false); }
   };
 
-  // Use a stable ref so the auto-scan interval never re-registers on re-renders
   const handleScanRef = useRef<() => Promise<void>>(async () => {});
-
   const handleScan = async () => {
     _lastScanAt = Date.now();
     const result = await runLocalScan();
     if (result) {
-      const cnt  = result.candidates.length;
-      const high = result.candidates.filter(c => c.confidence === 'HIGH').length;
+      const cnt = result.candidates.length;
       showToast(
-        cnt > 0 ? `✓ Scan done — ${cnt} signal${cnt !== 1 ? 's' : ''} found` : '✓ Scan done — no signals',
+        cnt > 0 ? `✓ Scan done — ${cnt} BUY signal${cnt !== 1 ? 's' : ''}` : '✓ Scan done — no signals',
         cnt > 0 ? 'success' : undefined,
       );
       if (cnt > 0) {
-        const symbols = result.candidates.slice(0, 3).map(c => c.symbol).join(', ');
-        sendNotif(
-          `MOE-AI · ${cnt} BUY Signal${cnt !== 1 ? 's' : ''}`,
-          `${high > 0 ? `${high} HIGH — ` : ''}${symbols}${cnt > 3 ? ` +${cnt - 3} more` : ''}`,
-        );
+        const syms = result.candidates.slice(0, 3).map(c => c.symbol).join(', ');
+        sendNotif(`MOE-AI UT Bot · ${cnt} BUY`, `${syms}${cnt > 3 ? ` +${cnt - 3}` : ''}`);
       }
     }
     await loadQuotes();
@@ -923,18 +1054,22 @@ export default function ScannerPage({ mode, showToast }: Props) {
       {/* Account metrics strip */}
       <AccountBar mode={mode} />
 
-      {/* Stock search + analysis */}
+      {/* Stock search + UT Bot analysis */}
       <StockSearch
         onAdd={sym => updateWatchlist(sym, 'add')}
         showToast={showToast}
         config={config}
-        scanning={scanning}
+        scanning={scanning || localScanning}
+        onOpenTrade={onOpenTrade}
         onFocusScan={async (sym) => {
           await updateWatchlist(sym, 'add');
           showToast(`Focusing on ${sym} — scanning…`, 'success');
           await handleScanRef.current();
         }}
       />
+
+      {/* Paper positions */}
+      <PositionsPanel positions={localPos.positions} onClose={localPos.closePos} />
 
       {/* Controls: run scan + watchlist */}
       <ScannerControls
@@ -946,59 +1081,86 @@ export default function ScannerPage({ mode, showToast }: Props) {
         onRemove={sym => updateWatchlist(sym, 'remove').then(() => showToast(`Removed ${sym}`))}
       />
 
-      {/* Auto-scan + notification toggle */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: 14, marginBottom: 18, flexWrap: 'wrap' }}>
+      {/* Auto-scan + strategy config + notifications */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 14, marginBottom: 6, flexWrap: 'wrap' }}>
         <label className="toggle" style={{ cursor: 'pointer' }}>
           <input type="checkbox" checked={autoScan} onChange={async e => {
             const next = e.target.checked;
             setAutoScan(next);
-            if (next) {
-              // Request notification permission when enabling auto-scan
-              await requestNotifPermission();
-            }
+            if (next) await requestNotifPermission();
             showToast(next ? 'Auto-scan ON — every 5 min' : 'Auto-scan OFF', next ? 'success' : undefined);
           }} />
           <div className="toggle-track" />
           <div className="toggle-thumb" />
         </label>
         <span style={{ fontSize: 13, fontWeight: 600 }}>Auto-scan every 5 min</span>
-        <span style={{ fontSize: 11, color: 'var(--muted)' }}>· Sandbox until you switch to Live</span>
-
-        {/* Notification permission indicator — uses safe helper, no direct Notification.permission in JSX */}
+        <span style={{ fontSize: 11, color: 'var(--muted)' }}>· UT Bot strategy</span>
+        <button className="btn btn-ghost btn-sm" style={{ fontSize: 11 }} onClick={() => setShowConfig(v => !v)}>
+          {showConfig ? '▲ Hide Config' : '⚙️ Strategy Config'}
+        </button>
         {getNotifPerm() !== 'unsupported' && (
-          <button
-            className="btn btn-ghost btn-sm"
-            style={{ fontSize: 11 }}
+          <button className="btn btn-ghost btn-sm" style={{ fontSize: 11 }}
             onClick={async () => {
               const ok = await requestNotifPermission();
-              showToast(ok ? '🔔 Notifications enabled' : '🔕 Notifications blocked — check browser settings', ok ? 'success' : 'error');
+              showToast(ok ? '🔔 Notifications enabled' : '🔕 Blocked — check browser', ok ? 'success' : 'error');
             }}
           >
-            {getNotifPerm() === 'granted' ? '🔔 Notifications on' : '🔕 Enable notifications'}
+            {getNotifPerm() === 'granted' ? '🔔 Notifs on' : '🔕 Enable notifs'}
           </button>
         )}
       </div>
 
-      {/* Main grid: market + signals */}
+      {/* UT Bot strategy config panel */}
+      {showConfig && (
+        <div style={{ marginBottom: 18, padding: '14px 16px', borderRadius: 12, background: 'var(--surface)', border: '1px solid var(--border)' }}>
+          <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: '.04em', marginBottom: 12 }}>
+            MOERAND · UT Bot Config
+          </div>
+          <div style={{ display: 'flex', gap: 14, flexWrap: 'wrap', alignItems: 'flex-end' }}>
+            {([
+              { label: 'Key Value',   key: 'keyValue',    val: config?.keyValue    ?? 1,   min: 0.1, max: 10,  step: 0.1 },
+              { label: 'ATR Period',  key: 'atrPeriod',   val: config?.atrPeriod   ?? 8,   min: 1,   max: 50,  step: 1 },
+              { label: 'TP %',        key: 'tpPct',       val: config?.tpPct       ?? 3,   min: 0.5, max: 20,  step: 0.5 },
+              { label: 'Stop %',      key: 'hardStopPct', val: config?.hardStopPct ?? 2,   min: 0.5, max: 10,  step: 0.5 },
+              { label: 'Min Price $', key: 'priceMin',    val: config?.priceMin    ?? 1,   min: 0.5, max: 500, step: 0.5 },
+              { label: 'Max Price $', key: 'priceMax',    val: config?.priceMax    ?? 999, min: 10,  max: 5000,step: 10 },
+            ] as const).map(f => (
+              <div key={f.key}>
+                <div style={{ fontSize: 9, color: 'var(--muted)', fontWeight: 700, textTransform: 'uppercase', marginBottom: 4 }}>{f.label}</div>
+                <input type="number" className="input" style={{ width: 80, fontSize: 13, padding: '4px 8px' }}
+                  min={f.min} max={f.max} step={f.step} defaultValue={f.val}
+                  onBlur={e => saveConfig({ [f.key]: Number(e.target.value) })}
+                />
+              </div>
+            ))}
+            <div>
+              <div style={{ fontSize: 9, color: 'var(--muted)', fontWeight: 700, textTransform: 'uppercase', marginBottom: 6 }}>Heikin Ashi</div>
+              <label className="toggle" style={{ cursor: 'pointer' }}>
+                <input type="checkbox" checked={config?.useHeikinAshi ?? false} onChange={e => saveConfig({ useHeikinAshi: e.target.checked })} />
+                <div className="toggle-track" /><div className="toggle-thumb" />
+              </label>
+            </div>
+            <div>
+              <div style={{ fontSize: 9, color: 'var(--muted)', fontWeight: 700, textTransform: 'uppercase', marginBottom: 6 }}>Use Stop Loss</div>
+              <label className="toggle" style={{ cursor: 'pointer' }}>
+                <input type="checkbox" checked={config?.useSL ?? true} onChange={e => saveConfig({ useSL: e.target.checked })} />
+                <div className="toggle-track" /><div className="toggle-thumb" />
+              </label>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Main grid: market + UT Bot signals */}
       <div className="scanner-main-grid">
         <div>
-          <MarketGrid
-            quotes={quotes}
-            watchlist={watchlist}
-            scanning={isScanning}
-            candidates={cands}
-          />
+          <MarketGrid quotes={quotes} watchlist={watchlist} scanning={isScanning} candidates={cands} />
         </div>
         <div>
-          <div className="panel-title" style={{ marginBottom: 12 }}>
-            BUY Signals · {cands.length}
-          </div>
+          <div className="panel-title" style={{ marginBottom: 12 }}>UT Bot BUY Signals · {cands.length}</div>
           <SignalsPanel candidates={cands} />
         </div>
       </div>
-
-      {/* Open positions strip */}
-      <OpenPositionsStrip positions={positions.filter(p => p.status === 'OPEN')} />
     </div>
   );
 }

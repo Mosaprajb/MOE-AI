@@ -138,7 +138,7 @@ export default function SystemPage({ showToast }: Props) {
           </div>
         )}
 
-        {h.tradingMode && (
+        {(h.tradingMode as string | undefined) && (
           <div className="health-row">
             <span className={`dot ${h.tradingMode === 'LIVE' ? 'red' : 'green'}`} />
             <div style={{ flex: 1 }}>

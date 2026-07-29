@@ -75,7 +75,17 @@ export interface ScannerConfig {
   priceMax:     number;
   riskPct:      number;
   maxPositions: number;
+  // UT Bot — MOERAND Simple
+  keyValue:      number;
+  atrPeriod:     number;
+  useHeikinAshi: boolean;
+  useSL:         boolean;
 }
+
+export const DEFAULT_CONFIG: ScannerConfig = {
+  tpPct: 3, trailPct: 2, hardStopPct: 2, priceMin: 1, priceMax: 999, riskPct: 50, maxPositions: 5,
+  keyValue: 1, atrPeriod: 8, useHeikinAshi: false, useSL: true,
+};
 
 interface ScanRun {
   id:               string;
@@ -126,7 +136,13 @@ export function useScanner(mode: TradingMode) {
       if (posRes.ok)  { const d = await posRes.json();  setPositions(d.data ?? []); }
       if (histRes.ok) { const d = await histRes.json(); setHistory(d.data ?? []); }
       if (runsRes.ok) { const d = await runsRes.json(); setRuns(d.data ?? []); }
-      if (cfgRes.ok)  { setConfig(await cfgRes.json()); }
+      if (cfgRes.ok) { setConfig(await cfgRes.json()); }
+      else {
+        try {
+          const stored = localStorage.getItem('moe_config');
+          setConfig(stored ? { ...DEFAULT_CONFIG, ...JSON.parse(stored) } : DEFAULT_CONFIG);
+        } catch { setConfig(DEFAULT_CONFIG); }
+      }
       if (wlRes.ok) {
         const d = await wlRes.json();
         const syms: string[] = d.symbols ?? [];
@@ -195,19 +211,19 @@ export function useScanner(mode: TradingMode) {
   }, []);
 
   const saveConfig = useCallback(async (cfg: Partial<ScannerConfig>): Promise<{ ok: boolean; error?: string }> => {
-    try {
-      const res = await fetch(`${API_BASE}/api/scanner/config`, {
-        method: 'POST', mode: 'cors',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(cfg),
-      });
-      const data = await res.json() as { ok?: boolean; config?: ScannerConfig; error?: string };
-      if (!res.ok) return { ok: false, error: data.error ?? `HTTP ${res.status}` };
-      if (data.config) setConfig(data.config);
-      return { ok: true };
-    } catch (e) {
-      return { ok: false, error: String(e) };
-    }
+    // Update local state + localStorage immediately (no Worker needed)
+    setConfig(prev => {
+      const next = { ...(prev ?? DEFAULT_CONFIG), ...cfg };
+      try { localStorage.setItem('moe_config', JSON.stringify(next)); } catch {}
+      return next;
+    });
+    // Best-effort Worker sync
+    fetch(`${API_BASE}/api/scanner/config`, {
+      method: 'POST', mode: 'cors',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(cfg),
+    }).catch(() => {});
+    return { ok: true };
   }, []);
 
   const closePosition = useCallback(async (posId: string): Promise<{ ok: boolean; pnl?: number; error?: string }> => {
