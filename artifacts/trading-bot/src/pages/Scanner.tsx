@@ -6,20 +6,30 @@ import { useScanner } from '../hooks/useScanner';
 import { useDashboard } from '../hooks/useApi';
 import type { ScanCandidate, ScannerPosition, LiveQuote } from '../hooks/useScanner';
 
-// ── Browser notifications helper ─────────────────────────────────────────────
-async function requestNotifPermission(): Promise<boolean> {
-  if (!('Notification' in window)) return false;
-  if (Notification.permission === 'granted') return true;
-  if (Notification.permission === 'denied') return false;
-  const result = await Notification.requestPermission();
-  return result === 'granted';
+// ── Browser notifications helper (safe in iframes / restricted contexts) ──────
+function getNotifPerm(): NotificationPermission | 'unsupported' {
+  try {
+    if (typeof window === 'undefined' || !('Notification' in window)) return 'unsupported';
+    return Notification.permission;
+  } catch { return 'unsupported'; }
 }
 
-function sendNotif(title: string, body: string, icon?: string) {
-  if (Notification.permission !== 'granted') return;
+async function requestNotifPermission(): Promise<boolean> {
   try {
-    new Notification(title, { body, icon: icon ?? '/favicon.ico', silent: false });
-  } catch { /* ignore in unsupported contexts */ }
+    if (typeof window === 'undefined' || !('Notification' in window)) return false;
+    if (Notification.permission === 'granted') return true;
+    if (Notification.permission === 'denied') return false;
+    const result = await Notification.requestPermission();
+    return result === 'granted';
+  } catch { return false; }
+}
+
+function sendNotif(title: string, body: string) {
+  try {
+    if (typeof window === 'undefined' || !('Notification' in window)) return;
+    if (Notification.permission !== 'granted') return;
+    new Notification(title, { body, icon: '/favicon.ico', silent: false });
+  } catch { /* ignore security errors in iframes */ }
 }
 
 interface Props { mode: TradingMode; showToast: (m: string, t?: 'success'|'error') => void; }
@@ -636,8 +646,8 @@ export default function ScannerPage({ mode, showToast }: Props) {
         <span style={{ fontSize: 13, fontWeight: 600 }}>Auto-scan every 5 min</span>
         <span style={{ fontSize: 11, color: 'var(--muted)' }}>· Sandbox until you switch to Live</span>
 
-        {/* Notification permission indicator */}
-        {typeof Notification !== 'undefined' && (
+        {/* Notification permission indicator — uses safe helper, no direct Notification.permission in JSX */}
+        {getNotifPerm() !== 'unsupported' && (
           <button
             className="btn btn-ghost btn-sm"
             style={{ fontSize: 11 }}
@@ -646,7 +656,7 @@ export default function ScannerPage({ mode, showToast }: Props) {
               showToast(ok ? '🔔 Notifications enabled' : '🔕 Notifications blocked — check browser settings', ok ? 'success' : 'error');
             }}
           >
-            {Notification.permission === 'granted' ? '🔔 Notifications on' : '🔕 Enable notifications'}
+            {getNotifPerm() === 'granted' ? '🔔 Notifications on' : '🔕 Enable notifications'}
           </button>
         )}
       </div>

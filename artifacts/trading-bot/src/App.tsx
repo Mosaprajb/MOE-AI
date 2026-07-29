@@ -1,5 +1,6 @@
 // MOE-AI — App Shell v2 (Scanner-first)
-import { useCallback, useEffect, useState } from 'react';
+import { Component, useCallback, useEffect, useState } from 'react';
+import type { ReactNode, ErrorInfo } from 'react';
 import { API_BASE, LS_MODE } from './lib/config';
 import type { TradingMode } from './lib/config';
 import { isSessionValid, createSession, clearSession, hasPinSet, setPin, verifyPin } from './lib/auth';
@@ -10,6 +11,43 @@ import ScannerPage  from './pages/Scanner';
 import PositionsPage from './pages/Positions';
 import HistoryPage  from './pages/History';
 import SettingsPage from './pages/Settings';
+
+// ── Error Boundary — catches render crashes, shows a recoverable error card ───
+class PageErrorBoundary extends Component<
+  { children: ReactNode; page: string },
+  { error: Error | null }
+> {
+  state = { error: null };
+  static getDerivedStateFromError(error: Error) { return { error }; }
+  componentDidCatch(error: Error, info: ErrorInfo) {
+    console.error('[MOE-AI] Page crash:', error, info);
+  }
+  render() {
+    if (this.state.error) {
+      return (
+        <div style={{
+          margin: '40px auto', maxWidth: 480, padding: 28,
+          background: 'var(--surface)', border: '1px solid var(--red-bdr)',
+          borderRadius: 14, textAlign: 'center',
+        }}>
+          <div style={{ fontSize: 32, marginBottom: 12 }}>⚠️</div>
+          <div style={{ fontWeight: 800, fontSize: 16, color: 'var(--red)', marginBottom: 8 }}>
+            Page Error — {this.props.page}
+          </div>
+          <div style={{ fontSize: 12, color: 'var(--muted)', marginBottom: 20, fontFamily: 'monospace' }}>
+            {String(this.state.error).slice(0, 200)}
+          </div>
+          <button
+            className="btn btn-primary"
+            onClick={() => this.setState({ error: null })}>
+            Reload Page
+          </button>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
 
 type Page = 'scanner' | 'positions' | 'history' | 'settings';
 
@@ -284,10 +322,12 @@ export default function App() {
       <div className="layout">
         <SideNav page={page} onChange={setPage} />
         <main className="main-content">
-          {page === 'scanner'   && <ScannerPage   {...shared} />}
-          {page === 'positions' && <PositionsPage {...shared} />}
-          {page === 'history'   && <HistoryPage   {...shared} />}
-          {page === 'settings'  && <SettingsPage  {...shared} />}
+          <PageErrorBoundary page={page}>
+            {page === 'scanner'   && <ScannerPage   {...shared} />}
+            {page === 'positions' && <PositionsPage {...shared} />}
+            {page === 'history'   && <HistoryPage   {...shared} />}
+            {page === 'settings'  && <SettingsPage  {...shared} />}
+          </PageErrorBoundary>
         </main>
       </div>
       <BottomNav page={page} onChange={setPage} />
