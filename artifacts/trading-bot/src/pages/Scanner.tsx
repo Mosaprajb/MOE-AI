@@ -55,6 +55,157 @@ function useScanCountdown(scanning: boolean) {
 }
 
 // ── Stock Search ──────────────────────────────────────────────────────────────
+
+// Static list for instant local autocomplete — no network needed
+const STOCK_LIST: { symbol: string; name: string }[] = [
+  { symbol:'AAPL',  name:'Apple Inc.' },
+  { symbol:'MSFT',  name:'Microsoft Corp.' },
+  { symbol:'GOOGL', name:'Alphabet Inc.' },
+  { symbol:'AMZN',  name:'Amazon.com Inc.' },
+  { symbol:'NVDA',  name:'NVIDIA Corp.' },
+  { symbol:'META',  name:'Meta Platforms' },
+  { symbol:'TSLA',  name:'Tesla Inc.' },
+  { symbol:'BRK.B', name:'Berkshire Hathaway B' },
+  { symbol:'UNH',   name:'UnitedHealth Group' },
+  { symbol:'LLY',   name:'Eli Lilly and Co.' },
+  { symbol:'JPM',   name:'JPMorgan Chase' },
+  { symbol:'V',     name:'Visa Inc.' },
+  { symbol:'XOM',   name:'Exxon Mobil' },
+  { symbol:'AVGO',  name:'Broadcom Inc.' },
+  { symbol:'PG',    name:'Procter & Gamble' },
+  { symbol:'MA',    name:'Mastercard' },
+  { symbol:'JNJ',   name:'Johnson & Johnson' },
+  { symbol:'COST',  name:'Costco Wholesale' },
+  { symbol:'ABBV',  name:'AbbVie Inc.' },
+  { symbol:'ORCL',  name:'Oracle Corp.' },
+  { symbol:'MRK',   name:'Merck & Co.' },
+  { symbol:'CVX',   name:'Chevron Corp.' },
+  { symbol:'NFLX',  name:'Netflix Inc.' },
+  { symbol:'AMD',   name:'Advanced Micro Devices' },
+  { symbol:'CRM',   name:'Salesforce Inc.' },
+  { symbol:'WMT',   name:'Walmart Inc.' },
+  { symbol:'BAC',   name:'Bank of America' },
+  { symbol:'KO',    name:'Coca-Cola Co.' },
+  { symbol:'PEP',   name:'PepsiCo Inc.' },
+  { symbol:'ADBE',  name:'Adobe Inc.' },
+  { symbol:'TMO',   name:'Thermo Fisher Scientific' },
+  { symbol:'CSCO',  name:'Cisco Systems' },
+  { symbol:'ACN',   name:'Accenture' },
+  { symbol:'MCD',   name:'McDonald\'s Corp.' },
+  { symbol:'ABT',   name:'Abbott Laboratories' },
+  { symbol:'TXN',   name:'Texas Instruments' },
+  { symbol:'AMGN',  name:'Amgen Inc.' },
+  { symbol:'LIN',   name:'Linde PLC' },
+  { symbol:'DHR',   name:'Danaher Corp.' },
+  { symbol:'INTU',  name:'Intuit Inc.' },
+  { symbol:'QCOM',  name:'Qualcomm Inc.' },
+  { symbol:'CAT',   name:'Caterpillar Inc.' },
+  { symbol:'GILD',  name:'Gilead Sciences' },
+  { symbol:'GS',    name:'Goldman Sachs' },
+  { symbol:'BA',    name:'Boeing Co.' },
+  { symbol:'SPGI',  name:'S&P Global' },
+  { symbol:'AXP',   name:'American Express' },
+  { symbol:'UNP',   name:'Union Pacific' },
+  { symbol:'HON',   name:'Honeywell Intl.' },
+  { symbol:'SBUX',  name:'Starbucks Corp.' },
+  { symbol:'BKNG',  name:'Booking Holdings' },
+  { symbol:'MS',    name:'Morgan Stanley' },
+  { symbol:'BLK',   name:'BlackRock Inc.' },
+  { symbol:'ISRG',  name:'Intuitive Surgical' },
+  { symbol:'DE',    name:'Deere & Company' },
+  { symbol:'NOW',   name:'ServiceNow Inc.' },
+  { symbol:'GE',    name:'GE Aerospace' },
+  { symbol:'RTX',   name:'RTX Corp.' },
+  { symbol:'ADI',   name:'Analog Devices' },
+  { symbol:'VRTX',  name:'Vertex Pharmaceuticals' },
+  { symbol:'REGN',  name:'Regeneron Pharma' },
+  { symbol:'PANW',  name:'Palo Alto Networks' },
+  { symbol:'AMAT',  name:'Applied Materials' },
+  { symbol:'LRCX',  name:'Lam Research' },
+  { symbol:'MU',    name:'Micron Technology' },
+  { symbol:'KLAC',  name:'KLA Corp.' },
+  { symbol:'MELI',  name:'MercadoLibre' },
+  { symbol:'UBER',  name:'Uber Technologies' },
+  { symbol:'SNOW',  name:'Snowflake Inc.' },
+  { symbol:'COIN',  name:'Coinbase Global' },
+  { symbol:'PLTR',  name:'Palantir Technologies' },
+  { symbol:'SHOP',  name:'Shopify Inc.' },
+  { symbol:'SQ',    name:'Block Inc.' },
+  { symbol:'PYPL',  name:'PayPal Holdings' },
+  { symbol:'SPOT',  name:'Spotify Technology' },
+  { symbol:'DKNG',  name:'DraftKings Inc.' },
+  { symbol:'RBLX',  name:'Roblox Corp.' },
+  { symbol:'RIVN',  name:'Rivian Automotive' },
+  { symbol:'LCID',  name:'Lucid Group' },
+  { symbol:'NIO',   name:'NIO Inc.' },
+  { symbol:'XPEV',  name:'XPeng Inc.' },
+  { symbol:'LI',    name:'Li Auto Inc.' },
+  { symbol:'HOOD',  name:'Robinhood Markets' },
+  { symbol:'SOFI',  name:'SoFi Technologies' },
+  { symbol:'AFRM',  name:'Affirm Holdings' },
+  { symbol:'UPST',  name:'Upstart Holdings' },
+  { symbol:'OPEN',  name:'Opendoor Technologies' },
+  { symbol:'ABNB',  name:'Airbnb Inc.' },
+  { symbol:'DASH',  name:'DoorDash Inc.' },
+  { symbol:'LYFT',  name:'Lyft Inc.' },
+  { symbol:'ZM',    name:'Zoom Video Comm.' },
+  { symbol:'CRWD',  name:'CrowdStrike Holdings' },
+  { symbol:'ZS',    name:'Zscaler Inc.' },
+  { symbol:'OKTA',  name:'Okta Inc.' },
+  { symbol:'NET',   name:'Cloudflare Inc.' },
+  { symbol:'DDOG',  name:'Datadog Inc.' },
+  { symbol:'GTLB',  name:'GitLab Inc.' },
+  { symbol:'HUBS',  name:'HubSpot Inc.' },
+  { symbol:'WDAY',  name:'Workday Inc.' },
+  { symbol:'VEEV',  name:'Veeva Systems' },
+  { symbol:'TTD',   name:'The Trade Desk' },
+  { symbol:'ROKU',  name:'Roku Inc.' },
+  { symbol:'TWLO',  name:'Twilio Inc.' },
+  { symbol:'U',     name:'Unity Software' },
+  { symbol:'IONQ',  name:'IonQ Inc.' },
+  { symbol:'QUBT',  name:'Quantum Computing' },
+  { symbol:'MSTR',  name:'MicroStrategy Inc.' },
+  { symbol:'SMCI',  name:'Super Micro Computer' },
+  { symbol:'ARM',   name:'ARM Holdings' },
+  { symbol:'ASML',  name:'ASML Holding' },
+  { symbol:'TSM',   name:'Taiwan Semiconductor' },
+  { symbol:'INTC',  name:'Intel Corp.' },
+  { symbol:'WDC',   name:'Western Digital' },
+  { symbol:'STX',   name:'Seagate Technology' },
+  { symbol:'NXPI',  name:'NXP Semiconductors' },
+  { symbol:'ON',    name:'onsemi' },
+  { symbol:'MRVL',  name:'Marvell Technology' },
+  { symbol:'GFS',   name:'GlobalFoundries' },
+  { symbol:'F',     name:'Ford Motor Co.' },
+  { symbol:'GM',    name:'General Motors' },
+  { symbol:'TM',    name:'Toyota Motor' },
+  { symbol:'HMC',   name:'Honda Motor' },
+  { symbol:'STLA',  name:'Stellantis N.V.' },
+  { symbol:'SPY',   name:'SPDR S&P 500 ETF' },
+  { symbol:'QQQ',   name:'Invesco QQQ Trust' },
+  { symbol:'DIA',   name:'SPDR Dow Jones ETF' },
+  { symbol:'IWM',   name:'iShares Russell 2000' },
+  { symbol:'VTI',   name:'Vanguard Total Market' },
+  { symbol:'ARKK',  name:'ARK Innovation ETF' },
+  { symbol:'SOXS',  name:'Direxion Semi Bear 3x' },
+  { symbol:'SOXL',  name:'Direxion Semi Bull 3x' },
+  { symbol:'TQQQ',  name:'ProShares Ultra QQQ 3x' },
+  { symbol:'SQQQ',  name:'ProShares UltraPro S QQQ' },
+  { symbol:'XLF',   name:'Financial Select ETF' },
+  { symbol:'XLK',   name:'Technology Select ETF' },
+  { symbol:'XLE',   name:'Energy Select ETF' },
+  { symbol:'GLD',   name:'SPDR Gold Shares' },
+  { symbol:'SLV',   name:'iShares Silver Trust' },
+];
+
+function searchStocks(q: string): { symbol: string; name: string }[] {
+  const upper = q.toUpperCase().trim();
+  if (!upper) return [];
+  return STOCK_LIST.filter(
+    s => s.symbol.startsWith(upper) || s.name.toUpperCase().includes(upper)
+  ).slice(0, 10);
+}
+
 interface SearchResult { symbol: string; name: string; exchange: string; type: string; }
 interface QuoteDetail {
   symbol: string;
@@ -86,47 +237,17 @@ function StockSearch({
     return () => document.removeEventListener('mousedown', fn);
   }, []);
 
+  // Instant local search — no network, no CORS issues
   const search = (q: string) => {
     if (debounceRef.current) clearTimeout(debounceRef.current);
     setQuery(q);
     if (!q.trim()) { setResults([]); setOpen(false); return; }
-    debounceRef.current = setTimeout(async () => {
-      setLoadingS(true);
-      try {
-        // Try Worker first; if Worker endpoint missing (not deployed yet), fall back to Yahoo Finance directly
-        let results: SearchResult[] = [];
-        const workerRes = await fetch(
-          `${API_BASE}/api/scanner/search?q=${encodeURIComponent(q)}`,
-          { mode: 'cors' }
-        ).catch(() => null);
-
-        if (workerRes?.ok) {
-          const d = await workerRes.json() as { results?: SearchResult[] };
-          results = d.results ?? [];
-        } else {
-          // Direct Yahoo Finance fallback (works from browser, has CORS support)
-          const yfRes = await fetch(
-            `https://query1.finance.yahoo.com/v1/finance/search?q=${encodeURIComponent(q)}&quotesCount=10&newsCount=0&listsCount=0`,
-            { mode: 'cors' }
-          ).catch(() => null);
-          if (yfRes?.ok) {
-            const d = await yfRes.json() as { quotes?: Record<string, unknown>[] };
-            results = (d.quotes ?? [])
-              .filter((r) => r.quoteType === 'EQUITY' || r.quoteType === 'ETF')
-              .slice(0, 10)
-              .map((r) => ({
-                symbol:   String(r.symbol   ?? ''),
-                name:     String(r.shortname ?? r.longname ?? r.symbol ?? ''),
-                exchange: String(r.exchange  ?? r.exchDisp ?? ''),
-                type:     String(r.quoteType ?? ''),
-              }));
-          }
-        }
-        setResults(results);
-        if (results.length > 0) setOpen(true);
-      } catch { /* silent */ }
-      finally { setLoadingS(false); }
-    }, 280);
+    const hits = searchStocks(q);
+    const mapped: SearchResult[] = hits.map(h => ({
+      symbol: h.symbol, name: h.name, exchange: 'US', type: 'EQUITY',
+    }));
+    setResults(mapped);
+    setOpen(mapped.length > 0);
   };
 
   const selectSymbol = async (sym: string) => {
@@ -135,7 +256,7 @@ function StockSearch({
     setDetail(null);
     setLoadingD(true);
     try {
-      // Try Worker quote endpoint first
+      // 1️⃣ Try Worker quote endpoint (works after Worker deployment)
       const workerRes = await fetch(`${API_BASE}/api/scanner/quote/${sym}`, { mode: 'cors' }).catch(() => null);
       if (workerRes?.ok) {
         const d = await workerRes.json() as QuoteDetail;
@@ -143,27 +264,51 @@ function StockSearch({
         return;
       }
 
-      // Fallback: fetch quote directly from Yahoo Finance
+      // 2️⃣ Fallback: Yahoo Finance v8 chart (works with CORS from browsers)
       const yfRes = await fetch(
-        `https://query1.finance.yahoo.com/v7/finance/quote?symbols=${encodeURIComponent(sym)}&fields=regularMarketPrice,regularMarketChange,regularMarketChangePercent,regularMarketVolume,regularMarketDayHigh,regularMarketDayLow`,
-        { mode: 'cors' }
+        `https://query2.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(sym)}?interval=1d&range=5d&includePrePost=false`,
+        { mode: 'cors', headers: { Accept: 'application/json' } }
       ).catch(() => null);
-      if (!yfRes?.ok) { showToast(`No data for ${sym}`, 'error'); return; }
-      const yfData = await yfRes.json() as { quoteResponse?: { result?: Record<string, unknown>[] } };
-      const r = yfData.quoteResponse?.result?.[0];
-      if (!r) { showToast(`No data for ${sym}`, 'error'); return; }
-      setDetail({
-        symbol: sym,
-        quote: {
-          price:     Number(r.regularMarketPrice             ?? 0),
-          changeAmt: Number(r.regularMarketChange           ?? 0),
-          changePct: Number(r.regularMarketChangePercent     ?? 0),
-          volume:    Number(r.regularMarketVolume            ?? 0),
-          high:      Number(r.regularMarketDayHigh           ?? 0),
-          low:       Number(r.regularMarketDayLow            ?? 0),
-        },
-        scored: null, // scoring needs deployed Worker
-      });
+
+      if (yfRes?.ok) {
+        type YfChart = {
+          chart?: {
+            result?: [{
+              meta?: {
+                regularMarketPrice?: number;
+                chartPreviousClose?: number;
+                regularMarketVolume?: number;
+                regularMarketDayHigh?: number;
+                regularMarketDayLow?: number;
+              };
+            }];
+            error?: unknown;
+          };
+        };
+        const yfData = await yfRes.json() as YfChart;
+        const meta = yfData?.chart?.result?.[0]?.meta;
+        if (meta) {
+          const price     = meta.regularMarketPrice     ?? 0;
+          const prevClose = meta.chartPreviousClose     ?? price;
+          const changeAmt = price - prevClose;
+          const changePct = prevClose > 0 ? (changeAmt / prevClose) * 100 : 0;
+          setDetail({
+            symbol: sym,
+            quote: {
+              price,
+              changeAmt,
+              changePct,
+              volume:  meta.regularMarketVolume  ?? 0,
+              high:    meta.regularMarketDayHigh ?? 0,
+              low:     meta.regularMarketDayLow  ?? 0,
+            },
+            scored: null, // scoring requires deployed Worker
+          });
+          return;
+        }
+      }
+
+      showToast(`No data for ${sym}`, 'error');
     } catch { showToast(`Failed to load ${sym}`, 'error'); }
     finally { setLoadingD(false); }
   };
