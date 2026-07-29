@@ -82,10 +82,26 @@ webhook.post('/webhook', async (c) => {
   const type = ((payload.type ?? payload.orderType ?? 'MARKET') as string).toUpperCase() as 'MARKET' | 'LIMIT';
 
   // ── Smart position sizing ─────────────────────────────────────────────────
-  // If qty is explicitly provided in the alert → honour it (manual override).
-  // Otherwise calculate: qty = floor(buyingPower × RISK_PCT% ÷ price), min 1.
+  // Close semantics: action "close", or SELL with closePosition:true → sell the
+  // actual held quantity. Never opens a short; rejects if no position exists.
+  // Otherwise: explicit qty is honoured, else qty = floor(buyingPower × RISK_PCT% ÷ price).
+  const isClose = action === 'close' || (side === 'SELL' && payload.closePosition === true);
   let qty: number;
-  if (payload.qty != null) {
+  if (isClose) {
+    try {
+      const positions = await client.getPositions();
+      const pos = positions.find(p => p.symbol === symbol && p.side === 'LONG' && p.quantity > 0);
+      if (!pos) {
+        console.log(`[Webhook] ${symbol} close rejected — no open long position`);
+        return c.json({ signalId, accepted: false, reason: `No open long position in ${symbol} to close` });
+      }
+      qty = Math.floor(pos.quantity);
+      console.log(`[Webhook] close qty from position: ${qty} ${symbol}`);
+    } catch (err) {
+      console.error(`[Webhook] ${symbol} close rejected — failed to fetch positions:`, err);
+      return c.json({ signalId, accepted: false, reason: 'Failed to fetch positions to close — order not placed' });
+    }
+  } else if (payload.qty != null) {
     qty = Math.max(1, Math.round(Number(payload.qty)));
     console.log(`[Webhook] qty from alert: ${qty}`);
   } else {

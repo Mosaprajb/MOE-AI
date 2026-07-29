@@ -211,6 +211,7 @@ export interface TVWebhookPayload {
   takeProfit?: number;
   signal?:    string;
   signalId?:  string;
+  closePosition?: boolean; // SELL closes the actual held quantity (no shorting)
   session?:   string;
   submitSandbox?: boolean;
   riskPercent?: number;

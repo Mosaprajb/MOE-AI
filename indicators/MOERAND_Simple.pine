@@ -1,28 +1,18 @@
 //@version=6
-// MOERAND Simple — long-only companion for the MOE-AI Worker.
-// BUY alert opens a position, SELL alert closes it. No stop loss.
-// Simple but smart: trend + momentum + volume confirmation with a
-// one-position state machine so signals never repeat while in a trade.
+// MOERAND Simple — UT Bot style ATR trailing stop, long-only, for the MOE-AI Worker.
+// BUY alert opens a position, SELL alert closes it (the Worker sells the actual held qty).
+// No fixed stop loss — the smart ATR trailing stop decides the exit.
 indicator("MOERAND Simple", "MOERAND Simple", overlay = true)
 
 //=============================================================================
 // SETTINGS
 //=============================================================================
-string gLogic = "1. Signal Logic"
-int emaFastLen = input.int(9, "Fast EMA", minval = 3, maxval = 50, group = gLogic)
-int emaSlowLen = input.int(21, "Slow EMA", minval = 5, maxval = 200, group = gLogic)
-int trendLen = input.int(50, "Trend EMA (buy filter)", minval = 20, maxval = 400, group = gLogic)
-int rsiLen = input.int(14, "RSI Length", minval = 5, maxval = 50, group = gLogic)
-float rsiBuyMin = input.float(52, "RSI Minimum For Buy", minval = 40, maxval = 70, group = gLogic)
-float rsiExit = input.float(45, "RSI Exit Level", minval = 20, maxval = 55, group = gLogic)
-bool useVolumeFilter = input.bool(true, "Require Above-Average Volume For Buy", group = gLogic)
+string gLogic = "1. Signal Logic (UT Bot style)"
+float keyValue = input.float(1.0, "Key Value (sensitivity)", minval = 0.1, step = 0.1, group = gLogic)
+int atrPeriod = input.int(10, "ATR Period", minval = 1, group = gLogic)
+bool useHeikin = input.bool(false, "Signals From Heikin Ashi Candles", group = gLogic)
 
-string gExit = "2. Smart Exit"
-bool exitOnCross = input.bool(true, "Exit On EMA Cross Down", group = gExit)
-bool exitOnRsi = input.bool(true, "Exit On RSI Weakness", group = gExit)
-bool exitOnTrendLoss = input.bool(false, "Exit When Price Closes Below Trend EMA", group = gExit)
-
-string gHook = "3. MOE AI Webhook"
+string gHook = "2. MOE AI Webhook"
 bool enableWebhook = input.bool(true, "Enable MOE AI Webhook", group = gHook)
 string webhookSecret = input.string("", "MOE Webhook Secret", group = gHook)
 bool requestSandbox = input.bool(false, "Request Sandbox Submission", group = gHook)
@@ -40,6 +30,7 @@ f_json(string side, float price, int signalTime) =>
     msg += "\"secret\":\"" + webhookSecret + "\","
     msg += "\"symbol\":\"" + syminfo.ticker + "\","
     msg += "\"side\":\"" + side + "\","
+    msg += (side == "SELL" ? "\"closePosition\":true," : "")
     msg += "\"orderType\":\"MARKET\","
     msg += "\"price\":" + f_num(price) + ","
     msg += "\"source\":\"MOERAND_SIMPLE\","
@@ -50,28 +41,36 @@ f_json(string side, float price, int signalTime) =>
     msg
 
 //=============================================================================
-// CORE LOGIC
+// UT BOT CORE — ATR trailing stop
 //=============================================================================
-float emaFast = ta.ema(close, emaFastLen)
-float emaSlow = ta.ema(close, emaSlowLen)
-float emaTrend = ta.ema(close, trendLen)
-float rsi = ta.rsi(close, rsiLen)
-float volumeAvg = ta.sma(volume, 20)
-bool volumeOk = not useVolumeFilter or volumeAvg == 0 or volume > volumeAvg
+float xATR = ta.atr(atrPeriod)
+float nLoss = keyValue * xATR
 
-bool crossUp = ta.crossover(emaFast, emaSlow)
-bool crossDown = ta.crossunder(emaFast, emaSlow)
-bool uptrend = close > emaTrend
+float src = useHeikin ? request.security(ticker.heikinashi(syminfo.tickerid), timeframe.period, close, lookahead = barmerge.lookahead_off) : close
+
+var float trailingStop = 0.0
+float prevStop = nz(trailingStop[1], 0.0)
+trailingStop := src > prevStop and src[1] > prevStop ? math.max(prevStop, src - nLoss) :
+     src < prevStop and src[1] < prevStop ? math.min(prevStop, src + nLoss) :
+     src > prevStop ? src - nLoss : src + nLoss
+
+var int pos = 0
+pos := src[1] < prevStop and src > prevStop ? 1 :
+     src[1] > prevStop and src < prevStop ? -1 : nz(pos[1], 0)
+
+float ema1 = ta.ema(src, 1)
+bool above = ta.crossover(ema1, trailingStop)
+bool below = ta.crossover(trailingStop, ema1)
+
+bool buyRaw = src > trailingStop and above
+bool sellRaw = src < trailingStop and below
 
 // One-position state machine: BUY only when flat, SELL only when in a trade.
 var bool inPosition = false
 var float entryPrice = na
 
-bool buyCondition = crossUp and uptrend and rsi >= rsiBuyMin and volumeOk
-bool exitCondition = (exitOnCross and crossDown) or (exitOnRsi and ta.crossunder(rsi, rsiExit)) or (exitOnTrendLoss and close < emaTrend)
-
-bool buySignal = barstate.isconfirmed and buyCondition and not inPosition
-bool sellSignal = barstate.isconfirmed and exitCondition and inPosition
+bool buySignal = barstate.isconfirmed and buyRaw and not inPosition
+bool sellSignal = barstate.isconfirmed and sellRaw and inPosition
 
 if buySignal
     inPosition := true
@@ -82,11 +81,10 @@ if sellSignal
 //=============================================================================
 // VISUALS
 //=============================================================================
-plot(emaFast, "Fast EMA", color = color.new(color.aqua, 20))
-plot(emaSlow, "Slow EMA", color = color.new(color.orange, 20))
-plot(emaTrend, "Trend EMA", color = color.new(color.gray, 40), linewidth = 2)
-plotshape(buySignal, "MOERAND Simple BUY", style = shape.labelup, location = location.belowbar, color = color.new(color.green, 0), textcolor = color.white, text = "BUY", size = size.small)
-plotshape(sellSignal, "MOERAND Simple SELL", style = shape.labeldown, location = location.abovebar, color = color.new(color.red, 0), textcolor = color.white, text = "SELL", size = size.small)
+plot(trailingStop, "ATR Trailing Stop", color = pos == 1 ? color.new(color.green, 0) : pos == -1 ? color.new(color.red, 0) : color.new(color.blue, 0), linewidth = 2)
+plotshape(buySignal, "MOERAND Simple BUY", style = shape.labelup, location = location.belowbar, color = color.new(color.green, 0), textcolor = color.white, text = "BUY", size = size.tiny)
+plotshape(sellSignal, "MOERAND Simple SELL", style = shape.labeldown, location = location.abovebar, color = color.new(color.red, 0), textcolor = color.white, text = "SELL", size = size.tiny)
+barcolor(src > trailingStop ? color.new(color.green, 40) : src < trailingStop ? color.new(color.red, 40) : na)
 bgcolor(inPosition ? color.new(color.green, 94) : na)
 
 //=============================================================================
@@ -110,7 +108,7 @@ alertcondition(sellSignal, "MOERAND Simple SELL", "MOERAND Simple SELL {{ticker}
 //=============================================================================
 // INFORMATION PANEL
 //=============================================================================
-var table panel = table.new(position.top_right, 2, 5, bgcolor = color.new(color.black, 15), frame_color = color.new(color.white, 70), frame_width = 1)
+var table panel = table.new(position.top_right, 2, 4, bgcolor = color.new(color.black, 15), frame_color = color.new(color.white, 70), frame_width = 1)
 if barstate.islast and showPanel
     table.cell(panel, 0, 0, "MOERAND SIMPLE", bgcolor = color.new(color.blue, 65), text_color = color.white)
     table.cell(panel, 1, 0, syminfo.ticker, bgcolor = color.new(color.blue, 65), text_color = color.white)
@@ -118,9 +116,7 @@ if barstate.islast and showPanel
     table.cell(panel, 1, 1, inPosition ? "LONG" : "FLAT", text_color = inPosition ? color.lime : color.gray)
     table.cell(panel, 0, 2, "Entry", text_color = color.white)
     table.cell(panel, 1, 2, inPosition ? str.tostring(entryPrice, format.mintick) : "—", text_color = color.white)
-    table.cell(panel, 0, 3, "Trend", text_color = color.white)
-    table.cell(panel, 1, 3, uptrend ? "UP" : "DOWN", text_color = uptrend ? color.lime : color.red)
-    table.cell(panel, 0, 4, "RSI", text_color = color.white)
-    table.cell(panel, 1, 4, str.tostring(rsi, "#.0"), text_color = rsi >= rsiBuyMin ? color.lime : color.gray)
+    table.cell(panel, 0, 3, "Trailing Stop", text_color = color.white)
+    table.cell(panel, 1, 3, str.tostring(trailingStop, format.mintick), text_color = pos == 1 ? color.lime : color.red)
 else if barstate.islast and not showPanel
-    table.clear(panel, 0, 0, 1, 4)
+    table.clear(panel, 0, 0, 1, 3)
