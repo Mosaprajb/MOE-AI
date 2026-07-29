@@ -1,6 +1,7 @@
 // MOE-AI — Scanner Page (main product)
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import type { TradingMode } from '../lib/config';
+import { API_BASE } from '../lib/config';
 import { useScanner } from '../hooks/useScanner';
 import { useDashboard } from '../hooks/useApi';
 import type { ScanCandidate, ScannerPosition, LiveQuote } from '../hooks/useScanner';
@@ -41,6 +42,216 @@ function useScanCountdown(scanning: boolean) {
     return () => clearInterval(t);
   }, [scanning]);
   return sec;
+}
+
+// ── Stock Search ──────────────────────────────────────────────────────────────
+interface SearchResult { symbol: string; name: string; exchange: string; type: string; }
+interface QuoteDetail {
+  symbol: string;
+  quote:  { price: number; changeAmt: number; changePct: number; volume: number; high: number; low: number; };
+  scored: { score: number; confidence: string; reasons: string[]; takeProfit: number; stopLoss: number; entry: number; } | null;
+}
+
+function StockSearch({
+  onAdd, showToast,
+}: {
+  onAdd: (sym: string) => void;
+  showToast: (m: string, t?: 'success'|'error') => void;
+}) {
+  const [query,    setQuery]    = useState('');
+  const [results,  setResults]  = useState<SearchResult[]>([]);
+  const [detail,   setDetail]   = useState<QuoteDetail | null>(null);
+  const [open,     setOpen]     = useState(false);
+  const [loadingS, setLoadingS] = useState(false);
+  const [loadingD, setLoadingD] = useState(false);
+  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const wrapRef     = useRef<HTMLDivElement>(null);
+
+  // Close on outside click
+  useEffect(() => {
+    const fn = (e: MouseEvent) => {
+      if (wrapRef.current && !wrapRef.current.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener('mousedown', fn);
+    return () => document.removeEventListener('mousedown', fn);
+  }, []);
+
+  const search = (q: string) => {
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+    setQuery(q);
+    if (!q.trim()) { setResults([]); setOpen(false); return; }
+    debounceRef.current = setTimeout(async () => {
+      setLoadingS(true);
+      try {
+        const res = await fetch(`${API_BASE}/api/scanner/search?q=${encodeURIComponent(q)}`, { mode: 'cors' });
+        const d   = await res.json() as { results?: SearchResult[] };
+        setResults(d.results ?? []);
+        setOpen(true);
+      } catch { /* silent */ }
+      finally { setLoadingS(false); }
+    }, 280);
+  };
+
+  const selectSymbol = async (sym: string) => {
+    setOpen(false);
+    setQuery(sym);
+    setDetail(null);
+    setLoadingD(true);
+    try {
+      const res = await fetch(`${API_BASE}/api/scanner/quote/${sym}`, { mode: 'cors' });
+      if (!res.ok) { showToast(`No data for ${sym}`, 'error'); return; }
+      const d = await res.json() as QuoteDetail;
+      setDetail(d);
+    } catch { showToast(`Failed to load ${sym}`, 'error'); }
+    finally { setLoadingD(false); }
+  };
+
+  const pnlClr = (n: number) => n >= 0 ? 'var(--green)' : 'var(--red)';
+  const fmt    = (n?: number) => n != null ? `$${n.toFixed(2)}` : '—';
+  const fmtK   = (n: number) => n >= 1e6 ? `${(n/1e6).toFixed(1)}M` : n >= 1e3 ? `${(n/1e3).toFixed(0)}K` : String(n);
+
+  return (
+    <div ref={wrapRef} style={{ marginBottom: 14, position: 'relative' }}>
+      {/* Search input */}
+      <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+        <div style={{ position: 'relative', flex: 1, maxWidth: 440 }}>
+          <span style={{
+            position: 'absolute', left: 11, top: '50%', transform: 'translateY(-50%)',
+            fontSize: 16, pointerEvents: 'none', color: 'var(--muted)',
+          }}>🔍</span>
+          <input
+            className="input"
+            style={{ paddingLeft: 34, fontSize: 14 }}
+            placeholder="Search any stock — TSLA, AAPL, NVDA…"
+            value={query}
+            onChange={e => search(e.target.value)}
+            onFocus={() => results.length > 0 && setOpen(true)}
+          />
+          {loadingS && (
+            <span style={{
+              position: 'absolute', right: 10, top: '50%', transform: 'translateY(-50%)',
+            }}><span className="spinner" style={{ width: 14, height: 14 }} /></span>
+          )}
+        </div>
+        {query && (
+          <button className="btn btn-ghost btn-sm" onClick={() => { setQuery(''); setResults([]); setDetail(null); setOpen(false); }}>
+            Clear
+          </button>
+        )}
+      </div>
+
+      {/* Dropdown results */}
+      {open && results.length > 0 && (
+        <div style={{
+          position: 'absolute', top: '100%', left: 0, right: 0, maxWidth: 440,
+          background: 'var(--surface)', border: '1px solid var(--border)',
+          borderRadius: 10, marginTop: 4, zIndex: 200,
+          boxShadow: '0 12px 40px rgba(0,0,0,.5)', overflow: 'hidden',
+        }}>
+          {results.map(r => (
+            <div key={r.symbol}
+              style={{
+                display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                padding: '10px 14px', cursor: 'pointer', borderBottom: '1px solid var(--border)',
+                transition: 'background .12s',
+              }}
+              onMouseEnter={e => (e.currentTarget.style.background = 'var(--surface-2)')}
+              onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}
+              onClick={() => selectSymbol(r.symbol)}
+            >
+              <div>
+                <span style={{ fontWeight: 800, fontSize: 14 }}>{r.symbol}</span>
+                <span style={{ marginLeft: 8, color: 'var(--muted)', fontSize: 12 }}>{r.name}</span>
+              </div>
+              <span style={{ fontSize: 10, color: 'var(--dim)', marginLeft: 8, flexShrink: 0 }}>{r.exchange}</span>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Detail card */}
+      {loadingD && (
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: 10, color: 'var(--muted)', fontSize: 13 }}>
+          <span className="spinner" /> Loading data…
+        </div>
+      )}
+      {detail && !loadingD && (
+        <div style={{
+          marginTop: 10, padding: '14px 16px', borderRadius: 12,
+          background: 'var(--surface)', border: '1px solid var(--border)',
+          display: 'flex', flexWrap: 'wrap', gap: 16, alignItems: 'flex-start',
+        }}>
+          {/* Symbol + price */}
+          <div style={{ minWidth: 160 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 4 }}>
+              <span style={{ fontSize: 20, fontWeight: 900 }}>{detail.symbol}</span>
+              {detail.scored && (
+                <span className={`signal-pill ${detail.scored.confidence === 'HIGH' ? 'signal-high' : detail.scored.confidence === 'MEDIUM' ? 'signal-med' : 'badge-muted badge'}`}>
+                  {detail.scored.confidence === 'NONE' ? 'WAIT' : detail.scored.confidence}
+                </span>
+              )}
+            </div>
+            <div style={{ fontSize: 24, fontWeight: 900 }}>{fmt(detail.quote.price)}</div>
+            <div style={{ fontSize: 13, color: pnlClr(detail.quote.changeAmt), fontWeight: 700 }}>
+              {detail.quote.changeAmt >= 0 ? '+' : ''}{detail.quote.changeAmt.toFixed(2)} ({detail.quote.changePct >= 0 ? '+' : ''}{detail.quote.changePct.toFixed(2)}%)
+            </div>
+            <div style={{ fontSize: 11, color: 'var(--muted)', marginTop: 4 }}>
+              Vol {fmtK(detail.quote.volume)} · H {fmt(detail.quote.high)} · L {fmt(detail.quote.low)}
+            </div>
+          </div>
+
+          {/* Score + levels */}
+          {detail.scored && detail.scored.confidence !== 'NONE' && (
+            <div style={{ flex: 1, minWidth: 200 }}>
+              <div style={{ display: 'flex', gap: 14, marginBottom: 8 }}>
+                <div>
+                  <div style={{ fontSize: 10, color: 'var(--muted)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.04em' }}>Score</div>
+                  <div style={{ fontSize: 22, fontWeight: 900, color: 'var(--cyan)' }}>{detail.scored.score}/10</div>
+                </div>
+                <div>
+                  <div style={{ fontSize: 10, color: 'var(--muted)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.04em' }}>Entry</div>
+                  <div style={{ fontWeight: 700 }}>{fmt(detail.scored.entry)}</div>
+                </div>
+                <div>
+                  <div style={{ fontSize: 10, color: 'var(--muted)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.04em' }}>TP</div>
+                  <div style={{ fontWeight: 700, color: 'var(--green)' }}>{fmt(detail.scored.takeProfit)}</div>
+                </div>
+                <div>
+                  <div style={{ fontSize: 10, color: 'var(--muted)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.04em' }}>SL</div>
+                  <div style={{ fontWeight: 700, color: 'var(--red)' }}>{fmt(detail.scored.stopLoss)}</div>
+                </div>
+              </div>
+              {detail.scored.reasons.length > 0 && (
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
+                  {detail.scored.reasons.slice(0, 4).map((r, i) => (
+                    <span key={i} className="reason-tag">{r}</span>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+          {detail.scored && detail.scored.confidence === 'NONE' && (
+            <div style={{ color: 'var(--muted)', fontSize: 13, padding: '4px 0' }}>
+              No setup detected — conditions not aligned for a BUY signal.
+            </div>
+          )}
+
+          {/* Actions */}
+          <div style={{ display: 'flex', gap: 8, alignSelf: 'center', flexShrink: 0 }}>
+            <button className="btn btn-primary btn-sm" onClick={() => {
+              onAdd(detail.symbol);
+              showToast(`${detail.symbol} added to watchlist`, 'success');
+            }}>
+              + Add to Watchlist
+            </button>
+            <button className="btn btn-ghost btn-sm" onClick={() => { setDetail(null); setQuery(''); }}>
+              ✕
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
 }
 
 // ── Account Bar ───────────────────────────────────────────────────────────────
@@ -349,44 +560,53 @@ export default function ScannerPage({ mode, showToast }: Props) {
   // Extract candidates from lastResult
   const cands: ScanCandidate[] = lastResult?.candidates ?? [];
 
-  const handleScan = useCallback(async () => {
+  // Use a stable ref so the auto-scan interval never re-registers on re-renders
+  const handleScanRef = useRef<() => Promise<void>>(async () => {});
+
+  const handleScan = async () => {
     _lastScanAt = Date.now();
     const result = await runScan();
     if (result) {
       const cnt  = result.candidates.length;
       const high = result.candidates.filter(c => c.confidence === 'HIGH').length;
-      const msg  = cnt > 0
-        ? `✓ Scan done — ${cnt} signal${cnt !== 1 ? 's' : ''} found`
-        : '✓ Scan done — no signals';
-      showToast(msg, cnt > 0 ? 'success' : undefined);
-
-      // Browser notification for BUY signals
+      showToast(
+        cnt > 0 ? `✓ Scan done — ${cnt} signal${cnt !== 1 ? 's' : ''} found` : '✓ Scan done — no signals',
+        cnt > 0 ? 'success' : undefined,
+      );
       if (cnt > 0) {
         const symbols = result.candidates.slice(0, 3).map(c => c.symbol).join(', ');
         sendNotif(
           `MOE-AI · ${cnt} BUY Signal${cnt !== 1 ? 's' : ''}`,
-          `${high > 0 ? `${high} HIGH confidence — ` : ''}${symbols}${cnt > 3 ? ` +${cnt - 3} more` : ''}`,
+          `${high > 0 ? `${high} HIGH — ` : ''}${symbols}${cnt > 3 ? ` +${cnt - 3} more` : ''}`,
         );
       }
     }
     await loadQuotes();
-  }, [runScan, loadQuotes, showToast]);
+  };
+  handleScanRef.current = handleScan;
 
-  // Auto-scan every 5 min when enabled
+  // Auto-scan effect only re-runs when autoScan toggles, not on every render
   useEffect(() => {
     if (autoScan) {
-      handleScan();
-      autoRef.current = setInterval(handleScan, SCAN_INTERVAL);
+      handleScanRef.current();
+      autoRef.current = setInterval(() => handleScanRef.current(), SCAN_INTERVAL);
     } else {
       if (autoRef.current) clearInterval(autoRef.current);
     }
     return () => { if (autoRef.current) clearInterval(autoRef.current); };
-  }, [autoScan, handleScan]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [autoScan]);
 
   return (
     <div>
       {/* Account metrics strip */}
       <AccountBar mode={mode} />
+
+      {/* Stock search */}
+      <StockSearch
+        onAdd={sym => updateWatchlist(sym, 'add')}
+        showToast={showToast}
+      />
 
       {/* Controls: run scan + watchlist */}
       <ScannerControls

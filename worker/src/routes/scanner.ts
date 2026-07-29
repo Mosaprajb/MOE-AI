@@ -315,6 +315,49 @@ scanner.post('/positions/:id/close', async (c) => {
   return c.json({ ok: true, symbol: sym, exitPrice, pnl, webullOrderId });
 });
 
+/** GET /api/scanner/search?q=AAPL — Yahoo Finance symbol autocomplete */
+scanner.get('/search', async (c) => {
+  const q = (c.req.query('q') ?? '').trim();
+  if (!q || q.length < 1) return c.json({ results: [] });
+  try {
+    const url = `https://query1.finance.yahoo.com/v1/finance/search?q=${encodeURIComponent(q)}&quotesCount=12&newsCount=0&listsCount=0&lang=en-US`;
+    const res = await fetch(url, { headers: { 'User-Agent': 'Mozilla/5.0' }, cf: { cacheTtl: 30 } } as RequestInit);
+    if (!res.ok) throw new Error(`YF search HTTP ${res.status}`);
+    const data = await res.json() as { quotes?: Record<string, unknown>[] };
+    const results = (data.quotes ?? [])
+      .filter(r => r.quoteType === 'EQUITY' || r.quoteType === 'ETF')
+      .slice(0, 10)
+      .map(r => ({
+        symbol:   String(r.symbol   ?? ''),
+        name:     String(r.shortname ?? r.longname ?? r.symbol ?? ''),
+        exchange: String(r.exchange  ?? r.exchDisp ?? ''),
+        type:     String(r.quoteType ?? ''),
+      }));
+    return c.json({ results });
+  } catch (e) {
+    return c.json({ results: [], error: String(e) });
+  }
+});
+
+/** GET /api/scanner/quote/:symbol — live quote + strategy score for any symbol */
+scanner.get('/quote/:symbol', async (c) => {
+  const sym = c.req.param('symbol').toUpperCase().trim();
+  if (!sym) return c.json({ error: 'Missing symbol' }, 400);
+  const cfg = await getScannerConfig(c.env);
+  try {
+    const [quoteRes, scoreRes] = await Promise.allSettled([
+      fetchLivePrices([sym]).then(q => q[0]),
+      fetchCandles(sym, 30).then(candles => scoreStock(sym, candles, cfg)),
+    ]);
+    const quote = quoteRes.status === 'fulfilled' ? quoteRes.value : null;
+    const scored = scoreRes.status === 'fulfilled' ? scoreRes.value : null;
+    if (!quote) return c.json({ error: `No quote data for ${sym}` }, 404);
+    return c.json({ symbol: sym, quote, scored, fetchedAt: new Date().toISOString() });
+  } catch (e) {
+    return c.json({ error: String(e) }, 500);
+  }
+});
+
 /** GET /api/scanner/watchlist */
 scanner.get('/watchlist', async (c) => {
   await ensureWatchlistTable(c.env);
