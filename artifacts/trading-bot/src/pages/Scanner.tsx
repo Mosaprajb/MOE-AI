@@ -93,10 +93,37 @@ function StockSearch({
     debounceRef.current = setTimeout(async () => {
       setLoadingS(true);
       try {
-        const res = await fetch(`${API_BASE}/api/scanner/search?q=${encodeURIComponent(q)}`, { mode: 'cors' });
-        const d   = await res.json() as { results?: SearchResult[] };
-        setResults(d.results ?? []);
-        setOpen(true);
+        // Try Worker first; if Worker endpoint missing (not deployed yet), fall back to Yahoo Finance directly
+        let results: SearchResult[] = [];
+        const workerRes = await fetch(
+          `${API_BASE}/api/scanner/search?q=${encodeURIComponent(q)}`,
+          { mode: 'cors' }
+        ).catch(() => null);
+
+        if (workerRes?.ok) {
+          const d = await workerRes.json() as { results?: SearchResult[] };
+          results = d.results ?? [];
+        } else {
+          // Direct Yahoo Finance fallback (works from browser, has CORS support)
+          const yfRes = await fetch(
+            `https://query1.finance.yahoo.com/v1/finance/search?q=${encodeURIComponent(q)}&quotesCount=10&newsCount=0&listsCount=0`,
+            { mode: 'cors' }
+          ).catch(() => null);
+          if (yfRes?.ok) {
+            const d = await yfRes.json() as { quotes?: Record<string, unknown>[] };
+            results = (d.quotes ?? [])
+              .filter((r) => r.quoteType === 'EQUITY' || r.quoteType === 'ETF')
+              .slice(0, 10)
+              .map((r) => ({
+                symbol:   String(r.symbol   ?? ''),
+                name:     String(r.shortname ?? r.longname ?? r.symbol ?? ''),
+                exchange: String(r.exchange  ?? r.exchDisp ?? ''),
+                type:     String(r.quoteType ?? ''),
+              }));
+          }
+        }
+        setResults(results);
+        if (results.length > 0) setOpen(true);
       } catch { /* silent */ }
       finally { setLoadingS(false); }
     }, 280);
@@ -108,10 +135,35 @@ function StockSearch({
     setDetail(null);
     setLoadingD(true);
     try {
-      const res = await fetch(`${API_BASE}/api/scanner/quote/${sym}`, { mode: 'cors' });
-      if (!res.ok) { showToast(`No data for ${sym}`, 'error'); return; }
-      const d = await res.json() as QuoteDetail;
-      setDetail(d);
+      // Try Worker quote endpoint first
+      const workerRes = await fetch(`${API_BASE}/api/scanner/quote/${sym}`, { mode: 'cors' }).catch(() => null);
+      if (workerRes?.ok) {
+        const d = await workerRes.json() as QuoteDetail;
+        setDetail(d);
+        return;
+      }
+
+      // Fallback: fetch quote directly from Yahoo Finance
+      const yfRes = await fetch(
+        `https://query1.finance.yahoo.com/v7/finance/quote?symbols=${encodeURIComponent(sym)}&fields=regularMarketPrice,regularMarketChange,regularMarketChangePercent,regularMarketVolume,regularMarketDayHigh,regularMarketDayLow`,
+        { mode: 'cors' }
+      ).catch(() => null);
+      if (!yfRes?.ok) { showToast(`No data for ${sym}`, 'error'); return; }
+      const yfData = await yfRes.json() as { quoteResponse?: { result?: Record<string, unknown>[] } };
+      const r = yfData.quoteResponse?.result?.[0];
+      if (!r) { showToast(`No data for ${sym}`, 'error'); return; }
+      setDetail({
+        symbol: sym,
+        quote: {
+          price:     Number(r.regularMarketPrice             ?? 0),
+          changeAmt: Number(r.regularMarketChange           ?? 0),
+          changePct: Number(r.regularMarketChangePercent     ?? 0),
+          volume:    Number(r.regularMarketVolume            ?? 0),
+          high:      Number(r.regularMarketDayHigh           ?? 0),
+          low:       Number(r.regularMarketDayLow            ?? 0),
+        },
+        scored: null, // scoring needs deployed Worker
+      });
     } catch { showToast(`Failed to load ${sym}`, 'error'); }
     finally { setLoadingD(false); }
   };
