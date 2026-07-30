@@ -12,7 +12,6 @@ import { getTradingSettings } from './trading-settings';
 
 const scanner = new Hono<{ Bindings: Env }>();
 
-// ── Scanner config (KV-backed, falls back to env vars) ─────────────────────────
 const SCANNER_CFG_KEY = 'scanner:config';
 
 function getScannerConfigDefaults(env: Env): ScannerConfig {
@@ -45,7 +44,6 @@ async function getScannerConfig(env: Env): Promise<ScannerConfig> {
   } catch { return defaults; }
 }
 
-// ── Core scan cycle (called by cron + manual trigger) ─────────────────────────
 export async function runScanCycle(env: Env): Promise<{
   mode: string; scanned: number; candidates: ScanCandidate[];
   ordersPlaced: number; positionsManaged: number; errors: string[]; ms: number;
@@ -59,7 +57,6 @@ export async function runScanCycle(env: Env): Promise<{
   await ensureWatchlistTable(env);
   await ensureScannerTables(env);
 
-  // 1. Manage existing positions (update trailing SL, execute exits)
   const managed = await managePositions(env, mode);
   errors.push(...managed.errors);
 
@@ -68,12 +65,10 @@ export async function runScanCycle(env: Env): Promise<{
              positionsManaged: managed.managed, errors: ['Kill switch engaged'], ms: Date.now() - start };
   }
 
-  // 2. Load watchlist and fetch batch quotes (filter by price range)
   const watchlist = await loadWatchlist(env, mode);
   const inRange   = await fetchBatchQuotes(watchlist, cfg.priceMin, cfg.priceMax);
   const symbols   = inRange.map(q => q.symbol);
 
-  // 3. Score each stock — all in parallel (Cloudflare handles concurrent fetches well)
   const candidates: ScanCandidate[] = [];
   const scored = await Promise.allSettled(
     symbols.map(async (sym) => {
@@ -89,10 +84,8 @@ export async function runScanCycle(env: Env): Promise<{
     }
   }
 
-  // Sort by score desc
   candidates.sort((a, b) => b.score - a.score);
 
-  // 4. Place orders for top candidates (not already in a position)
   let ordersPlaced = 0;
   const client    = WebullClient.fromEnv(env, mode);
   const openPos   = await loadOpenPositions(env, mode);
@@ -100,12 +93,11 @@ export async function runScanCycle(env: Env): Promise<{
 
   for (const cand of candidates) {
     if (openPos.length + ordersPlaced >= cfg.maxPositions) break;
-    if (openSyms.has(cand.symbol)) continue; // already in position
+    if (openSyms.has(cand.symbol)) continue;
 
     if (!client) { errors.push('Webull credentials not configured'); break; }
 
     try {
-      // Calculate qty based on confidence + risk %
       const acct       = await client.getAccount();
       const tradeSettings = await getTradingSettings(env);
       const cashBudget = acct.cash * (tradeSettings.maxCashPct / 100);
@@ -125,8 +117,12 @@ export async function runScanCycle(env: Env): Promise<{
       const qty        = Math.max(1, Math.floor((cappedBudget * multiplier) / cand.price));
 
       const result = await client.placeOrder({
-        symbol: cand.symbol, side: 'BUY', type: 'MARKET',
-        qty, idempotencyKey: `scanner-${cand.symbol}-${Date.now()}`,
+        symbol: cand.symbol,
+        side: 'BUY',
+        type: 'MARKET',
+        qty,
+        price: cand.entry,
+        idempotencyKey: `scanner-${cand.symbol}-${Date.now()}`,
       });
 
       await savePosition(env, {
@@ -153,7 +149,6 @@ export async function runScanCycle(env: Env): Promise<{
     } catch (e) { errors.push(`Order ${cand.symbol}: ${String(e).slice(0, 100)}`); }
   }
 
-  // 5. Log scan run
   try {
     await env.DB?.prepare(`
       INSERT INTO scanner_runs (id, mode, scanned_count, candidates_count, orders_placed, positions_managed, errors, duration_ms, ran_at)
@@ -169,15 +164,11 @@ export async function runScanCycle(env: Env): Promise<{
            ordersPlaced, positionsManaged: managed.managed, errors, ms: Date.now() - start };
 }
 
-// ── API Routes ─────────────────────────────────────────────────────────────────
-
-/** POST /api/scanner/run — manual scan trigger */
 scanner.post('/run', async (c) => {
   const result = await runScanCycle(c.env);
   return c.json(result);
 });
 
-/** GET /api/scanner/positions — active scanner positions */
 scanner.get('/positions', async (c) => {
   const mode = (await getTradingMode(c.env)) as TradingMode;
   await ensureScannerTables(c.env);
@@ -185,7 +176,6 @@ scanner.get('/positions', async (c) => {
   return c.json({ data: positions, count: positions.length });
 });
 
-/** GET /api/scanner/history — closed scanner positions */
 scanner.get('/history', async (c) => {
   const limit = Math.min(Number(c.req.query('limit') ?? 50), 200);
   await ensureScannerTables(c.env);
@@ -197,7 +187,6 @@ scanner.get('/history', async (c) => {
   } catch { return c.json({ data: [] }); }
 });
 
-/** GET /api/scanner/runs — recent scan logs */
 scanner.get('/runs', async (c) => {
   const limit = Math.min(Number(c.req.query('limit') ?? 20), 100);
   await ensureScannerTables(c.env);
@@ -209,7 +198,6 @@ scanner.get('/runs', async (c) => {
   } catch { return c.json({ data: [] }); }
 });
 
-/** GET /api/scanner/quotes — live prices for entire watchlist (one batch request) */
 scanner.get('/quotes', async (c) => {
   await ensureWatchlistTable(c.env);
   const mode    = (await getTradingMode(c.env)) as TradingMode;
@@ -222,10 +210,8 @@ scanner.get('/quotes', async (c) => {
   }
 });
 
-/** GET /api/scanner/config */
 scanner.get('/config', async (c) => c.json(await getScannerConfig(c.env)));
 
-/** POST /api/scanner/config — save strategy params to KV */
 scanner.post('/config', async (c) => {
   if (!c.env.CONFIG) return c.json({ error: 'CONFIG KV not bound' }, 503);
   const body = await c.req.json<Partial<ScannerConfig>>();
@@ -247,13 +233,11 @@ function clamp(v: number, min: number, max: number) {
   return Math.min(max, Math.max(min, isFinite(v) ? v : min));
 }
 
-/** POST /api/scanner/positions/:id/close — manual close */
 scanner.post('/positions/:id/close', async (c) => {
   const posId = c.req.param('id');
   const mode  = (await getTradingMode(c.env)) as TradingMode;
   await ensureScannerTables(c.env);
 
-  // Load the position
   const row = await c.env.DB?.prepare(
     `SELECT * FROM scanner_positions WHERE id = ? AND status = 'OPEN'`
   ).bind(posId).first<Record<string, unknown>>();
@@ -264,7 +248,6 @@ scanner.post('/positions/:id/close', async (c) => {
   const qty = Number(row.quantity);
   const entryPrice = Number(row.entry_price);
 
-  // Fetch current price
   let exitPrice = Number(row.current_price ?? row.entry_price);
   try {
     const { fetchQuote } = await import('../lib/market-data');
@@ -272,13 +255,16 @@ scanner.post('/positions/:id/close', async (c) => {
     exitPrice = q.price;
   } catch { /* use stored price */ }
 
-  // Place SELL MARKET order
   const client = WebullClient.fromEnv(c.env, mode);
   let webullOrderId: string | undefined;
   if (client) {
     try {
       const r = await client.placeOrder({
-        symbol: sym, side: 'SELL', type: 'MARKET', qty,
+        symbol: sym,
+        side: 'SELL',
+        type: 'MARKET',
+        qty,
+        price: exitPrice,
         idempotencyKey: `manual-close-${posId}-${Date.now()}`,
       });
       webullOrderId = r.orderId;
@@ -298,7 +284,6 @@ scanner.post('/positions/:id/close', async (c) => {
     WHERE id = ?
   `).bind(exitPrice, pnl, exitPrice, now, now, posId).run();
 
-  // Write to unified trades table
   await c.env.DB?.prepare(`
     INSERT OR IGNORE INTO trades
       (id, symbol, side, quantity, entry_price, exit_price, pnl, pnl_pct,
@@ -315,7 +300,6 @@ scanner.post('/positions/:id/close', async (c) => {
   return c.json({ ok: true, symbol: sym, exitPrice, pnl, webullOrderId });
 });
 
-/** GET /api/scanner/search?q=AAPL — Yahoo Finance symbol autocomplete */
 scanner.get('/search', async (c) => {
   const q = (c.req.query('q') ?? '').trim();
   if (!q || q.length < 1) return c.json({ results: [] });
@@ -339,7 +323,6 @@ scanner.get('/search', async (c) => {
   }
 });
 
-/** GET /api/scanner/quote/:symbol — live quote + strategy score for any symbol */
 scanner.get('/quote/:symbol', async (c) => {
   const sym = c.req.param('symbol').toUpperCase().trim();
   if (!sym) return c.json({ error: 'Missing symbol' }, 400);
@@ -358,7 +341,6 @@ scanner.get('/quote/:symbol', async (c) => {
   }
 });
 
-/** GET /api/scanner/watchlist */
 scanner.get('/watchlist', async (c) => {
   await ensureWatchlistTable(c.env);
   const mode     = (await getTradingMode(c.env)) as TradingMode;
@@ -366,7 +348,6 @@ scanner.get('/watchlist', async (c) => {
   return c.json({ symbols, count: symbols.length, isDefault: symbols === DEFAULT_WATCHLIST });
 });
 
-/** POST /api/scanner/watchlist — { symbol, action: 'add'|'remove' } */
 scanner.post('/watchlist', async (c) => {
   const { symbol, action } = await c.req.json<{ symbol: string; action: 'add' | 'remove' }>();
   const mode = (await getTradingMode(c.env)) as TradingMode;
