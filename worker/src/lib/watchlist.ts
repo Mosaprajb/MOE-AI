@@ -58,9 +58,13 @@ export async function removeFromWatchlist(env: Env, symbol: string, mode: string
   ).bind(symbol.toUpperCase(), mode).run();
 }
 
-/** Ensure the watchlist table exists */
+/** Ensure the watchlist table exists. Migrations remain the schema source of truth. */
 export async function ensureWatchlistTable(env: Env): Promise<void> {
-  await env.DB?.exec(`
+  if (!env.DB) return;
+
+  // D1Database.exec() treats newline-delimited SQL as separate statements. Using
+  // prepare().run() keeps this multiline CREATE TABLE statement intact.
+  await env.DB.prepare(`
     CREATE TABLE IF NOT EXISTS watchlist (
       symbol     TEXT NOT NULL,
       mode       TEXT NOT NULL,
@@ -68,5 +72,5 @@ export async function ensureWatchlistTable(env: Env): Promise<void> {
       added_at   TEXT NOT NULL,
       PRIMARY KEY (symbol, mode)
     )
-  `);
+  `).run();
 }
