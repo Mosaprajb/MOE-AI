@@ -5,6 +5,30 @@ const WEBULL_BASE_SANDBOX = 'https://api.sandbox.webull.com';
 const WEBULL_BASE_LIVE = 'https://api.webull.com';
 const encoder = new TextEncoder();
 
+type WebullTradingSession = 'CORE' | 'ALL' | 'NIGHT';
+
+function getUsTradingSession(date = new Date()): WebullTradingSession {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'America/New_York',
+    hour: '2-digit',
+    minute: '2-digit',
+    hourCycle: 'h23',
+  }).formatToParts(date);
+  const hour = Number(parts.find(part => part.type === 'hour')?.value ?? 0);
+  const minute = Number(parts.find(part => part.type === 'minute')?.value ?? 0);
+  const minutes = hour * 60 + minute;
+
+  if (minutes >= 9 * 60 + 30 && minutes < 16 * 60) return 'CORE';
+  if ((minutes >= 4 * 60 && minutes < 9 * 60 + 30) || (minutes >= 16 * 60 && minutes < 20 * 60)) return 'ALL';
+  return 'NIGHT';
+}
+
+function limitPriceWithSlippage(entry: number, side: OrderSide): number {
+  const adjusted = side === 'BUY' ? entry * 1.001 : entry * 0.999;
+  const decimals = adjusted >= 1 ? 2 : 4;
+  return Number(adjusted.toFixed(decimals));
+}
+
 function toBase64(buffer: ArrayBuffer): string {
   const bytes = new Uint8Array(buffer);
   let binary = '';
@@ -116,7 +140,6 @@ async function createSignature(params: {
 
   for (const [key, value] of query.entries()) values[key] = value;
 
-  // Webull requires ascending parameter-name order. Avoid locale-sensitive sorting.
   const str1 = Object.keys(values)
     .sort()
     .map(key => `${key}=${values[key]}`)
@@ -188,7 +211,6 @@ export class WebullClient {
       if (value != null && value !== '') url.searchParams.set(key, String(value));
     }
 
-    // The exact same compact JSON string is hashed and sent.
     const bodyText = body != null ? JSON.stringify(body) : '';
     const timestamp = compactUtcTimestamp();
     const nonce = crypto.randomUUID().replaceAll('-', '');
@@ -358,20 +380,30 @@ export class WebullClient {
   }
 
   async placeOrder(params: { symbol: string; side: OrderSide; type: OrderType; qty: number; price?: number; stop?: number; idempotencyKey: string }): Promise<{ orderId: string; status: string }> {
+    const tradingSession = getUsTradingSession();
+    const orderType: OrderType = tradingSession === 'CORE' ? 'MARKET' : 'LIMIT';
+
+    if (orderType === 'LIMIT' && (params.price == null || !Number.isFinite(params.price) || params.price <= 0)) {
+      throw new Error(`A valid entry price is required for ${tradingSession} session limit orders.`);
+    }
+
     const order: Record<string, unknown> = {
       client_order_id: params.idempotencyKey.slice(0, 32),
       combo_type: 'NORMAL',
       symbol: params.symbol,
       side: params.side,
-      order_type: params.type,
+      order_type: orderType,
       quantity: String(params.qty),
       instrument_type: 'EQUITY',
       entrust_type: 'QTY',
       time_in_force: 'DAY',
       market: 'US',
-      support_trading_session: 'CORE',
+      support_trading_session: tradingSession,
     };
-    if (params.price != null) order.limit_price = String(params.price);
+
+    if (orderType === 'LIMIT') {
+      order.limit_price = String(limitPriceWithSlippage(params.price as number, params.side));
+    }
     if (params.stop != null) order.stop_price = String(params.stop);
     return this.submitOrder(order);
   }
