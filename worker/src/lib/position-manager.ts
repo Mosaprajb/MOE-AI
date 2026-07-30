@@ -7,60 +7,72 @@ import { fetchQuote } from './market-data';
 
 /** Ensure scanner_positions, scanner_runs, and trades tables exist */
 export async function ensureScannerTables(env: Env): Promise<void> {
-  await env.DB?.exec(`
-    CREATE TABLE IF NOT EXISTS scanner_positions (
-      id             TEXT PRIMARY KEY,
-      symbol         TEXT NOT NULL,
-      quantity       INTEGER NOT NULL,
-      entry_price    REAL NOT NULL,
-      current_price  REAL,
-      highest_price  REAL NOT NULL,
-      stop_loss      REAL NOT NULL,
-      take_profit    REAL NOT NULL,
-      hard_stop      REAL NOT NULL,
-      trail_pct      REAL NOT NULL,
-      tp_pct         REAL NOT NULL,
-      confidence     TEXT NOT NULL,
-      score          INTEGER NOT NULL,
-      webull_order_id TEXT,
-      status         TEXT DEFAULT 'OPEN',
-      mode           TEXT NOT NULL,
-      opened_at      TEXT NOT NULL,
-      updated_at     TEXT NOT NULL,
-      closed_at      TEXT,
-      exit_price     REAL,
-      pnl            REAL,
-      close_reason   TEXT
-    );
-    CREATE TABLE IF NOT EXISTS scanner_runs (
-      id                TEXT PRIMARY KEY,
-      mode              TEXT NOT NULL,
-      scanned_count     INTEGER DEFAULT 0,
-      candidates_count  INTEGER DEFAULT 0,
-      orders_placed     INTEGER DEFAULT 0,
-      positions_managed INTEGER DEFAULT 0,
-      errors            TEXT,
-      duration_ms       INTEGER,
-      ran_at            TEXT NOT NULL
-    );
-    CREATE TABLE IF NOT EXISTS trades (
-      id          TEXT PRIMARY KEY,
-      symbol      TEXT NOT NULL,
-      side        TEXT NOT NULL DEFAULT 'BUY',
-      quantity    INTEGER,
-      entry_price REAL,
-      exit_price  REAL,
-      pnl         REAL,
-      pnl_pct     REAL,
-      stop_loss   REAL,
-      take_profit REAL,
-      signal      TEXT,
-      status      TEXT DEFAULT 'CLOSED',
-      mode        TEXT NOT NULL,
-      opened_at   TEXT,
-      closed_at   TEXT
-    );
-  `);
+  if (!env.DB) return;
+
+  // D1Database.exec() splits newline-delimited SQL and can submit incomplete
+  // CREATE TABLE statements. Execute each statement independently instead.
+  const statements = [
+    env.DB.prepare(`
+      CREATE TABLE IF NOT EXISTS scanner_positions (
+        id              TEXT PRIMARY KEY,
+        symbol          TEXT NOT NULL,
+        quantity        INTEGER NOT NULL,
+        entry_price     REAL NOT NULL,
+        current_price   REAL,
+        highest_price   REAL NOT NULL,
+        stop_loss       REAL NOT NULL,
+        take_profit     REAL NOT NULL,
+        hard_stop       REAL NOT NULL,
+        trail_pct       REAL NOT NULL,
+        tp_pct          REAL NOT NULL,
+        confidence      TEXT NOT NULL,
+        score           INTEGER NOT NULL,
+        webull_order_id TEXT,
+        status          TEXT DEFAULT 'OPEN',
+        mode            TEXT NOT NULL,
+        opened_at       TEXT NOT NULL,
+        updated_at      TEXT NOT NULL,
+        closed_at       TEXT,
+        exit_price      REAL,
+        pnl             REAL,
+        close_reason    TEXT
+      )
+    `),
+    env.DB.prepare(`
+      CREATE TABLE IF NOT EXISTS scanner_runs (
+        id                TEXT PRIMARY KEY,
+        mode              TEXT NOT NULL,
+        scanned_count     INTEGER DEFAULT 0,
+        candidates_count  INTEGER DEFAULT 0,
+        orders_placed     INTEGER DEFAULT 0,
+        positions_managed INTEGER DEFAULT 0,
+        errors            TEXT,
+        duration_ms       INTEGER,
+        ran_at            TEXT NOT NULL
+      )
+    `),
+    env.DB.prepare(`
+      CREATE TABLE IF NOT EXISTS trades (
+        id          TEXT PRIMARY KEY,
+        symbol      TEXT NOT NULL,
+        side        TEXT NOT NULL DEFAULT 'BUY',
+        quantity    INTEGER,
+        entry_price REAL,
+        exit_price  REAL,
+        pnl         REAL,
+        pnl_pct     REAL,
+        stop_loss   REAL,
+        take_profit REAL,
+        signal      TEXT,
+        status      TEXT DEFAULT 'CLOSED',
+        mode        TEXT NOT NULL,
+        opened_at   TEXT,
+        closed_at   TEXT
+      )
+    `),
+  ];
+
+  await env.DB.batch(statements);
 }
 
 /** Load all OPEN scanner positions for a mode */
