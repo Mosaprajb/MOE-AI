@@ -10,8 +10,9 @@ binding = "CONFIG"
 id = "74e96387146345c3b424838696d814b5"
 
 # ── D1 Database — scanner, trades, decisions, learning history ────────────────
+# The Worker code reads this binding as env.DB.
 [[d1_databases]]
-binding = "moe_ai"
+binding = "DB"
 database_name = "moe-ai"
 database_id = "0c9f645b-da53-4f80-aaa8-ad04f86393a3"
 migrations_dir = "migrations"
