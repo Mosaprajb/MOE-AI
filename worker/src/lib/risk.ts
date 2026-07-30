@@ -1,5 +1,6 @@
 // MOE-AI Risk Engine — Kill Switch + Safety Gates + Mode Storage
 import type { Env, RiskConfig, RiskState, SafetyGates, Position, TradingMode } from './types';
+import { WebullClient } from './webull';
 
 export function getRiskConfig(env: Env): RiskConfig {
   return {
@@ -11,13 +12,41 @@ export function getRiskConfig(env: Env): RiskConfig {
   };
 }
 
-// ── Kill switch ────────────────────────────────────────────────────────────────
-export async function getKillSwitch(env: Env): Promise<boolean> {
+async function getManualKillSwitch(env: Env): Promise<boolean> {
   try {
     const val = await env.CONFIG?.get('kill_switch');
-    // Default: OFF (false) — trading is allowed
     return val === 'true';
   } catch { return false; }
+}
+
+async function getPortfolioHeatLock(env: Env): Promise<boolean> {
+  try {
+    const mode = await getTradingMode(env);
+    const client = WebullClient.fromEnv(env, mode);
+    if (!client) return false;
+    const [account, positions] = await Promise.all([
+      client.getAccount(),
+      client.getPositions(),
+    ]);
+    if (!(account.accountValue > 0)) return false;
+    const heat = positions.reduce((sum, position) => sum + Math.abs(position.marketValue ?? 0), 0)
+      / account.accountValue * 100;
+    return heat >= getRiskConfig(env).maxPortfolioHeat;
+  } catch {
+    // A transient broker/API failure must not silently engage the manual kill switch.
+    return false;
+  }
+}
+
+// ── Kill switch / execution lock ────────────────────────────────────────────────
+// This is the execution gate used by scanner and manual order routes. It includes
+// both the operator-controlled kill switch and the automatic portfolio-heat lock.
+export async function getKillSwitch(env: Env): Promise<boolean> {
+  const [manual, heatLocked] = await Promise.all([
+    getManualKillSwitch(env),
+    getPortfolioHeatLock(env),
+  ]);
+  return manual || heatLocked;
 }
 
 export async function setKillSwitch(env: Env, enabled: boolean): Promise<void> {
@@ -56,8 +85,8 @@ export async function computeRiskState(
   accountValue: number,
 ): Promise<RiskState> {
   const cfg = getRiskConfig(env);
-  const [killSwitch, daily] = await Promise.all([
-    getKillSwitch(env),
+  const [manualKillSwitch, daily] = await Promise.all([
+    getManualKillSwitch(env),
     getDailyStats(env, mode),
   ]);
 
@@ -68,16 +97,20 @@ export async function computeRiskState(
                         (accountValue || 1) * 100;
 
   const locked =
-    killSwitch ||
+    manualKillSwitch ||
     dailyLossPct >= cfg.maxDailyLossPct ||
-    openRiskPct  >= cfg.maxOpenRiskPct  ||
-    positions.length >= cfg.maxOpenPositions;
+    openRiskPct >= cfg.maxOpenRiskPct ||
+    portfolioHeat >= cfg.maxPortfolioHeat ||
+    positions.length >= cfg.maxOpenPositions ||
+    daily.dailyTrades >= cfg.maxDailyTrades;
 
   let lockReason: string | undefined;
-  if      (killSwitch)                               lockReason = 'Kill switch is engaged';
-  else if (dailyLossPct >= cfg.maxDailyLossPct)     lockReason = `Daily loss limit hit (${dailyLossPct.toFixed(2)}%)`;
-  else if (openRiskPct  >= cfg.maxOpenRiskPct)      lockReason = `Open risk limit hit (${openRiskPct.toFixed(2)}%)`;
+  if      (manualKillSwitch)                         lockReason = 'Kill switch is engaged';
+  else if (dailyLossPct >= cfg.maxDailyLossPct)      lockReason = `Daily loss limit hit (${dailyLossPct.toFixed(2)}%)`;
+  else if (openRiskPct >= cfg.maxOpenRiskPct)        lockReason = `Open risk limit hit (${openRiskPct.toFixed(2)}%)`;
+  else if (portfolioHeat >= cfg.maxPortfolioHeat)    lockReason = `Portfolio heat limit hit (${portfolioHeat.toFixed(2)}%)`;
   else if (positions.length >= cfg.maxOpenPositions) lockReason = `Max positions reached (${positions.length})`;
+  else if (daily.dailyTrades >= cfg.maxDailyTrades)  lockReason = `Daily trade limit hit (${daily.dailyTrades})`;
 
   return {
     ...cfg,
@@ -86,7 +119,7 @@ export async function computeRiskState(
     dailyLossPct,
     openRiskPct,
     portfolioHeat,
-    killSwitch,
+    killSwitch: manualKillSwitch,
     locked,
     lockReason,
   };
@@ -107,24 +140,24 @@ export async function checkLiveSafetyGates(
     if (!env[k as keyof Env]) missingSecrets.push(k);
   }
 
-  const [killSwitch, liveArmed, pinSet] = await Promise.all([
+  const [executionLocked, liveArmed, pinSet] = await Promise.all([
     getKillSwitch(env),
     env.CONFIG?.get('live_automation_armed').then(v => v === 'true').catch(() => false) ?? Promise.resolve(false),
     env.CONFIG?.get('pin_set').then(v => !!v).catch(() => false) ?? Promise.resolve(false),
   ]);
 
   const gates: SafetyGates = {
-    killSwitchOff:         !killSwitch,
+    killSwitchOff:         !executionLocked,
     pinVerified:           pinSet || !!env.MOE_KILL_SWITCH_PIN,
     liveCredentialsSet:    missingSecrets.length === 0,
     webullLiveConnected:   missingSecrets.length === 0,
     accountDataFresh:      accountValue > 0,
     buyingPowerSufficient: accountValue >= 1000,
-    noActiveKillSwitch:    !killSwitch,
+    noActiveKillSwitch:    !executionLocked,
     dailyLossUnderLimit:   true,
     openPositionsUnderMax: !hasPositions || true,
     dailyTradesUnderMax:   true,
-    riskChecksPass:        missingSecrets.length === 0 && !killSwitch,
+    riskChecksPass:        missingSecrets.length === 0 && !executionLocked,
     manualArmRequired:     liveArmed,
   };
 
