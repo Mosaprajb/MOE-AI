@@ -9,13 +9,12 @@ compatibility_flags = ["nodejs_compat"]
 binding = "CONFIG"
 id = "74e96387146345c3b424838696d814b5"
 
-# ── D1 Database (optional — add later for trade history) ──────────────────────
-# To enable: wrangler d1 create moe-db
-# Then replace the id below and uncomment:
-# [[d1_databases]]
-# binding = "DB"
-# database_name = "moe-db"
-# database_id = "your-d1-database-id-here"
+# ── D1 Database — scanner, trades, decisions, learning history ────────────────
+[[d1_databases]]
+binding = "moe_ai"
+database_name = "moe-ai"
+database_id = "0c9f645b-da53-4f80-aaa8-ad04f86393a3"
+migrations_dir = "migrations"
 
 # ── Cloudflare Secrets (set via: wrangler secret put <NAME>) ──────────────────
 # WEBULL_SANDBOX_APP_KEY         — paper trading app key
@@ -38,7 +37,7 @@ tag             = "v2-cleanup"
 deleted_classes = ["AlertCoordinator"]
 
 [vars]
-WORKER_VERSION      = "6.0.0"
+WORKER_VERSION      = "6.1.0"
 RISK_PCT              = "5"
 SCANNER_TP_PCT        = "1.5"
 SCANNER_TRAIL_PCT     = "1.0"
