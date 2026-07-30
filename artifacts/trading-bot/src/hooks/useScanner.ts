@@ -88,6 +88,60 @@ interface ScanRun {
   ran_at:           string;
 }
 
+// Scanner.tsx currently performs its market-data analysis in the browser. These
+// module-level markers let this hook recognize that explicit user scan and then
+// bridge it to the Worker exactly once. Passive quote polling never submits an
+// order, and LIVE mode is never bridged.
+let localScanObservedAt = 0;
+let localScanRequests = 0;
+let fetchObserverInstalled = false;
+
+function installLocalScanObserver() {
+  if (fetchObserverInstalled || typeof window === 'undefined') return;
+  fetchObserverInstalled = true;
+  const originalFetch = window.fetch.bind(window);
+  window.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
+    const url = typeof input === 'string'
+      ? input
+      : input instanceof URL
+        ? input.toString()
+        : input.url;
+    if (
+      url.includes('query2.finance.yahoo.com/v8/finance/chart/') &&
+      url.includes('interval=15m') &&
+      url.includes('range=5d')
+    ) {
+      localScanObservedAt = Date.now();
+      localScanRequests += 1;
+    }
+    return originalFetch(input, init);
+  }) as typeof window.fetch;
+}
+
+function normalizeScanResult(raw: Record<string, unknown>): ScanResult {
+  return {
+    mode:             String(raw.mode ?? 'SANDBOX'),
+    scanned:          Number(raw.scanned ?? 0),
+    candidates:       Array.isArray(raw.candidates) ? raw.candidates as ScanCandidate[]
+                      : Array.isArray(raw.signals) ? raw.signals as ScanCandidate[]
+                      : [],
+    ordersPlaced:     Number(raw.ordersPlaced ?? 0),
+    positionsManaged: Number(raw.positionsManaged ?? 0),
+    errors:           Array.isArray(raw.errors) ? raw.errors as string[] : [],
+    ms:               Number(raw.ms ?? 0),
+  };
+}
+
+async function requestWorkerScan(): Promise<ScanResult> {
+  const res = await fetch(`${API_BASE}/api/scanner/run`, { method: 'POST', mode: 'cors' });
+  const raw = await res.json().catch(() => ({})) as Record<string, unknown>;
+  if (!res.ok) {
+    const message = String(raw.error ?? raw.code ?? `Scanner HTTP ${res.status}`);
+    throw new Error(message);
+  }
+  return normalizeScanResult(raw);
+}
+
 export function useScanner(mode: TradingMode) {
   const [positions,   setPositions]   = useState<ScannerPosition[]>([]);
   const [history,     setHistory]     = useState<ScannerPosition[]>([]);
@@ -101,17 +155,7 @@ export function useScanner(mode: TradingMode) {
   const [loading,     setLoading]     = useState(true);
   const [error,       setError]       = useState('');
   const quotesTimer   = useRef<ReturnType<typeof setInterval> | null>(null);
-
-  const loadQuotes = useCallback(async () => {
-    try {
-      const res = await fetch(`${API_BASE}/api/scanner/quotes`, { mode: 'cors' });
-      if (res.ok) {
-        const d = await res.json() as { quotes?: LiveQuote[]; fetchedAt?: string };
-        setQuotes(d.quotes ?? []);
-        setQuotesAt(d.fetchedAt ?? new Date().toISOString());
-      }
-    } catch { /* non-fatal */ }
-  }, []);
+  const bridgeLock    = useRef(false);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -133,58 +177,85 @@ export function useScanner(mode: TradingMode) {
         setWatchlist(syms);
         try { localStorage.setItem('moe_watchlist', JSON.stringify(syms)); } catch {}
       } else {
-        // Worker not deployed yet — fall back to localStorage
         try {
           const stored = localStorage.getItem('moe_watchlist');
-          if (stored) { const p = JSON.parse(stored); if (Array.isArray(p)) setWatchlist(p); }
+          if (stored) { const parsed = JSON.parse(stored); if (Array.isArray(parsed)) setWatchlist(parsed); }
         } catch {}
       }
       setError('');
-    } catch (e) { setError(String(e)); }
-    finally { setLoading(false); }
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setLoading(false);
+    }
   }, []);
 
-  // Initial load + start quotes polling every 30 s
+  const runScan = useCallback(async (): Promise<ScanResult | null> => {
+    if (mode !== 'SANDBOX') {
+      setError('Automated scanner execution is restricted to SANDBOX mode.');
+      return null;
+    }
+    setScanning(true);
+    try {
+      const data = await requestWorkerScan();
+      setLastResult(data);
+      setError(data.errors.length ? data.errors.join(' · ') : '');
+      await load();
+      return data;
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+      return null;
+    } finally {
+      setScanning(false);
+    }
+  }, [load, mode]);
+
+  const loadQuotes = useCallback(async () => {
+    try {
+      // Scanner.tsx calls loadQuotes immediately after a deliberate local scan.
+      // Bridge only that fresh scan to the Worker, once, and only in SANDBOX.
+      const freshLocalScan = localScanRequests > 0 && Date.now() - localScanObservedAt < 15_000;
+      if (mode === 'SANDBOX' && freshLocalScan && !bridgeLock.current) {
+        localScanRequests = 0;
+        bridgeLock.current = true;
+        setScanning(true);
+        try {
+          const data = await requestWorkerScan();
+          setLastResult(data);
+          setError(data.errors.length ? data.errors.join(' · ') : '');
+          await load();
+        } catch (e) {
+          setError(e instanceof Error ? e.message : String(e));
+        } finally {
+          setScanning(false);
+          bridgeLock.current = false;
+        }
+      }
+
+      const res = await fetch(`${API_BASE}/api/scanner/quotes`, { mode: 'cors' });
+      if (res.ok) {
+        const d = await res.json() as { quotes?: LiveQuote[]; fetchedAt?: string };
+        setQuotes(d.quotes ?? []);
+        setQuotesAt(d.fetchedAt ?? new Date().toISOString());
+      }
+    } catch { /* quote polling is non-fatal */ }
+  }, [load, mode]);
+
   useEffect(() => {
+    installLocalScanObserver();
     load();
     loadQuotes();
     quotesTimer.current = setInterval(loadQuotes, 30_000);
     return () => { if (quotesTimer.current) clearInterval(quotesTimer.current); };
   }, [load, loadQuotes]);
 
-  const runScan = useCallback(async (): Promise<ScanResult | null> => {
-    setScanning(true);
-    try {
-      const res = await fetch(`${API_BASE}/api/scanner/run`, { method: 'POST', mode: 'cors' });
-      const raw = await res.json() as Record<string, unknown>;
-      // Normalize: old Worker may use 'signals' instead of 'candidates'
-      const data: ScanResult = {
-        mode:             String(raw.mode             ?? 'SANDBOX'),
-        scanned:          Number(raw.scanned           ?? 0),
-        candidates:       Array.isArray(raw.candidates) ? (raw.candidates as ScanCandidate[])
-                        : Array.isArray(raw.signals)    ? (raw.signals    as ScanCandidate[])
-                        : [],
-        ordersPlaced:     Number(raw.ordersPlaced      ?? 0),
-        positionsManaged: Number(raw.positionsManaged  ?? 0),
-        errors:           Array.isArray(raw.errors) ? (raw.errors as string[]) : [],
-        ms:               Number(raw.ms               ?? 0),
-      };
-      setLastResult(data);
-      await load(); // refresh positions + runs
-      return data;
-    } catch (e) { setError(String(e)); return null; }
-    finally { setScanning(false); }
-  }, [load]);
-
   const updateWatchlist = useCallback(async (symbol: string, action: 'add' | 'remove') => {
     const sym = symbol.toUpperCase();
-    // Best-effort sync to Worker (fire-and-forget)
     fetch(`${API_BASE}/api/scanner/watchlist`, {
       method: 'POST', mode: 'cors',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ symbol: sym, action }),
     }).catch(() => {});
-    // Update local state + localStorage immediately (works offline / without Worker)
     setWatchlist(prev => {
       const next = action === 'add'
         ? [...new Set([...prev, sym])]
@@ -217,7 +288,7 @@ export function useScanner(mode: TradingMode) {
       });
       const data = await res.json() as { ok?: boolean; pnl?: number; error?: string };
       if (!res.ok) return { ok: false, error: data.error ?? `HTTP ${res.status}` };
-      await load(); // refresh positions
+      await load();
       return { ok: true, pnl: data.pnl };
     } catch (e) {
       return { ok: false, error: String(e) };
