@@ -6,10 +6,11 @@ const UNLOCK_PATH = '/api/trading/live/unlock';
 const LOCK_PATH = '/api/trading/live/lock';
 const STATUS_PATH = '/api/trading/live/status';
 const EXECUTE_PATH = '/api/trading/orders/execute';
-const BUILD_ID = 'trading-mode-control-v2-20260727';
+const BUILD_ID = 'trading-mode-control-v2-20260730';
 const encoder = new TextEncoder();
 
 function enabled(value) { return String(value || '').trim().toLowerCase() === 'true'; }
+function configured(value) { return Boolean(String(value || '').trim()); }
 function json(payload, status = 200) {
   return Response.json(payload, { status, headers: { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store, no-cache, must-revalidate', 'x-content-type-options': 'nosniff', 'x-moe-trading-control': BUILD_ID } });
 }
@@ -55,11 +56,17 @@ function sandboxEnvironment(env) {
 function liveBlockers(env) {
   const blockers = [];
   if (!enabled(env.MOE_LIVE_PIN_CONTROL_ENABLED)) blockers.push('PIN control is disabled');
+  if (!enabled(env.MOE_LIVE_EXECUTION_IMPLEMENTED)) blockers.push('live execution adapter is not approved');
+  if (!enabled(env.MOE_LIVE_MODE_UNLOCKED)) blockers.push('live mode is statically locked');
   if (!enabled(env.WEBULL_LIVE_TRADING)) blockers.push('live trading is disabled');
   if (!enabled(env.WEBULL_LIVE_ORDER_SUBMISSION)) blockers.push('live order submission is disabled');
   if (!enabled(env.WEBULL_LIVE_AUTOMATION_ARMED)) blockers.push('live automation is not armed');
   if (enabled(env.WEBULL_LIVE_KILL_SWITCH)) blockers.push('live kill switch is active');
-  if (!String(env.WEBULL_LIVE_ACCOUNT_ID || '').trim()) blockers.push('live account is not configured');
+  if (!configured(env.MOE_LIVE_SESSION_SECRET)) blockers.push('live session secret is not configured');
+  if (!configured(env.WEBULL_LIVE_APP_KEY)) blockers.push('live app key is not configured');
+  if (!configured(env.WEBULL_LIVE_APP_SECRET)) blockers.push('live app secret is not configured');
+  if (!configured(env.WEBULL_LIVE_ACCESS_TOKEN)) blockers.push('live access token is not configured');
+  if (!configured(env.WEBULL_LIVE_ACCOUNT_ID)) blockers.push('live account is not configured');
   return blockers;
 }
 
@@ -69,7 +76,7 @@ function sandboxBlockers(env) {
   if (!enabled(env.WEBULL_SANDBOX_ORDER_SUBMISSION)) blockers.push('sandbox submission is disabled');
   if (!enabled(env.WEBULL_AUTOMATION_ARMED)) blockers.push('sandbox automation is not armed');
   if (!enabled(env.WEBULL_PROTECTED_ORDERS)) blockers.push('sandbox protected orders are disabled');
-  if (!String(env.WEBULL_ACCOUNT_ID || '').trim()) blockers.push('sandbox account is not configured');
+  if (!configured(env.WEBULL_ACCOUNT_ID)) blockers.push('sandbox account is not configured');
   return blockers;
 }
 
@@ -92,7 +99,8 @@ async function unlock(request, env) {
 async function status(request, env) {
   const verification = await verifyLiveSession(request, env);
   const blockers = liveBlockers(env);
-  return json({ ok: true, build: BUILD_ID, mode: verification.ok && blockers.length === 0 ? 'LIVE' : 'SANDBOX', liveSessionActive: verification.ok, liveExecutionReady: verification.ok && blockers.length === 0, sandboxExecutionReady: sandboxBlockers(env).length === 0, blockers, expiresAt: verification.ok ? new Date(verification.payload.expiresAt).toISOString() : null });
+  const sandboxBlockerList = sandboxBlockers(env);
+  return json({ ok: true, build: BUILD_ID, mode: verification.ok && blockers.length === 0 ? 'LIVE' : 'SANDBOX', liveSessionActive: verification.ok, liveExecutionReady: verification.ok && blockers.length === 0, sandboxExecutionReady: sandboxBlockerList.length === 0, blockers, sandboxBlockers: sandboxBlockerList, expiresAt: verification.ok ? new Date(verification.payload.expiresAt).toISOString() : null });
 }
 
 async function execute(request, env) {
