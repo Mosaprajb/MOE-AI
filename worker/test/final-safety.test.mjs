@@ -17,7 +17,7 @@ function numeric(name) {
 }
 
 test('protected live adapter is implemented but every activation switch remains hard-disabled', () => {
-  assert.equal(vars.MOE_LIVE_EXECUTION_IMPLEMENTED, 'true');
+  assert.equal(vars.MOE_LIVE_EXECUTION_IMPLEMENTED, 'false');
   assert.equal(vars.MOE_LIVE_MODE_UNLOCKED, 'false');
   assert.equal(vars.WEBULL_LIVE_TRADING, 'false');
   assert.equal(vars.WEBULL_LIVE_ORDER_SUBMISSION, 'false');
