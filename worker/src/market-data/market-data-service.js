@@ -1,4 +1,5 @@
 import { createMarketSnapshot } from './market-snapshot.js';
+import { mergeMarketSnapshotInput } from './market-snapshot-enricher.js';
 import { MARKET_TIMEFRAMES, normalizeSymbol, normalizeTimeframe, positiveInteger } from './provider-utils.js';
 
 const DEFAULT_CACHE_TTL_MS = 15_000;
@@ -22,6 +23,20 @@ function providerList(provider, providers) {
   })));
 }
 
+function normalizeEnricher(enrichmentProvider) {
+  if (!enrichmentProvider) return null;
+  if (typeof enrichmentProvider === 'function') {
+    return Object.freeze({ name: 'market-snapshot-enricher', enrichSnapshot: enrichmentProvider });
+  }
+  if (typeof enrichmentProvider.enrichSnapshot !== 'function') {
+    throw new Error('Market-data enrichment provider must expose enrichSnapshot(symbol, raw, options).');
+  }
+  return Object.freeze({
+    ...enrichmentProvider,
+    name: String(enrichmentProvider.name || 'market-snapshot-enricher').trim().toLowerCase(),
+  });
+}
+
 function maxAgeFor(timeframe, configured) {
   if (Number.isFinite(Number(configured)) && Number(configured) > 0) return Number(configured);
   return MARKET_TIMEFRAMES[timeframe].milliseconds * 3;
@@ -31,6 +46,8 @@ export class MarketDataService {
   constructor({
     provider,
     providers,
+    enrichmentProvider,
+    requireEnrichment = false,
     cacheTtlMs = DEFAULT_CACHE_TTL_MS,
     maxRetries = DEFAULT_MAX_RETRIES,
     retryDelayMs = DEFAULT_RETRY_DELAY_MS,
@@ -41,9 +58,14 @@ export class MarketDataService {
     requirePrice = true,
     rejectStale = true,
     minimumQualityScore = 60,
+    atrPeriod = 14,
+    relativeVolumeLookback = 20,
+    pocBuckets = 24,
     now = () => Date.now(),
   } = {}) {
     this.providers = providerList(provider, providers);
+    this.enrichmentProvider = normalizeEnricher(enrichmentProvider);
+    this.requireEnrichment = requireEnrichment === true;
     this.cacheTtlMs = positiveInteger(cacheTtlMs, DEFAULT_CACHE_TTL_MS, 100, 300_000);
     this.maxRetries = positiveInteger(maxRetries, DEFAULT_MAX_RETRIES, 0, 10);
     this.retryDelayMs = positiveInteger(retryDelayMs, DEFAULT_RETRY_DELAY_MS, 1, 10_000);
@@ -54,11 +76,19 @@ export class MarketDataService {
     this.requirePrice = requirePrice !== false;
     this.rejectStale = rejectStale !== false;
     this.minimumQualityScore = positiveInteger(minimumQualityScore, 60, 0, 100);
+    this.atrPeriod = positiveInteger(atrPeriod, 14, 1, 200);
+    this.relativeVolumeLookback = positiveInteger(relativeVolumeLookback, 20, 1, 500);
+    this.pocBuckets = positiveInteger(pocBuckets, 24, 4, 100);
     this.now = typeof now === 'function' ? now : () => Date.now();
     this.cache = new Map();
     this.inFlight = new Map();
     this.active = 0;
     this.waiters = [];
+    this.enrichmentMetrics = {
+      calls: 0,
+      successes: 0,
+      errors: 0,
+    };
     this.providerStates = new Map(this.providers.map((item) => [item.name, {
       failures: 0,
       circuitOpenUntil: 0,
@@ -99,6 +129,28 @@ export class MarketDataService {
     state.nextAllowedAt = Math.max(this.now(), state.nextAllowedAt) + spacingMs;
   }
 
+  async enrichSnapshotInput(symbol, raw, options) {
+    if (!this.enrichmentProvider || options.enrich === false) return raw;
+    this.enrichmentMetrics.calls += 1;
+    try {
+      const enrichment = await this.enrichmentProvider.enrichSnapshot(symbol, raw, options);
+      if (enrichment !== undefined && (!enrichment || typeof enrichment !== 'object' || Array.isArray(enrichment))) {
+        throw new Error('Market-data enrichment provider returned an invalid payload.');
+      }
+      this.enrichmentMetrics.successes += 1;
+      return mergeMarketSnapshotInput(raw, enrichment || {});
+    } catch (error) {
+      this.enrichmentMetrics.errors += 1;
+      if (this.requireEnrichment || options.requireEnrichment === true) throw error;
+      return mergeMarketSnapshotInput(raw, {
+        metadata: {
+          enrichmentProvider: this.enrichmentProvider.name,
+          enrichmentError: error instanceof Error ? error.message : 'Unknown market-data enrichment failure.',
+        },
+      });
+    }
+  }
+
   async requestProvider(provider, symbol, options, attempts) {
     const state = this.providerStates.get(provider.name);
     if (state.circuitOpenUntil > this.now()) {
@@ -112,8 +164,9 @@ export class MarketDataService {
         await this.respectRateLimit(provider);
         state.calls += 1;
         const raw = await provider.fetchSnapshot(symbol, options);
-        const timeframe = normalizeTimeframe(options.timeframe || raw?.timeframe || '5m');
-        const snapshot = createMarketSnapshot(raw, {
+        const enrichedRaw = await this.enrichSnapshotInput(symbol, raw, options);
+        const timeframe = normalizeTimeframe(options.timeframe || enrichedRaw?.timeframe || '5m');
+        const snapshot = createMarketSnapshot(enrichedRaw, {
           symbol,
           provider: provider.name,
           timeframe,
@@ -123,6 +176,9 @@ export class MarketDataService {
           requirePrice: options.requirePrice ?? this.requirePrice,
           rejectStale: options.rejectStale ?? this.rejectStale,
           minimumQualityScore: options.minimumQualityScore ?? this.minimumQualityScore,
+          atrPeriod: options.atrPeriod ?? this.atrPeriod,
+          relativeVolumeLookback: options.relativeVolumeLookback ?? this.relativeVolumeLookback,
+          pocBuckets: options.pocBuckets ?? this.pocBuckets,
         });
         state.failures = 0;
         state.circuitOpenUntil = 0;
@@ -205,6 +261,11 @@ export class MarketDataService {
       cacheEntries: this.cache.size,
       inFlight: this.inFlight.size,
       active: this.active,
+      enrichment: Object.freeze({
+        provider: this.enrichmentProvider?.name || null,
+        required: this.requireEnrichment,
+        ...this.enrichmentMetrics,
+      }),
       providers: Object.freeze(Object.fromEntries([...this.providerStates.entries()].map(([name, state]) => [name, Object.freeze({ ...state })]))),
     });
   }
