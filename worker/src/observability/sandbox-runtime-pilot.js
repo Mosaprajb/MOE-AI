@@ -79,6 +79,8 @@ function eventLimit(env = {}, override = null) {
 function credentialState(env = {}) {
   const required = {
     webhookSecret: Boolean(text(env.MOE_WEBHOOK_SECRET)),
+    alpacaKeyId: Boolean(text(env.ALPACA_KEY_ID)),
+    alpacaSecretKey: Boolean(text(env.ALPACA_SECRET_KEY)),
     appKey: Boolean(text(env.WEBULL_APP_KEY)),
     appSecret: Boolean(text(env.WEBULL_APP_SECRET)),
     accessToken: Boolean(text(env.WEBULL_ACCESS_TOKEN)),

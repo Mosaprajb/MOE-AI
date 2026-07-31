@@ -54,6 +54,8 @@ function safeEnv(overrides = {}) {
     WEBULL_MAX_QUANTITY: '1',
     WEBULL_MAX_NOTIONAL: '1000',
     MOE_WEBHOOK_SECRET: 'do-not-leak-webhook-secret',
+    ALPACA_KEY_ID: 'do-not-leak-alpaca-key-id',
+    ALPACA_SECRET_KEY: 'do-not-leak-alpaca-secret-key',
     WEBULL_APP_KEY: 'do-not-leak-app-key',
     WEBULL_APP_SECRET: 'do-not-leak-app-secret',
     WEBULL_ACCESS_TOKEN: 'do-not-leak-access-token',
@@ -90,11 +92,26 @@ test('health and readiness expose safe pilot state without leaking credentials',
   assert.equal(readiness.ready, true);
   assert.equal(readiness.status, 'READY');
   assert.deepEqual(readiness.blockers, []);
+  assert.equal(readiness.credentials.alpacaKeyId, true);
+  assert.equal(readiness.credentials.alpacaSecretKey, true);
+  assert.equal(readiness.credentials.requiredCount, 7);
 
   const serialized = JSON.stringify({ health, readiness });
-  for (const secret of [env.MOE_WEBHOOK_SECRET, env.WEBULL_APP_KEY, env.WEBULL_APP_SECRET, env.WEBULL_ACCESS_TOKEN, env.WEBULL_ACCOUNT_ID]) {
+  for (const secret of [env.MOE_WEBHOOK_SECRET, env.ALPACA_KEY_ID, env.ALPACA_SECRET_KEY, env.WEBULL_APP_KEY, env.WEBULL_APP_SECRET, env.WEBULL_ACCESS_TOKEN, env.WEBULL_ACCOUNT_ID]) {
     assert.equal(serialized.includes(secret), false);
   }
+});
+
+test('readiness blocks when Alpaca scanner credentials are missing', () => {
+  const env = safeEnv({ ALPACA_KEY_ID: '', ALPACA_SECRET_KEY: '' });
+  const readiness = buildSandboxReadiness(env, { control, durableObjectAvailable: true, now: NOW });
+
+  assert.equal(readiness.ready, false);
+  assert.equal(readiness.checks.credentialsConfigured, false);
+  assert.equal(readiness.credentials.alpacaKeyId, false);
+  assert.equal(readiness.credentials.alpacaSecretKey, false);
+  assert.equal(readiness.credentials.requiredCount, 7);
+  assert.ok(readiness.blockers.includes('credentialsConfigured'));
 });
 
 test('the committed pilot stays disarmed until explicitly enabled', () => {
@@ -185,6 +202,8 @@ test('Sandbox pilot config, isolated entrypoint, endpoints, and secret hygiene s
   assert.equal(config.vars.WEBULL_LIVE_AUTOMATION_ARMED, 'false');
   assert.equal(config.vars.WEBULL_LIVE_KILL_SWITCH, 'true');
   assert.ok(config.secrets.required.includes('MOE_WEBHOOK_SECRET'));
+  assert.ok(config.secrets.required.includes('ALPACA_KEY_ID'));
+  assert.ok(config.secrets.required.includes('ALPACA_SECRET_KEY'));
   assert.ok(config.secrets.required.includes('WEBULL_APP_SECRET'));
   assert.equal(configText.includes('do-not-leak'), false);
 
