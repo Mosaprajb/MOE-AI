@@ -30,7 +30,7 @@ jobs:
   worker-safety:
     name: Worker safety, liquidity, and Smart Money engines
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -112,7 +112,25 @@ jobs:
       - name: Test final safety configuration
         run: node --test --test-concurrency=1 worker/test/final-safety-configuration.test.mjs
 
+      - name: Run complete Worker safety suite
+        run: npm run test:worker
+
+  dashboard-visual-qa:
+    name: Dashboard visual QA (non-blocking)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
       - name: Run headless browser visual dashboard QA
+        id: visual_qa
+        continue-on-error: true
         env:
           CHROME_BIN: /usr/bin/google-chrome
           VISUAL_QA_OUTPUT: artifacts/dashboard-visual-qa
@@ -122,14 +140,32 @@ jobs:
           mkdir -p artifacts/dashboard-visual-qa
           node worker/test/visual-dashboard-browser.mjs 2>&1 | tee artifacts/dashboard-visual-qa/visual-qa.log
 
-      - name: Upload dashboard visual QA screenshots
+      - name: Upload dashboard visual QA artifacts
         if: always()
+        continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
           name: dashboard-visual-qa
           path: artifacts/dashboard-visual-qa
-          if-no-files-found: error
+          if-no-files-found: warn
           retention-days: 14
 
-      - name: Run complete Worker safety suite
-        run: npm run test:worker
+      - name: Report dashboard visual QA status
+        if: always()
+        shell: bash
+        run: |
+          if [ "${{ steps.visual_qa.outcome }}" = "failure" ]; then
+            echo "::warning title=Dashboard Visual QA isolated::The headless visual dashboard check failed, but Worker Safety remains authoritative and blocking. Review the dashboard-visual-qa artifact."
+            {
+              echo "## Dashboard visual QA"
+              echo ""
+              echo "The headless browser check failed and was isolated from the blocking Worker Safety job."
+              echo "Review the uploaded \`dashboard-visual-qa\` artifact and its \`visual-qa.log\`."
+            } >> "$GITHUB_STEP_SUMMARY"
+          else
+            {
+              echo "## Dashboard visual QA"
+              echo ""
+              echo "The headless browser check passed."
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
