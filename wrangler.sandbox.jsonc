@@ -25,6 +25,8 @@
   "secrets": {
     "required": [
       "MOE_WEBHOOK_SECRET",
+      "ALPACA_KEY_ID",
+      "ALPACA_SECRET_KEY",
       "WEBULL_APP_KEY",
       "WEBULL_APP_SECRET",
       "WEBULL_ACCESS_TOKEN",
