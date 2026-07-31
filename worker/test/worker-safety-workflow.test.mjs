@@ -3,15 +3,24 @@ import { readFileSync } from 'node:fs';
 import test from 'node:test';
 
 const workflowUrl = new URL('../../.github/workflows/worker-safety-tests.yml', import.meta.url);
-const workflow = readFileSync(workflowUrl, 'utf8');
+const rawWorkflow = readFileSync(workflowUrl, 'utf8');
 
-function jobBlock(jobName, nextJobName = null) {
-  const start = workflow.indexOf(`\n  ${jobName}:\n`);
+function normalizeNewlines(value) {
+  return String(value).replace(/\r\n?/g, '\n');
+}
+
+const workflow = normalizeNewlines(rawWorkflow);
+
+function jobBlock(jobName, nextJobName = null, source = workflow) {
+  const normalized = `\n${normalizeNewlines(source)}`;
+  const marker = `\n  ${jobName}:\n`;
+  const start = normalized.indexOf(marker);
   assert.notEqual(start, -1, `workflow job ${jobName} must exist`);
   const from = start + 1;
-  const end = nextJobName ? workflow.indexOf(`\n  ${nextJobName}:\n`, from) : workflow.length;
+  const endMarker = nextJobName ? `\n  ${nextJobName}:\n` : null;
+  const end = endMarker ? normalized.indexOf(endMarker, from) : normalized.length;
   assert.notEqual(end, -1, `workflow job ${nextJobName} must exist after ${jobName}`);
-  return workflow.slice(from, end);
+  return normalized.slice(from, end);
 }
 
 test('blocking Worker Safety owns the complete Worker suite and excludes browser QA', () => {
@@ -31,4 +40,12 @@ test('dashboard browser QA is isolated, non-blocking, and preserves diagnostics'
   assert.match(visualQa, /if-no-files-found:\s*warn/);
   assert.match(visualQa, /steps\.visual_qa\.outcome/);
   assert.match(visualQa, /::warning title=Dashboard Visual QA isolated::/);
+});
+
+test('workflow job parsing is stable with Windows CRLF line endings', () => {
+  const windowsWorkflow = workflow.replace(/\n/g, '\r\n');
+  const workerSafety = jobBlock('worker-safety', 'dashboard-visual-qa', windowsWorkflow);
+  const visualQa = jobBlock('dashboard-visual-qa', null, windowsWorkflow);
+  assert.match(workerSafety, /npm run test:worker/);
+  assert.match(visualQa, /continue-on-error:\s*true/);
 });
