@@ -15,11 +15,36 @@ function normalizeUniverse(items) {
   return [...entries.values()];
 }
 
-export function createScannerEngine({ marketData, pipeline, universeManager, marketStateService, maxConcurrent = 4, resultLimit = 20 } = {}) {
+function opportunityInputs(results) {
+  return results.flatMap((result) => (Array.isArray(result.opportunities) ? result.opportunities : [])
+    .filter(Boolean)
+    .map((opportunity) => ({
+      opportunity,
+      fusion: result.fusion ?? null,
+      universePriority: result.universePriority,
+    })));
+}
+
+export function createScannerEngine({
+  marketData,
+  pipeline,
+  universeManager,
+  marketStateService,
+  fusionEngine,
+  opportunityManager,
+  maxConcurrent = 4,
+  resultLimit = 20,
+} = {}) {
   if (!marketData || typeof marketData.getSnapshot !== 'function') throw new Error('Scanner engine requires a market-data layer.');
   if (!pipeline || typeof pipeline.analyze !== 'function') throw new Error('Scanner engine requires an analysis pipeline.');
   if (marketStateService && typeof marketStateService.getState !== 'function') {
     throw new Error('Scanner market-state service must expose getState(context).');
+  }
+  if (fusionEngine && typeof fusionEngine.fuse !== 'function') {
+    throw new Error('Scanner fusion engine must expose fuse(source, context).');
+  }
+  if (opportunityManager && typeof opportunityManager.manage !== 'function') {
+    throw new Error('Scanner opportunity manager must expose manage(opportunities, context).');
   }
   const concurrency = positiveInteger(maxConcurrent, 4, 1, 16);
   const limit = positiveInteger(resultLimit, 20, 1, 200);
@@ -62,7 +87,28 @@ export function createScannerEngine({ marketData, pipeline, universeManager, mar
             marketState: stateContext.marketState,
             marketStateError: stateContext.marketStateError,
           });
-          results[index] = Object.freeze({ ...analyzed, universePriority });
+          const fusion = fusionEngine
+            ? fusionEngine.fuse(analyzed, {
+              ...context,
+              symbol,
+              universeEntry: entry,
+              marketState: stateContext.marketState,
+              marketStateError: stateContext.marketStateError,
+            })
+            : null;
+          const normalized = fusion
+            ? {
+              ...analyzed,
+              fusion,
+              accepted: fusion.accepted === true,
+              score: Number(fusion.score || 0),
+              confidence: Number(fusion.confidence || 0),
+              direction: fusion.direction || 'NEUTRAL',
+              blockers: fusion.blockers || Object.freeze([]),
+              reasons: fusion.reasons || Object.freeze([]),
+            }
+            : analyzed;
+          results[index] = Object.freeze({ ...normalized, universePriority });
         } catch (error) {
           results[index] = Object.freeze({
             symbol,
@@ -87,6 +133,12 @@ export function createScannerEngine({ marketData, pipeline, universeManager, mar
         || right.score - left.score
         || right.universePriority - left.universePriority
         || left.symbol.localeCompare(right.symbol));
+    const opportunitySelection = opportunityManager
+      ? opportunityManager.manage(opportunityInputs(ranked), {
+        ...context,
+        topN: context.opportunityLimit,
+      })
+      : null;
 
     return Object.freeze({
       observationOnly: true,
@@ -94,6 +146,8 @@ export function createScannerEngine({ marketData, pipeline, universeManager, mar
       scanned: universe.length,
       accepted: ranked.filter((result) => result.accepted).length,
       candidates: Object.freeze(ranked.slice(0, limit)),
+      opportunities: opportunitySelection?.selected ?? Object.freeze([]),
+      opportunitySelection,
       marketState: stateContext.marketState,
       marketStateError: stateContext.marketStateError,
       completedAt: new Date().toISOString(),
