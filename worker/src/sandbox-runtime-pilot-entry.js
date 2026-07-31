@@ -1,4 +1,4 @@
-import tradingWorker, { AlertCoordinator as TradingAlertCoordinator } from './trading-mode-control-v2-entry.js';
+import tradingWorker, { AlertCoordinator as TradingAlertCoordinator } from './smart-scheduler-entry.js';
 import { sandboxPilotSubmissionGate } from './observability/sandbox-runtime-pilot.js';
 
 const EXECUTE_PATH = '/api/trading/orders/execute';
