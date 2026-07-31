@@ -1,12 +1,13 @@
 import tradingWorker, { AlertCoordinator } from './trading-dashboard-entry.js';
-import { placeWebullSandboxOrder } from './webull-client.js';
+import { handleWebullSandboxOrder } from './webull-sandbox.js';
 import { placeWebullLiveOrder, previewWebullLiveOrder } from './webull-live-client.js';
+import { executeSelectedSandboxOpportunity } from './trading-control/opportunity-sandbox-control.js';
 
 const UNLOCK_PATH = '/api/trading/live/unlock';
 const LOCK_PATH = '/api/trading/live/lock';
 const STATUS_PATH = '/api/trading/live/status';
 const EXECUTE_PATH = '/api/trading/orders/execute';
-const BUILD_ID = 'trading-mode-control-v2-20260730';
+const BUILD_ID = 'trading-control-selected-opportunities-20260730';
 const encoder = new TextEncoder();
 
 function enabled(value) { return String(value || '').trim().toLowerCase() === 'true'; }
@@ -14,6 +15,8 @@ function configured(value) { return Boolean(String(value || '').trim()); }
 function json(payload, status = 200) {
   return Response.json(payload, { status, headers: { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store, no-cache, must-revalidate', 'x-content-type-options': 'nosniff', 'x-moe-trading-control': BUILD_ID } });
 }
+function coordinator(env) { return env.ALERT_COORDINATOR.getByName('global'); }
+function authorized(request, env) { return configured(env.MOE_WEBHOOK_SECRET) && String(request.headers.get('x-moe-webhook-secret') || '') === String(env.MOE_WEBHOOK_SECRET); }
 function base64Url(bytes) { let binary = ''; for (const byte of bytes) binary += String.fromCharCode(byte); return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, ''); }
 function decodeBase64Url(value) { const normalized = value.replace(/-/g, '+').replace(/_/g, '/'); const padded = normalized + '='.repeat((4 - normalized.length % 4) % 4); const binary = atob(padded); return Uint8Array.from(binary, (character) => character.charCodeAt(0)); }
 async function sha256(value) { return new Uint8Array(await crypto.subtle.digest('SHA-256', encoder.encode(value))); }
@@ -49,10 +52,6 @@ function liveEnvironment(env) {
   return { ...env, WEBULL_ENVIRONMENT: 'production', WEBULL_API_BASE_URL: String(env.WEBULL_LIVE_API_BASE_URL || 'https://api.webull.com').trim(), WEBULL_APP_KEY: env.WEBULL_LIVE_APP_KEY || env.WEBULL_APP_KEY, WEBULL_APP_SECRET: env.WEBULL_LIVE_APP_SECRET || env.WEBULL_APP_SECRET, WEBULL_ACCESS_TOKEN: env.WEBULL_LIVE_ACCESS_TOKEN || env.WEBULL_ACCESS_TOKEN, MOE_LIVE_MAX_ORDER_NOTIONAL: env.WEBULL_LIVE_MAX_NOTIONAL || env.MOE_LIVE_MAX_ORDER_NOTIONAL };
 }
 
-function sandboxEnvironment(env) {
-  return { ...env, WEBULL_ENVIRONMENT: 'sandbox', WEBULL_API_BASE_URL: String(env.WEBULL_SANDBOX_API_BASE_URL || 'https://api.sandbox.webull.com').trim() };
-}
-
 function liveBlockers(env) {
   const blockers = [];
   if (!enabled(env.MOE_LIVE_PIN_CONTROL_ENABLED)) blockers.push('PIN control is disabled');
@@ -72,11 +71,19 @@ function liveBlockers(env) {
 
 function sandboxBlockers(env) {
   const blockers = [];
+  if (String(env.WEBULL_ENVIRONMENT || 'sandbox').toLowerCase() !== 'sandbox') blockers.push('sandbox environment is not active');
   if (!enabled(env.WEBULL_SANDBOX_ENABLED)) blockers.push('sandbox trading is disabled');
   if (!enabled(env.WEBULL_SANDBOX_ORDER_SUBMISSION)) blockers.push('sandbox submission is disabled');
+  if (!enabled(env.WEBULL_AUTO_SUBMIT_SANDBOX)) blockers.push('sandbox automatic submission is disabled');
   if (!enabled(env.WEBULL_AUTOMATION_ARMED)) blockers.push('sandbox automation is not armed');
   if (!enabled(env.WEBULL_PROTECTED_ORDERS)) blockers.push('sandbox protected orders are disabled');
   if (!configured(env.WEBULL_ACCOUNT_ID)) blockers.push('sandbox account is not configured');
+  if (!configured(env.MOE_WEBHOOK_SECRET)) blockers.push('webhook secret is not configured');
+  if (enabled(env.MOE_LIVE_EXECUTION_IMPLEMENTED)) blockers.push('live implementation must remain disabled');
+  if (enabled(env.WEBULL_LIVE_TRADING)) blockers.push('live trading must remain disabled');
+  if (enabled(env.WEBULL_LIVE_ORDER_SUBMISSION)) blockers.push('live order submission must remain disabled');
+  if (enabled(env.WEBULL_LIVE_AUTOMATION_ARMED)) blockers.push('live automation must remain disarmed');
+  if (!enabled(env.WEBULL_LIVE_KILL_SWITCH)) blockers.push('live kill switch must remain active');
   return blockers;
 }
 
@@ -100,20 +107,44 @@ async function status(request, env) {
   const verification = await verifyLiveSession(request, env);
   const blockers = liveBlockers(env);
   const sandboxBlockerList = sandboxBlockers(env);
-  return json({ ok: true, build: BUILD_ID, mode: verification.ok && blockers.length === 0 ? 'LIVE' : 'SANDBOX', liveSessionActive: verification.ok, liveExecutionReady: verification.ok && blockers.length === 0, sandboxExecutionReady: sandboxBlockerList.length === 0, blockers, sandboxBlockers: sandboxBlockerList, expiresAt: verification.ok ? new Date(verification.payload.expiresAt).toISOString() : null });
+  return json({
+    ok: true,
+    build: BUILD_ID,
+    mode: verification.ok && blockers.length === 0 ? 'LIVE' : 'SANDBOX',
+    liveSessionActive: verification.ok,
+    liveExecutionReady: verification.ok && blockers.length === 0,
+    sandboxExecutionReady: sandboxBlockerList.length === 0,
+    sandboxOpportunitySelectionRequired: true,
+    sandboxExecutionPath: 'OPPORTUNITY_MANAGER_SELECTED_ONLY',
+    blockers,
+    sandboxBlockers: sandboxBlockerList,
+    expiresAt: verification.ok ? new Date(verification.payload.expiresAt).toISOString() : null,
+  });
 }
 
 async function execute(request, env) {
   const body = await parseBody(request);
   const mode = String(body.mode || 'sandbox').trim().toLowerCase();
-  const order = body.order || {};
   if (mode === 'sandbox') {
-    const blockers = sandboxBlockers(env);
-    if (blockers.length) return json({ ok: false, code: 'SANDBOX_EXECUTION_BLOCKED', blockers }, 423);
-    if (body.confirm !== true) return json({ ok: true, mode: 'SANDBOX', executionAttempted: false, confirmationRequired: true, order, liveFundsUsed: false });
-    const result = await placeWebullSandboxOrder(String(env.WEBULL_ACCOUNT_ID || '').trim(), order, sandboxEnvironment(env));
-    console.log(JSON.stringify({ event: 'SANDBOX_ORDER_SUBMITTED', symbol: order.symbol, signalId: order.signalId, createdAt: new Date().toISOString() }));
-    return json({ ok: true, mode: 'SANDBOX', executionAttempted: true, liveFundsUsed: false, protectedOrder: true, result }, 201);
+    if (!authorized(request, env)) return json({ ok: false, code: 'UNAUTHORIZED', error: 'A valid webhook secret is required.' }, 401);
+    const result = await executeSelectedSandboxOpportunity({
+      selector: {
+        opportunityId: body.opportunityId ?? body.id,
+        dedupeKey: body.dedupeKey,
+      },
+      requestedOrder: body.order || {},
+      confirm: body.confirm === true,
+      env,
+      coordinator: coordinator(env),
+      submitter: handleWebullSandboxOrder,
+      now: Date.now(),
+    });
+    if (result.status === 'SUBMITTED') {
+      console.log(JSON.stringify({ event: 'SELECTED_OPPORTUNITY_SANDBOX_SUBMITTED', opportunityId: result.opportunity?.id, symbol: result.order?.symbol, createdAt: new Date().toISOString() }));
+    } else if (result.status === 'BLOCKED' || result.status === 'FAILED') {
+      console.warn(JSON.stringify({ event: 'SELECTED_OPPORTUNITY_SANDBOX_BLOCKED', code: result.code || result.status, createdAt: new Date().toISOString() }));
+    }
+    return json(result, result.statusCode || (result.ok ? 200 : 422));
   }
   if (mode !== 'live') return json({ ok: false, error: 'mode must be sandbox or live' }, 400);
   const verification = await verifyLiveSession(request, env);
@@ -122,6 +153,7 @@ async function execute(request, env) {
   if (blockers.length) return json({ ok: false, code: 'LIVE_EXECUTION_BLOCKED', blockers }, 423);
   const accountId = String(env.WEBULL_LIVE_ACCOUNT_ID || '').trim();
   const liveEnv = liveEnvironment(env);
+  const order = body.order || {};
   const preview = await previewWebullLiveOrder(accountId, order, liveEnv);
   if (body.confirm !== true) return json({ ok: true, mode: 'LIVE', executionAttempted: false, confirmationRequired: true, preview });
   const result = await placeWebullLiveOrder(accountId, order, liveEnv);
