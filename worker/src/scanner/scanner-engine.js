@@ -15,15 +15,35 @@ function normalizeUniverse(items) {
   return [...entries.values()];
 }
 
-export function createScannerEngine({ marketData, pipeline, universeManager, maxConcurrent = 4, resultLimit = 20 } = {}) {
+export function createScannerEngine({ marketData, pipeline, universeManager, marketStateService, maxConcurrent = 4, resultLimit = 20 } = {}) {
   if (!marketData || typeof marketData.getSnapshot !== 'function') throw new Error('Scanner engine requires a market-data layer.');
   if (!pipeline || typeof pipeline.analyze !== 'function') throw new Error('Scanner engine requires an analysis pipeline.');
+  if (marketStateService && typeof marketStateService.getState !== 'function') {
+    throw new Error('Scanner market-state service must expose getState(context).');
+  }
   const concurrency = positiveInteger(maxConcurrent, 4, 1, 16);
   const limit = positiveInteger(resultLimit, 20, 1, 200);
+
+  async function resolveMarketState(context) {
+    if (context.marketState && typeof context.marketState === 'object') {
+      return { marketState: context.marketState, marketStateError: null };
+    }
+    if (!marketStateService) return { marketState: null, marketStateError: null };
+    try {
+      const marketState = await marketStateService.getState(context.marketStateContext || {});
+      return { marketState, marketStateError: null };
+    } catch (error) {
+      return {
+        marketState: null,
+        marketStateError: error instanceof Error ? error.message : 'Unknown market-state failure.',
+      };
+    }
+  }
 
   async function scan(items, context = {}) {
     const universe = normalizeUniverse(items);
     const results = new Array(universe.length);
+    const stateContext = await resolveMarketState(context);
     let cursor = 0;
 
     async function worker() {
@@ -35,7 +55,13 @@ export function createScannerEngine({ marketData, pipeline, universeManager, max
         const universePriority = Number(entry.priority || 0);
         try {
           const snapshot = await marketData.getSnapshot(symbol, context.marketDataOptions || {});
-          const analyzed = await pipeline.analyze(snapshot, { ...context, symbol, universeEntry: entry });
+          const analyzed = await pipeline.analyze(snapshot, {
+            ...context,
+            symbol,
+            universeEntry: entry,
+            marketState: stateContext.marketState,
+            marketStateError: stateContext.marketStateError,
+          });
           results[index] = Object.freeze({ ...analyzed, universePriority });
         } catch (error) {
           results[index] = Object.freeze({
@@ -68,6 +94,8 @@ export function createScannerEngine({ marketData, pipeline, universeManager, max
       scanned: universe.length,
       accepted: ranked.filter((result) => result.accepted).length,
       candidates: Object.freeze(ranked.slice(0, limit)),
+      marketState: stateContext.marketState,
+      marketStateError: stateContext.marketStateError,
       completedAt: new Date().toISOString(),
     });
   }
