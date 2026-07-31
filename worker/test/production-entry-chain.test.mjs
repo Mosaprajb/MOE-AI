@@ -6,6 +6,7 @@ const wranglerUrl = new URL('../../wrangler.jsonc', import.meta.url);
 const schedulerUrl = new URL('../src/smart-scheduler-entry.js', import.meta.url);
 const controllerUrl = new URL('../src/trading-mode-control-v2-entry.js', import.meta.url);
 const dashboardBridgeUrl = new URL('../src/trading-dashboard-entry.js', import.meta.url);
+const liveScannerUrl = new URL('../src/dashboard/live-scanner.js', import.meta.url);
 const tradingModeUrl = new URL('../src/trading-mode-entry.js', import.meta.url);
 
 function source(url) {
@@ -22,7 +23,12 @@ test('Cloudflare production entry chain resolves through the dashboard compatibi
   assert.match(scheduler, /from '\.\/trading-mode-control-v2-entry\.js'/);
   assert.match(controller, /from '\.\/trading-dashboard-entry\.js'/);
   assert.equal(existsSync(dashboardBridgeUrl), true);
+  assert.equal(existsSync(liveScannerUrl), true);
   assert.equal(existsSync(tradingModeUrl), true);
-  assert.match(bridge, /export \{ AlertCoordinator \} from '\.\/trading-mode-entry\.js'/);
-  assert.match(bridge, /export \{ default \} from '\.\/trading-mode-entry\.js'/);
+  assert.match(bridge, /import tradingWorker, \{ AlertCoordinator as TradingAlertCoordinator \} from '\.\/trading-mode-entry\.js'/);
+  assert.match(bridge, /export class AlertCoordinator extends TradingAlertCoordinator/);
+  assert.match(bridge, /LIVE_SCANNER_API_PATH/);
+  assert.match(bridge, /enhanceLiveScannerDashboard/);
+  assert.match(bridge, /return tradingWorker\.scheduled\(controller, env, ctx\)/);
+  assert.match(bridge, /export default \{/);
 });
