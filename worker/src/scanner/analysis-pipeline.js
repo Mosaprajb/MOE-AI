@@ -61,3 +61,9 @@ export function createAnalysisPipeline({ analyzers = {}, weights = {}, minimumSc
 }
 
 export { REQUIRED_ANALYSES };
+export {
+  ANALYSIS_PIPELINE_SCHEMA,
+  ANALYSIS_PIPELINE_VERSION,
+  ANALYZER_CATALOG,
+  createAnalysisPipelineV2,
+} from './analysis-pipeline-v2.js';
