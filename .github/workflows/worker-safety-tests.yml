@@ -7,6 +7,7 @@ on:
       - 'worker/test/**'
       - 'package.json'
       - 'wrangler.jsonc'
+      - 'wrangler.sandbox.jsonc'
       - '.github/workflows/worker-safety-tests.yml'
   push:
     branches:
@@ -16,6 +17,7 @@ on:
       - 'worker/test/**'
       - 'package.json'
       - 'wrangler.jsonc'
+      - 'wrangler.sandbox.jsonc'
       - '.github/workflows/worker-safety-tests.yml'
   workflow_dispatch:
 
@@ -111,6 +113,9 @@ jobs:
 
       - name: Test final safety configuration
         run: node --test --test-concurrency=1 worker/test/final-safety-configuration.test.mjs
+
+      - name: Test Real Sandbox runtime pilot observability
+        run: node --test --test-concurrency=1 worker/test/sandbox-runtime-pilot-observability.test.mjs
 
       - name: Run complete Worker safety suite
         run: npm run test:worker
