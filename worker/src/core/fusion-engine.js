@@ -185,3 +185,13 @@ export function fuseEngineResults(engineResults, options = {}) {
     }),
   });
 }
+
+export {
+  DEFAULT_FUSION_WEIGHTS_V2,
+  FUSION_ENGINE_V2_ID,
+  FUSION_RESULT_SCHEMA,
+  FUSION_RESULT_VERSION,
+  FusionGradeV2,
+  createFusionEngineV2,
+  fuseEngineResultsV2,
+} from './fusion-engine-v2.js';
