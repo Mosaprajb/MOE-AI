@@ -35,7 +35,7 @@ test('Trading Control passes strategy identity into reservation and broker signa
   assert.match(control, /strategyId,/);
   assert.match(control, /sourceStrategy: strategyId/);
   assert.match(control, /blockerLayer: 'PER_STRATEGY'/);
-  assert.match(control, /STRATEGY_MAX_DAILY_TRADES_REACHED/);
+  assert.match(control, /STRATEGY_CAPACITY_BLOCKERS\.DAILY/);
   assert.match(control, /globalPortfolioRiskBypassed: false/);
 });
 
