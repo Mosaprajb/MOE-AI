@@ -213,18 +213,20 @@ test('order status enforces the one-submission Sandbox pilot ceiling', async () 
   assert.equal(status.liveFundsUsed, false);
 });
 
-test('Sandbox pilot wrapper, endpoints, and secret hygiene stay locked', () => {
+test('Sandbox pilot wrapper, simulation isolation, endpoints, and secret hygiene stay locked', () => {
   const configText = readFileSync(join(root, 'wrangler.sandbox.jsonc'), 'utf8');
   const config = JSON.parse(configText);
   const entry = readFileSync(join(root, 'worker/src/sandbox-runtime-pilot-entry.js'), 'utf8');
   const operationsEntry = readFileSync(join(root, 'worker/src/sandbox-operations-entry.js'), 'utf8');
   const operationsV2Entry = readFileSync(join(root, 'worker/src/sandbox-operations-v2-entry.js'), 'utf8');
+  const simulationEntry = readFileSync(join(root, 'worker/src/sandbox-simulation-entry.js'), 'utf8');
+  const simulationEngine = readFileSync(join(root, 'worker/src/simulation/simulation-engine.js'), 'utf8');
   const dashboardEntry = readFileSync(join(root, 'worker/src/trading-dashboard-entry.js'), 'utf8');
   const observability = readFileSync(join(root, 'worker/src/observability/sandbox-runtime-pilot.js'), 'utf8');
   const gitignore = readFileSync(join(root, '.gitignore'), 'utf8');
 
   assert.equal(config.name, 'moerand-alerts-sandbox');
-  assert.equal(config.main, 'worker/src/sandbox-operations-v2-entry.js');
+  assert.equal(config.main, 'worker/src/sandbox-simulation-entry.js');
   assert.deepEqual(config.triggers.crons, ['* * * * *']);
   assert.equal(config.durable_objects.bindings[0].name, 'ALERT_COORDINATOR');
   assert.equal(config.observability.enabled, true);
@@ -234,6 +236,7 @@ test('Sandbox pilot wrapper, endpoints, and secret hygiene stay locked', () => {
   assert.equal(config.vars.MOE_SANDBOX_PILOT_ENABLED, 'false');
   assert.equal(config.vars.MOE_SANDBOX_PILOT_MAX_SUBMISSIONS_TOTAL, '1');
   assert.equal(config.vars.MOE_SANDBOX_DEFAULT_CAPITAL, '25000');
+  assert.equal(config.vars.MOE_SIMULATION_ENABLED, 'true');
   assert.equal(config.vars.WEBULL_MAX_QUANTITY, '1');
   assert.equal(config.vars.WEBULL_MAX_NOTIONAL, '1000');
   assert.equal(config.vars.MOE_LIVE_EXECUTION_IMPLEMENTED, 'false');
@@ -245,6 +248,7 @@ test('Sandbox pilot wrapper, endpoints, and secret hygiene stay locked', () => {
   assert.ok(config.secrets.required.includes('ALPACA_KEY_ID'));
   assert.ok(config.secrets.required.includes('ALPACA_SECRET_KEY'));
   assert.ok(config.secrets.required.includes('WEBULL_APP_SECRET'));
+  assert.equal(config.secrets.required.includes('MOE_SIMULATION_CONTROL_PIN'), false);
   assert.equal(configText.includes('do-not-leak'), false);
 
   assert.ok(operationsEntry.includes("from './sandbox-runtime-pilot-entry.js'"));
@@ -253,6 +257,12 @@ test('Sandbox pilot wrapper, endpoints, and secret hygiene stay locked', () => {
   assert.ok(operationsV2Entry.includes("from './alpaca-market-regime.js'"));
   assert.ok(operationsV2Entry.includes('probeAlpacaHourlyRegime'));
   assert.ok(operationsV2Entry.includes('return baseWorker.scheduled(controller, env, ctx)'));
+  assert.ok(simulationEntry.includes("from './sandbox-operations-v2-entry.js'"));
+  assert.ok(simulationEntry.includes('SIMULATION_MODE_ACTIVE'));
+  assert.ok(simulationEntry.includes('realSandboxScannerExecuted: false'));
+  assert.ok(simulationEngine.includes('LOCAL_SIMULATOR_NO_WEBULL'));
+  assert.equal(simulationEngine.includes('webull-client'), false);
+  assert.equal(simulationEngine.includes('webull-sandbox'), false);
   assert.ok(entry.includes('SANDBOX_PILOT_NOT_ARMED'));
   assert.ok(entry.includes('SANDBOX_PILOT_SUBMISSION_LIMIT_REACHED'));
   assert.ok(entry.includes('liveFundsUsed: false'));
