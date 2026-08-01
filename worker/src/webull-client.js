@@ -107,14 +107,16 @@ export async function webullRequest(method, path, { query = {}, body = null, req
   const url = new URL(path, `${getBaseUrl(env)}/`);
   for (const [key, value] of Object.entries(query)) if (value != null && value !== '') url.searchParams.set(key, String(value));
   const bodyText = body == null ? '' : JSON.stringify(body);
+  const normalizedMethod = String(method).trim().toUpperCase();
+  const contentTypeRequired = normalizedMethod === 'POST' || Boolean(bodyText);
   const timestamp = compactUtcTimestamp();
   const nonce = crypto.randomUUID().replaceAll('-', '');
   const signature = await createSignature({ path: url.pathname, query: url.searchParams, body: bodyText, appKey, appSecret, host: url.host, timestamp, nonce });
   const response = await fetch(url, {
-    method,
+    method: normalizedMethod,
     headers: {
       Accept: 'application/json',
-      ...(bodyText ? { 'content-type': 'application/json' } : {}),
+      ...(contentTypeRequired ? { 'content-type': 'application/json' } : {}),
       'x-app-key': appKey,
       'x-timestamp': timestamp,
       'x-signature-version': '1.0',
