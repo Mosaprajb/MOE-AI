@@ -97,7 +97,15 @@ test('health and readiness expose safe pilot state without leaking credentials',
   assert.equal(readiness.credentials.requiredCount, 7);
 
   const serialized = JSON.stringify({ health, readiness });
-  for (const secret of [env.MOE_WEBHOOK_SECRET, env.ALPACA_KEY_ID, env.ALPACA_SECRET_KEY, env.WEBULL_APP_KEY, env.WEBULL_APP_SECRET, env.WEBULL_ACCESS_TOKEN, env.WEBULL_ACCOUNT_ID]) {
+  for (const secret of [
+    env.MOE_WEBHOOK_SECRET,
+    env.ALPACA_KEY_ID,
+    env.ALPACA_SECRET_KEY,
+    env.WEBULL_APP_KEY,
+    env.WEBULL_APP_SECRET,
+    env.WEBULL_ACCESS_TOKEN,
+    env.WEBULL_ACCOUNT_ID,
+  ]) {
     assert.equal(serialized.includes(secret), false);
   }
 });
@@ -130,14 +138,34 @@ test('the committed pilot stays disarmed until explicitly enabled', () => {
 test('Durable Object audit summarizes protected submission, expiration, duplicate, and broker failure events', async () => {
   const env = safeEnv();
   const storage = memoryStorage();
-  await storage.put('bot-status:v2', { ok: true, scanned: 10, accepted: 2, completedAt: new Date(NOW - 5_000).toISOString() });
-  await storage.put('dashboard-live-scanner:v1', { generatedAt: new Date(NOW - 4_000).toISOString(), rows: [{ id: 'opp-nvda', symbol: 'NVDA', status: 'ACTIVE' }] });
+  await storage.put('bot-status:v2', {
+    ok: true,
+    scanned: 10,
+    accepted: 2,
+    completedAt: new Date(NOW - 5_000).toISOString(),
+  });
+  await storage.put('dashboard-live-scanner:v1', {
+    generatedAt: new Date(NOW - 4_000).toISOString(),
+    rows: [{ id: 'opp-nvda', symbol: 'NVDA', status: 'ACTIVE' }],
+  });
 
-  await recordSandboxPilotEvent(storage, { type: 'SCANNER_CYCLE_COMPLETED', status: 'COMPLETED', scanned: 10, accepted: 2, selected: 1 }, { now: NOW - 4_000 });
-  await recordSandboxPilotEvent(storage, { type: 'SANDBOX_ORDER_BLOCKED', status: 'BLOCKED', code: 'OPPORTUNITY_EXPIRED', symbol: 'NVDA' }, { now: NOW - 3_000 });
-  await recordSandboxPilotEvent(storage, { type: 'SANDBOX_ORDER_BLOCKED', status: 'BLOCKED', code: 'DUPLICATE_ORDER_BLOCKED', symbol: 'NVDA', duplicate: true }, { now: NOW - 2_000 });
-  await recordSandboxPilotEvent(storage, { type: 'SANDBOX_ORDER_REJECTED', status: 'REJECTED', brokerHost: 'https://api.sandbox.webull.com', brokerStatus: 503, protectedOrder: true, executionAttempted: true, reason: 'sandbox broker unavailable' }, { now: NOW - 1_000 });
-  await recordSandboxPilotEvent(storage, { type: 'SANDBOX_ORDER_SUBMITTED', status: 'SUBMITTED', symbol: 'NVDA', brokerHost: 'https://api.sandbox.webull.com', protectedOrder: true, liveFundsUsed: false, executionAttempted: true }, { now: NOW });
+  await recordSandboxPilotEvent(storage, {
+    type: 'SCANNER_CYCLE_COMPLETED', status: 'COMPLETED', scanned: 10, accepted: 2, selected: 1,
+  }, { now: NOW - 4_000 });
+  await recordSandboxPilotEvent(storage, {
+    type: 'SANDBOX_ORDER_BLOCKED', status: 'BLOCKED', code: 'OPPORTUNITY_EXPIRED', symbol: 'NVDA',
+  }, { now: NOW - 3_000 });
+  await recordSandboxPilotEvent(storage, {
+    type: 'SANDBOX_ORDER_BLOCKED', status: 'BLOCKED', code: 'DUPLICATE_ORDER_BLOCKED', symbol: 'NVDA', duplicate: true,
+  }, { now: NOW - 2_000 });
+  await recordSandboxPilotEvent(storage, {
+    type: 'SANDBOX_ORDER_REJECTED', status: 'REJECTED', brokerHost: 'https://api.sandbox.webull.com', brokerStatus: 503,
+    protectedOrder: true, executionAttempted: true, reason: 'sandbox broker unavailable',
+  }, { now: NOW - 1_000 });
+  await recordSandboxPilotEvent(storage, {
+    type: 'SANDBOX_ORDER_SUBMITTED', status: 'SUBMITTED', symbol: 'NVDA', brokerHost: 'https://api.sandbox.webull.com',
+    protectedOrder: true, liveFundsUsed: false, executionAttempted: true,
+  }, { now: NOW });
 
   const audit = await buildSandboxPilotAudit(storage, env, { control, now: NOW, limit: 20 });
   assert.equal(audit.ok, true);
@@ -164,8 +192,17 @@ test('order status enforces the one-submission Sandbox pilot ceiling', async () 
     now: NOW,
   }, env);
   assert.equal(reserved.accepted, true);
-  await finalizeOrderReservation(storage, reserved.reservation.id, { tradeId: 'sandbox-trade-1', capitalSource: 'CASH' }, env);
-  await recordSandboxPilotEvent(storage, { type: 'SANDBOX_ORDER_SUBMITTED', status: 'SUBMITTED', symbol: 'NVDA', reservationId: reserved.reservation.id, protectedOrder: true, brokerHost: 'https://api.sandbox.webull.com' }, { now: NOW });
+  await finalizeOrderReservation(storage, reserved.reservation.id, {
+    tradeId: 'sandbox-trade-1', capitalSource: 'CASH',
+  }, env);
+  await recordSandboxPilotEvent(storage, {
+    type: 'SANDBOX_ORDER_SUBMITTED',
+    status: 'SUBMITTED',
+    symbol: 'NVDA',
+    reservationId: reserved.reservation.id,
+    protectedOrder: true,
+    brokerHost: 'https://api.sandbox.webull.com',
+  }, { now: NOW });
 
   const status = await buildSandboxOrdersStatus(storage, env, { now: NOW });
   assert.equal(status.summary.submitted, 1);
@@ -176,16 +213,17 @@ test('order status enforces the one-submission Sandbox pilot ceiling', async () 
   assert.equal(status.liveFundsUsed, false);
 });
 
-test('Sandbox pilot config, isolated entrypoint, endpoints, and secret hygiene stay locked', () => {
+test('Sandbox pilot wrapper, endpoints, and secret hygiene stay locked', () => {
   const configText = readFileSync(join(root, 'wrangler.sandbox.jsonc'), 'utf8');
   const config = JSON.parse(configText);
   const entry = readFileSync(join(root, 'worker/src/sandbox-runtime-pilot-entry.js'), 'utf8');
+  const operationsEntry = readFileSync(join(root, 'worker/src/sandbox-operations-entry.js'), 'utf8');
   const dashboardEntry = readFileSync(join(root, 'worker/src/trading-dashboard-entry.js'), 'utf8');
   const observability = readFileSync(join(root, 'worker/src/observability/sandbox-runtime-pilot.js'), 'utf8');
   const gitignore = readFileSync(join(root, '.gitignore'), 'utf8');
 
   assert.equal(config.name, 'moerand-alerts-sandbox');
-  assert.equal(config.main, 'worker/src/sandbox-runtime-pilot-entry.js');
+  assert.equal(config.main, 'worker/src/sandbox-operations-entry.js');
   assert.deepEqual(config.triggers.crons, ['* * * * *']);
   assert.equal(config.durable_objects.bindings[0].name, 'ALERT_COORDINATOR');
   assert.equal(config.observability.enabled, true);
@@ -194,6 +232,7 @@ test('Sandbox pilot config, isolated entrypoint, endpoints, and secret hygiene s
   assert.equal(config.vars.MOE_RUNTIME_ENVIRONMENT, 'SANDBOX_PILOT');
   assert.equal(config.vars.MOE_SANDBOX_PILOT_ENABLED, 'false');
   assert.equal(config.vars.MOE_SANDBOX_PILOT_MAX_SUBMISSIONS_TOTAL, '1');
+  assert.equal(config.vars.MOE_SANDBOX_DEFAULT_CAPITAL, '25000');
   assert.equal(config.vars.WEBULL_MAX_QUANTITY, '1');
   assert.equal(config.vars.WEBULL_MAX_NOTIONAL, '1000');
   assert.equal(config.vars.MOE_LIVE_EXECUTION_IMPLEMENTED, 'false');
@@ -207,14 +246,26 @@ test('Sandbox pilot config, isolated entrypoint, endpoints, and secret hygiene s
   assert.ok(config.secrets.required.includes('WEBULL_APP_SECRET'));
   assert.equal(configText.includes('do-not-leak'), false);
 
+  assert.ok(operationsEntry.includes("from './sandbox-runtime-pilot-entry.js'"));
+  assert.ok(operationsEntry.includes('return baseWorker.scheduled(controller, env, ctx)'));
   assert.ok(entry.includes('SANDBOX_PILOT_NOT_ARMED'));
   assert.ok(entry.includes('SANDBOX_PILOT_SUBMISSION_LIMIT_REACHED'));
   assert.ok(entry.includes('liveFundsUsed: false'));
-  for (const constant of ['SANDBOX_HEALTH_PATH', 'SANDBOX_READINESS_PATH', 'SANDBOX_AUDIT_PATH', 'SANDBOX_ORDERS_STATUS_PATH']) {
+  for (const constant of [
+    'SANDBOX_HEALTH_PATH',
+    'SANDBOX_READINESS_PATH',
+    'SANDBOX_AUDIT_PATH',
+    'SANDBOX_ORDERS_STATUS_PATH',
+  ]) {
     assert.ok(dashboardEntry.includes(constant));
     assert.ok(observability.includes(constant));
   }
-  assert.deepEqual([SANDBOX_HEALTH_PATH, SANDBOX_READINESS_PATH, SANDBOX_AUDIT_PATH, SANDBOX_ORDERS_STATUS_PATH], [
+  assert.deepEqual([
+    SANDBOX_HEALTH_PATH,
+    SANDBOX_READINESS_PATH,
+    SANDBOX_AUDIT_PATH,
+    SANDBOX_ORDERS_STATUS_PATH,
+  ], [
     '/api/health',
     '/api/readiness',
     '/api/sandbox/audit',
