@@ -218,12 +218,13 @@ test('Sandbox pilot wrapper, endpoints, and secret hygiene stay locked', () => {
   const config = JSON.parse(configText);
   const entry = readFileSync(join(root, 'worker/src/sandbox-runtime-pilot-entry.js'), 'utf8');
   const operationsEntry = readFileSync(join(root, 'worker/src/sandbox-operations-entry.js'), 'utf8');
+  const operationsV2Entry = readFileSync(join(root, 'worker/src/sandbox-operations-v2-entry.js'), 'utf8');
   const dashboardEntry = readFileSync(join(root, 'worker/src/trading-dashboard-entry.js'), 'utf8');
   const observability = readFileSync(join(root, 'worker/src/observability/sandbox-runtime-pilot.js'), 'utf8');
   const gitignore = readFileSync(join(root, '.gitignore'), 'utf8');
 
   assert.equal(config.name, 'moerand-alerts-sandbox');
-  assert.equal(config.main, 'worker/src/sandbox-operations-entry.js');
+  assert.equal(config.main, 'worker/src/sandbox-operations-v2-entry.js');
   assert.deepEqual(config.triggers.crons, ['* * * * *']);
   assert.equal(config.durable_objects.bindings[0].name, 'ALERT_COORDINATOR');
   assert.equal(config.observability.enabled, true);
@@ -248,6 +249,10 @@ test('Sandbox pilot wrapper, endpoints, and secret hygiene stay locked', () => {
 
   assert.ok(operationsEntry.includes("from './sandbox-runtime-pilot-entry.js'"));
   assert.ok(operationsEntry.includes('return baseWorker.scheduled(controller, env, ctx)'));
+  assert.ok(operationsV2Entry.includes("from './sandbox-operations-entry.js'"));
+  assert.ok(operationsV2Entry.includes("from './alpaca-market-regime.js'"));
+  assert.ok(operationsV2Entry.includes('probeAlpacaHourlyRegime'));
+  assert.ok(operationsV2Entry.includes('return baseWorker.scheduled(controller, env, ctx)'));
   assert.ok(entry.includes('SANDBOX_PILOT_NOT_ARMED'));
   assert.ok(entry.includes('SANDBOX_PILOT_SUBMISSION_LIMIT_REACHED'));
   assert.ok(entry.includes('liveFundsUsed: false'));
