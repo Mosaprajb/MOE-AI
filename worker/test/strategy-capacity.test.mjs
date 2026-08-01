@@ -193,9 +193,13 @@ test('daily strategy limit blocks before order reservation and records a distinc
   const now = Date.parse('2026-08-01T16:00:00.000Z');
   const storage = memoryStorage({
     [STRATEGY_CAPACITY_LEASE_KEY]: {
-      s1: lease({ id: 's1', strategyId: STRATEGY_IDS.MOERAND_SIMPLE_INTERNAL, createdAt: '2026-08-01T14:05:00.000Z', expiresAt: now + 60_000 }),
-      s2: lease({ id: 's2', strategyId: STRATEGY_IDS.MOERAND_SIMPLE_INTERNAL, createdAt: '2026-08-01T14:10:00.000Z', expiresAt: now + 60_000 }),
+      s1: lease({ id: 's1', strategyId: STRATEGY_IDS.MOERAND_SIMPLE_INTERNAL, createdAt: '2026-08-01T14:05:00.000Z', expiresAt: now + 60_000, tradeId: 'trade-s1' }),
+      s2: lease({ id: 's2', strategyId: STRATEGY_IDS.MOERAND_SIMPLE_INTERNAL, createdAt: '2026-08-01T14:10:00.000Z', expiresAt: now + 60_000, tradeId: 'trade-s2' }),
     },
+    'trade-history:v1': [
+      { id: 'trade-s1', status: 'CLOSED' },
+      { id: 'trade-s2', status: 'CLOSED' },
+    ],
   });
 
   const result = await reserveStrategyOrderSubmission(storage, {
