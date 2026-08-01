@@ -7,10 +7,12 @@ import { fileURLToPath } from 'node:url';
 const directory = dirname(fileURLToPath(import.meta.url));
 const root = join(directory, '..', '..');
 const source = readFileSync(join(root, 'worker/src/sandbox-operations-entry.js'), 'utf8');
+const v2Source = readFileSync(join(root, 'worker/src/sandbox-operations-v2-entry.js'), 'utf8');
+const alpacaSource = readFileSync(join(root, 'worker/src/alpaca-market-regime.js'), 'utf8');
 const config = readFileSync(join(root, 'wrangler.sandbox.jsonc'), 'utf8');
 
-test('sandbox Worker is wired through the operations dashboard entry', () => {
-  assert.match(config, /"main": "worker\/src\/sandbox-operations-entry\.js"/);
+test('sandbox Worker is wired through the operations dashboard v2 entry', () => {
+  assert.match(config, /"main": "worker\/src\/sandbox-operations-v2-entry\.js"/);
   assert.match(config, /"MOE_SANDBOX_DEFAULT_CAPITAL": "25000"/);
   assert.match(config, /"MOE_SANDBOX_PILOT_ENABLED": "false"/);
   assert.match(config, /"WEBULL_LIVE_TRADING": "false"/);
@@ -18,6 +20,8 @@ test('sandbox Worker is wired through the operations dashboard entry', () => {
   assert.match(config, /"WEBULL_LIVE_AUTOMATION_ARMED": "false"/);
   assert.match(config, /"WEBULL_LIVE_KILL_SWITCH": "true"/);
   assert.match(source, /from '\.\/sandbox-runtime-pilot-entry\.js'/);
+  assert.match(v2Source, /from '\.\/sandbox-operations-entry\.js'/);
+  assert.match(v2Source, /probeAlpacaHourlyRegime/);
 });
 
 test('browser dashboard polls sanitized same-origin observability views without storing secrets', () => {
@@ -51,8 +55,18 @@ test('session implementation includes Sunday NIGHT and regular CORE boundaries',
   assert.match(source, /return \{ current: 'CORE', open: true/);
 });
 
-test('dashboard wrapper remains observation-only and delegates scheduled work', () => {
+test('Alpaca probe avoids the truncated multi-symbol response shape', () => {
+  assert.match(alpacaSource, /\/v2\/stocks\/\$\{symbol\}\/bars/);
+  assert.equal(alpacaSource.includes("symbols: 'SPY,QQQ'"), false);
+  assert.match(alpacaSource, /Promise\.all\(symbols\.map/);
+  assert.match(alpacaSource, /DEFAULT_MINIMUM_BARS = 50/);
+});
+
+test('dashboard wrappers remain observation-only and delegate scheduled work', () => {
   assert.match(source, /return baseWorker\.scheduled\(controller, env, ctx\)/);
+  assert.match(v2Source, /return baseWorker\.scheduled\(controller, env, ctx\)/);
   assert.equal(source.includes('WEBULL_LIVE_TRADING = true'), false);
   assert.equal(source.includes('WEBULL_LIVE_ORDER_SUBMISSION = true'), false);
+  assert.equal(v2Source.includes('WEBULL_LIVE_TRADING = true'), false);
+  assert.equal(v2Source.includes('WEBULL_LIVE_ORDER_SUBMISSION = true'), false);
 });
