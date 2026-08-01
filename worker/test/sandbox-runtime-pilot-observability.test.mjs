@@ -226,7 +226,7 @@ test('Sandbox pilot wrapper, simulation isolation, endpoints, and secret hygiene
   const gitignore = readFileSync(join(root, '.gitignore'), 'utf8');
 
   assert.equal(config.name, 'moerand-alerts-sandbox');
-  assert.equal(config.main, 'worker/src/sandbox-simulation-entry.js');
+  assert.equal(config.main, 'worker/src/sandbox-simulation-rpc-entry.js');
   assert.deepEqual(config.triggers.crons, ['* * * * *']);
   assert.equal(config.durable_objects.bindings[0].name, 'ALERT_COORDINATOR');
   assert.equal(config.observability.enabled, true);
