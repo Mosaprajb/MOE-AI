@@ -1,8 +1,16 @@
+import { STRATEGY_CAPACITY_BLOCKERS } from '../strategy/strategy-capacity.js';
+import { strategyIdFromRecord } from '../strategy/strategy-registry.js';
+
 export const TRADING_CONTROL_SCHEMA = 'MOE.SelectedOpportunitySandboxControl';
-export const TRADING_CONTROL_VERSION = '1.0.0';
+export const TRADING_CONTROL_VERSION = '1.1.0';
 
 const ACTIVE_STATUS = 'ACTIVE';
 const ALLOWED_GRADES = new Set(['AAA', 'AA', 'A', 'BBB', 'BB']);
+const STRATEGY_LIMIT_BLOCKERS = new Set([
+  STRATEGY_CAPACITY_BLOCKERS.DAILY,
+  STRATEGY_CAPACITY_BLOCKERS.CONCURRENT,
+  STRATEGY_CAPACITY_BLOCKERS.STRATEGY_REQUIRED,
+]);
 
 function deepFreeze(value) {
   if (!value || typeof value !== 'object' || Object.isFrozen(value)) return value;
@@ -45,10 +53,15 @@ function selectorValue(selector = {}) {
   };
 }
 
+function recordStrategyId(record) {
+  return strategyIdFromRecord(record);
+}
+
 function publicOpportunity(record) {
   return deepFreeze({
     id: record.id,
     dedupeKey: record.dedupeKey,
+    strategyId: recordStrategyId(record),
     symbol: record.symbol,
     direction: record.direction,
     timeframe: record.timeframe,
@@ -210,9 +223,12 @@ function signalIdFor(record) {
 function sandboxRequest(record, order, env = {}) {
   const opportunity = record.opportunity ?? {};
   const metadata = opportunity.metadata ?? {};
+  const strategyId = recordStrategyId(record);
   const payload = {
     ...order,
     signalId: signalIdFor(record),
+    strategyId,
+    sourceStrategy: strategyId,
     source: 'MOERAND_AUTO_OPPORTUNITY',
     submitSandbox: true,
     submitLive: false,
@@ -225,6 +241,8 @@ function sandboxRequest(record, order, env = {}) {
       opportunityDedupeKey: record.dedupeKey,
       opportunityRank: record.rank,
       opportunityGrade: record.grade,
+      strategyId,
+      sourceStrategy: strategyId,
       signalScore: record.score,
       brainScore: record.score,
       confidence: record.confidence,
@@ -253,6 +271,7 @@ function outcome(status, data = {}, statusCode = 200) {
     mode: 'SANDBOX',
     liveFundsUsed: false,
     protectedOrder: true,
+    globalPortfolioRiskBypassed: false,
     ...data,
   });
 }
@@ -311,13 +330,15 @@ export async function executeSelectedSandboxOpportunity({
   }
 
   const opportunity = publicOpportunity(selected.record);
+  const strategyId = recordStrategyId(selected.record);
   if (confirm !== true) {
     return outcome('PREVIEW', {
       ok: true,
       executionAttempted: false,
       confirmationRequired: true,
       opportunity,
-      order: deepFreeze({ ...order, signalId: signalIdFor(selected.record), source: 'MOERAND_AUTO_OPPORTUNITY' }),
+      strategyId,
+      order: deepFreeze({ ...order, signalId: signalIdFor(selected.record), strategyId, source: 'MOERAND_AUTO_OPPORTUNITY' }),
     });
   }
 
@@ -337,17 +358,36 @@ export async function executeSelectedSandboxOpportunity({
   const signalId = signalIdFor(selected.record);
   const reservation = await coordinator.reserveOrderSubmission({
     signalId,
+    strategyId,
+    sourceStrategy: strategyId,
+    opportunityId: selected.record.id,
     accountId: text(env.WEBULL_ACCOUNT_ID),
     symbol: order.symbol,
     side: order.side,
     runtimeMode: 'SANDBOX',
     requestedCapitalMode: 'AUTO',
     source: 'MOERAND_AUTO_OPPORTUNITY',
+    now,
   });
   if (!reservation?.accepted) {
+    if (STRATEGY_LIMIT_BLOCKERS.has(reservation?.blocker)) {
+      return outcome('BLOCKED', {
+        ok: false,
+        code: reservation.blocker,
+        blockerLayer: 'PER_STRATEGY',
+        strategyId,
+        strategyCapacity: reservation.strategyCapacity || null,
+        audit: reservation.audit || null,
+        opportunity,
+        order,
+        executionAttempted: false,
+        existingPositionsManaged: true,
+      }, reservation.blocker === STRATEGY_CAPACITY_BLOCKERS.DAILY ? 429 : 409);
+    }
     return outcome('BLOCKED', {
       ok: false,
       code: 'DUPLICATE_ORDER_BLOCKED',
+      blockerLayer: 'ORDER_DUPLICATE_PROTECTION',
       duplicate: true,
       duplicateProtection: reservation,
       opportunity,
@@ -362,6 +402,8 @@ export async function executeSelectedSandboxOpportunity({
     const payload = await response.clone().json().catch(() => ({}));
     if (payload?.submitted === true) {
       const finalized = await coordinator.finalizeOrderReservation(reservationId, {
+        strategyId,
+        sourceStrategy: strategyId,
         tradeId: payload.tradeId || null,
         capitalSource: payload.capitalPolicy?.capitalSource || 'AUTO',
         brokerOrderIds: payload.submission?.clientOrderIds || payload.submission?.client_order_ids || null,
@@ -370,8 +412,10 @@ export async function executeSelectedSandboxOpportunity({
         ok: true,
         submitted: true,
         executionAttempted: true,
+        strategyId,
         opportunity,
         order,
+        strategyCapacity: reservation.strategyCapacity || null,
         duplicateProtection: { reserved: true, finalized },
         sandbox: payload,
       }, response.status || 201);
@@ -383,6 +427,7 @@ export async function executeSelectedSandboxOpportunity({
       ok: false,
       submitted: false,
       executionAttempted: true,
+      strategyId,
       opportunity,
       order,
       duplicateProtection: { reserved: true, released },
@@ -397,6 +442,7 @@ export async function executeSelectedSandboxOpportunity({
       ok: false,
       submitted: false,
       executionAttempted: true,
+      strategyId,
       error: error instanceof Error ? error.message : 'Sandbox order pipeline failed.',
       opportunity,
       order,
