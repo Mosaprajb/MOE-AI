@@ -9,6 +9,7 @@ import { createFusionEngineV2 } from '../core/fusion-engine-v2.js';
 import { createMarketSnapshot } from '../market-data/market-snapshot.js';
 import { evaluateBrainCandidate } from '../moe-ai-brain.js';
 import { createAnalysisPipelineV2 } from '../scanner/analysis-pipeline-v2.js';
+import { runMoerandHeikinStrategy } from './moerand-heikin-strategy.js';
 
 export const SIMULATION_STRATEGIES = Object.freeze({
   FUSION_V2: 'FUSION_V2',
@@ -384,7 +385,7 @@ export async function runSimulationStrategies({
     const key = `${strategy}:${symbol}`;
     const result = strategy === SIMULATION_STRATEGIES.FUSION_V2
       ? await runFusionV2({ symbol, bars: normalizedBars, previousState: strategyState[key], env, simulatedAt })
-      : runMoerandSimple({ symbol, bars: normalizedBars, previousState: strategyState[key], simulatedAt });
+      : runMoerandHeikinStrategy({ symbol, bars: normalizedBars, previousState: strategyState[key], env, simulatedAt });
     nextState[key] = result.nextState;
     results.push(result);
   }
