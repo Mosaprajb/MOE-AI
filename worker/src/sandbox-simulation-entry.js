@@ -7,12 +7,20 @@
 import baseWorker, { AlertCoordinator as BaseAlertCoordinator } from './sandbox-operations-v2-entry.js';
 import { enhanceSimulationDashboard } from './simulation/simulation-dashboard.js';
 import {
+  compactSimulationLiveScanner,
+  compactSimulationState,
+  SimulationDriver,
+  stabilizeSimulationDashboardResponse,
+} from './simulation/simulation-server-runtime.js';
+import {
   readHistoricalSimulation,
   readHistoricalSimulationReport,
   startHistoricalSimulation,
   stopHistoricalSimulation,
   tickHistoricalSimulation,
 } from './simulation/simulation-engine.js';
+
+export { SimulationDriver };
 
 const PATHS = Object.freeze({
   session: '/api/sandbox/simulate/session',
@@ -53,6 +61,10 @@ function json(payload, status = 200, headers = {}) {
 
 function coordinator(env) {
   return env.ALERT_COORDINATOR.getByName('global');
+}
+
+function simulationDriver(env) {
+  return env.SIMULATION_DRIVER.getByName('global');
 }
 
 async function requestBody(request) {
@@ -198,8 +210,11 @@ async function handleSimulationApi(request, env, pathname) {
   if (pathname === PATHS.session && request.method === 'POST') return establishSession(request, env);
 
   const stub = coordinator(env);
+  const driver = simulationDriver(env);
   if (pathname === PATHS.status && request.method === 'GET') {
-    return json({ ok: true, simulation: await stub.historicalSimulationStatus() });
+    const simulation = await stub.historicalSimulationStatus();
+    if (simulation?.active) await driver.ensureArmed();
+    return json({ ok: true, simulation: compactSimulationState(simulation) });
   }
 
   if (!(await requireSession(request, env))) {
@@ -223,17 +238,21 @@ async function handleSimulationApi(request, env, pathname) {
       range: body.range,
       speedMultiplier: body.speedMultiplier,
     });
-    return json({ ok: true, simulation }, 201);
+    await driver.arm(simulation.tickIntervalMs);
+    return json({ ok: true, simulation: compactSimulationState(simulation) }, 201);
   }
 
   if (pathname === PATHS.tick && request.method === 'POST') {
     const simulation = await stub.tickHistoricalSimulation();
-    return json({ ok: true, simulation });
+    if (simulation?.active) await driver.ensureArmed();
+    else await driver.disarm('SIMULATION_COMPLETED');
+    return json({ ok: true, simulation: compactSimulationState(simulation) });
   }
 
   if (pathname === PATHS.stop && request.method === 'POST') {
     const simulation = await stub.stopHistoricalSimulation();
-    return json({ ok: true, simulation });
+    await driver.disarm('SIMULATION_STOPPED');
+    return json({ ok: true, simulation: compactSimulationState(simulation) });
   }
 
   if (pathname === PATHS.report && request.method === 'GET') {
@@ -259,7 +278,7 @@ async function simulationLiveScanner(env) {
   if (!simulation.active) return null;
   return json({
     ok: true,
-    liveScanner: simulation.liveScanner,
+    liveScanner: compactSimulationLiveScanner(simulation.liveScanner),
     storage: 'DURABLE_OBJECT',
     mode: 'SIMULATION',
     simulation: true,
@@ -269,6 +288,8 @@ async function simulationLiveScanner(env) {
     observationOnly: true,
     executionEnabled: false,
     executionAllowed: false,
+    serverDriven: true,
+    tickSource: 'DURABLE_OBJECT_ALARM',
   });
 }
 
@@ -276,6 +297,7 @@ async function scheduledWithSimulationIsolation(controller, env, ctx) {
   try {
     const simulation = await coordinator(env).historicalSimulationStatus();
     if (simulation.active) {
+      await simulationDriver(env).ensureArmed();
       const result = {
         ok: true,
         skipped: 'SIMULATION_MODE_ACTIVE',
@@ -285,13 +307,13 @@ async function scheduledWithSimulationIsolation(controller, env, ctx) {
         realSandboxScannerExecuted: false,
         liveExecutionAllowed: false,
         liveFundsUsed: false,
+        simulationServerDriven: true,
         createdAt: new Date().toISOString(),
       };
       console.log(JSON.stringify({ event: 'REAL_SANDBOX_SCHEDULE_SUPPRESSED_FOR_SIMULATION', ...result }));
       return result;
     }
   } catch (error) {
-    // Fail closed: an unreadable simulation lock must not start real Sandbox scanner work.
     const result = {
       ok: false,
       skipped: 'SIMULATION_STATE_UNAVAILABLE_FAIL_CLOSED',
@@ -332,7 +354,8 @@ export default {
     }
 
     const response = await baseWorker.fetch(request, env, ctx);
-    return DASHBOARD_PATHS.has(pathname) ? enhanceSimulationDashboard(response) : response;
+    if (!DASHBOARD_PATHS.has(pathname)) return response;
+    return stabilizeSimulationDashboardResponse(await enhanceSimulationDashboard(response));
   },
 
   scheduled(controller, env, ctx) {
