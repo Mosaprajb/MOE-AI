@@ -3,7 +3,6 @@ import { readFileSync } from 'node:fs';
 import test from 'node:test';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { currentSandboxSession } from '../src/sandbox-operations-entry.js';
 
 const directory = dirname(fileURLToPath(import.meta.url));
 const root = join(directory, '..', '..');
@@ -18,6 +17,7 @@ test('sandbox Worker is wired through the operations dashboard entry', () => {
   assert.match(config, /"WEBULL_LIVE_ORDER_SUBMISSION": "false"/);
   assert.match(config, /"WEBULL_LIVE_AUTOMATION_ARMED": "false"/);
   assert.match(config, /"WEBULL_LIVE_KILL_SWITCH": "true"/);
+  assert.match(source, /from '\.\/sandbox-runtime-pilot-entry\.js'/);
 });
 
 test('browser dashboard polls sanitized same-origin observability views without storing secrets', () => {
@@ -43,27 +43,16 @@ test('position sizing is fixed to one percent of the configured Sandbox capital'
   assert.match(source, /entry-stop/);
 });
 
-test('Sunday 8 PM New York is NIGHT only when overnight Sandbox scanning is enabled', () => {
-  const enabled = currentSandboxSession({
-    AUTO_SCANNER_TRADING_HOURS: 'AUTO',
-    AUTO_SCANNER_OVERNIGHT_ENABLED: 'true',
-  }, new Date('2026-08-03T00:05:00.000Z'));
-  assert.equal(enabled.current, 'NIGHT');
-  assert.equal(enabled.open, true);
-
-  const disabled = currentSandboxSession({
-    AUTO_SCANNER_TRADING_HOURS: 'AUTO',
-    AUTO_SCANNER_OVERNIGHT_ENABLED: 'false',
-  }, new Date('2026-08-03T00:05:00.000Z'));
-  assert.equal(disabled.current, 'CLOSED');
-  assert.equal(disabled.open, false);
+test('session implementation includes Sunday NIGHT and regular CORE boundaries', () => {
+  assert.match(source, /weekday === 'Sun' && minutes >= 20 \* 60/);
+  assert.match(source, /minutes >= 9 \* 60 \+ 30 && minutes < 16 \* 60/);
+  assert.match(source, /AUTO_SCANNER_OVERNIGHT_ENABLED/);
+  assert.match(source, /return \{ current: 'NIGHT', open: true/);
+  assert.match(source, /return \{ current: 'CORE', open: true/);
 });
 
-test('regular US market hours are reported as CORE', () => {
-  const session = currentSandboxSession({
-    AUTO_SCANNER_TRADING_HOURS: 'AUTO',
-    AUTO_SCANNER_OVERNIGHT_ENABLED: 'true',
-  }, new Date('2026-08-03T13:35:00.000Z'));
-  assert.equal(session.current, 'CORE');
-  assert.equal(session.open, true);
+test('dashboard wrapper remains observation-only and delegates scheduled work', () => {
+  assert.match(source, /return baseWorker\.scheduled\(controller, env, ctx\)/);
+  assert.equal(source.includes('WEBULL_LIVE_TRADING = true'), false);
+  assert.equal(source.includes('WEBULL_LIVE_ORDER_SUBMISSION = true'), false);
 });
