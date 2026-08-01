@@ -8,11 +8,14 @@ const directory = dirname(fileURLToPath(import.meta.url));
 const root = join(directory, '..', '..');
 const source = readFileSync(join(root, 'worker/src/sandbox-operations-entry.js'), 'utf8');
 const v2Source = readFileSync(join(root, 'worker/src/sandbox-operations-v2-entry.js'), 'utf8');
+const simulationSource = readFileSync(join(root, 'worker/src/sandbox-simulation-entry.js'), 'utf8');
+const simulationDashboard = readFileSync(join(root, 'worker/src/simulation/simulation-dashboard.js'), 'utf8');
 const alpacaSource = readFileSync(join(root, 'worker/src/alpaca-market-regime.js'), 'utf8');
 const config = readFileSync(join(root, 'wrangler.sandbox.jsonc'), 'utf8');
 
-test('sandbox Worker is wired through the operations dashboard v2 entry', () => {
-  assert.match(config, /"main": "worker\/src\/sandbox-operations-v2-entry\.js"/);
+test('sandbox Worker is wired through the isolated simulation entry', () => {
+  assert.match(config, /"main": "worker\/src\/sandbox-simulation-entry\.js"/);
+  assert.match(config, /"MOE_SIMULATION_ENABLED": "true"/);
   assert.match(config, /"MOE_SANDBOX_DEFAULT_CAPITAL": "25000"/);
   assert.match(config, /"MOE_SANDBOX_PILOT_ENABLED": "false"/);
   assert.match(config, /"WEBULL_LIVE_TRADING": "false"/);
@@ -22,9 +25,11 @@ test('sandbox Worker is wired through the operations dashboard v2 entry', () => 
   assert.match(source, /from '\.\/sandbox-runtime-pilot-entry\.js'/);
   assert.match(v2Source, /from '\.\/sandbox-operations-entry\.js'/);
   assert.match(v2Source, /probeAlpacaHourlyRegime/);
+  assert.match(simulationSource, /from '\.\/sandbox-operations-v2-entry\.js'/);
+  assert.match(simulationSource, /SIMULATION_MODE_ACTIVE/);
 });
 
-test('browser dashboard polls sanitized same-origin observability views without storing secrets', () => {
+test('browser dashboards use sanitized same-origin endpoints and never persist secrets', () => {
   for (const path of [
     '/api/health?view=public',
     '/api/readiness?view=public',
@@ -39,6 +44,12 @@ test('browser dashboard polls sanitized same-origin observability views without 
   assert.equal(browserScript.includes('sessionStorage'), false);
   assert.equal(browserScript.includes('LIVE_TRADING'), false);
   assert.match(browserScript, /const pollMs=\$\{POLL_INTERVAL_MS\}/);
+
+  assert.equal(simulationDashboard.includes('localStorage'), false);
+  assert.equal(simulationDashboard.includes('sessionStorage'), false);
+  assert.equal(simulationDashboard.includes('MOE_WEBHOOK_SECRET'), false);
+  assert.match(simulationDashboard, /SIMULATION MODE — NOT REAL MARKET DATA/);
+  assert.match(simulationSource, /HttpOnly; Secure; SameSite=Strict/);
 });
 
 test('position sizing is fixed to one percent of the configured Sandbox capital', () => {
@@ -62,11 +73,12 @@ test('Alpaca probe avoids the truncated multi-symbol response shape', () => {
   assert.match(alpacaSource, /DEFAULT_MINIMUM_BARS = 50/);
 });
 
-test('dashboard wrappers remain observation-only and delegate scheduled work', () => {
+test('all wrappers remain safe and delegate only when simulation is inactive', () => {
   assert.match(source, /return baseWorker\.scheduled\(controller, env, ctx\)/);
   assert.match(v2Source, /return baseWorker\.scheduled\(controller, env, ctx\)/);
-  assert.equal(source.includes('WEBULL_LIVE_TRADING = true'), false);
-  assert.equal(source.includes('WEBULL_LIVE_ORDER_SUBMISSION = true'), false);
-  assert.equal(v2Source.includes('WEBULL_LIVE_TRADING = true'), false);
-  assert.equal(v2Source.includes('WEBULL_LIVE_ORDER_SUBMISSION = true'), false);
+  assert.match(simulationSource, /return baseWorker\.scheduled\(controller, env, ctx\)/);
+  assert.match(simulationSource, /realSandboxScannerExecuted: false/);
+  assert.equal(simulationSource.includes('WEBULL_LIVE_TRADING = true'), false);
+  assert.equal(simulationSource.includes('WEBULL_LIVE_ORDER_SUBMISSION = true'), false);
+  assert.equal(simulationSource.includes('MOE_SANDBOX_PILOT_ENABLED = true'), false);
 });
