@@ -17,10 +17,14 @@
   },
   "triggers": { "crons": ["* * * * *"] },
   "durable_objects": {
-    "bindings": [{ "name": "ALERT_COORDINATOR", "class_name": "AlertCoordinator" }]
+    "bindings": [
+      { "name": "ALERT_COORDINATOR", "class_name": "AlertCoordinator" },
+      { "name": "SIMULATION_DRIVER", "class_name": "SimulationDriver" }
+    ]
   },
   "exports": {
-    "AlertCoordinator": { "type": "durable-object", "storage": "sqlite" }
+    "AlertCoordinator": { "type": "durable-object", "storage": "sqlite" },
+    "SimulationDriver": { "type": "durable-object", "storage": "sqlite" }
   },
   "secrets": {
     "required": [
