@@ -1,0 +1,132 @@
+name: Deploy Sandbox Strategy Capacity
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    branches:
+      - ci/strategy-capacity-base-20260801
+    paths:
+      - '.github/workflows/deploy-sandbox-strategy-capacity.yml'
+      - 'worker/src/**'
+      - 'worker/test/**'
+      - 'wrangler.sandbox.jsonc'
+      - 'package.json'
+      - 'package-lock.json'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-sandbox-strategy-capacity
+  cancel-in-progress: false
+
+jobs:
+  deploy-and-verify:
+    name: Deploy and verify Sandbox strategy capacity
+    if: >-
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      github.event.pull_request.head.ref == 'ci/strategy-capacity-review-20260801'
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Checkout exact PR head
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      - name: Install locked dependencies
+        run: npm ci
+
+      - name: Run complete Worker safety suite
+        run: npm run test:worker
+
+      - name: Confirm Sandbox safety configuration
+        shell: bash
+        run: |
+          grep -F '"MOE_SANDBOX_PILOT_ENABLED": "false"' wrangler.sandbox.jsonc
+          grep -F '"WEBULL_LIVE_TRADING": "false"' wrangler.sandbox.jsonc
+          grep -F '"WEBULL_LIVE_ORDER_SUBMISSION": "false"' wrangler.sandbox.jsonc
+          grep -F '"WEBULL_LIVE_AUTOMATION_ARMED": "false"' wrangler.sandbox.jsonc
+          grep -F '"WEBULL_LIVE_KILL_SWITCH": "true"' wrangler.sandbox.jsonc
+          grep -F '"MOE_MAX_PORTFOLIO_RISK_PERCENT": "0.5"' wrangler.sandbox.jsonc
+          grep -F '"MOE_MAX_DAILY_LOSS_PERCENT": "0.5"' wrangler.sandbox.jsonc
+
+      - name: Deploy Cloudflare Sandbox Worker
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: npx wrangler deploy --config wrangler.sandbox.jsonc
+
+      - name: Verify deployed strategy counters and dashboard
+        env:
+          CAPACITY_URL: https://moerand-alerts-sandbox.mosaprajb.workers.dev/api/strategies/capacity
+          DASHBOARD_URL: https://moerand-alerts-sandbox.mosaprajb.workers.dev/dashboard
+        run: |
+          node <<'NODE'
+          const expected = {
+            FUSION_V2: 1,
+            MOERAND_SIMPLE_INTERNAL: 2,
+            MOERAND_SCALP_INTERNAL: 20,
+          };
+
+          const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+          async function fetchWithRetry(url, options = {}) {
+            let lastError;
+            for (let attempt = 1; attempt <= 12; attempt += 1) {
+              try {
+                const response = await fetch(`${url}${url.includes('?') ? '&' : '?'}verify=${Date.now()}`, {
+                  cache: 'no-store',
+                  ...options,
+                });
+                if (response.ok) return response;
+                lastError = new Error(`HTTP ${response.status}`);
+              } catch (error) {
+                lastError = error;
+              }
+              await wait(5000);
+            }
+            throw lastError || new Error(`Unable to fetch ${url}`);
+          }
+
+          const capacityResponse = await fetchWithRetry(process.env.CAPACITY_URL);
+          const payload = await capacityResponse.json();
+          if (payload.ok !== true) throw new Error(`Capacity API failed: ${JSON.stringify(payload)}`);
+
+          const capacity = payload.strategyCapacity;
+          const byId = Object.fromEntries((capacity?.strategies || []).map((item) => [item.id, item]));
+          for (const [strategyId, maxDailyTrades] of Object.entries(expected)) {
+            const strategy = byId[strategyId];
+            if (!strategy) throw new Error(`Missing strategy ${strategyId}`);
+            if (strategy.dailyTrades !== 0 || strategy.maxDailyTrades !== maxDailyTrades) {
+              throw new Error(`${strategyId} expected 0 / ${maxDailyTrades}, received ${strategy.dailyTrades} / ${strategy.maxDailyTrades}`);
+            }
+          }
+
+          const global = capacity?.globalPortfolioLimits || {};
+          if (global.maximumDailyLossPercent !== 0.5) throw new Error('MOE_MAX_DAILY_LOSS_PERCENT changed');
+          if (global.maximumPortfolioRiskPercent !== 0.5) throw new Error('MOE_MAX_PORTFOLIO_RISK_PERCENT changed');
+          if (global.authoritative !== true || global.perStrategyLimitsCanBypass !== false) {
+            throw new Error('Global portfolio gates are not authoritative');
+          }
+
+          const dashboardResponse = await fetchWithRetry(process.env.DASHBOARD_URL);
+          const dashboard = await dashboardResponse.text();
+          if (!dashboard.includes('moeStrategyCapacitySelector')) throw new Error('Strategy Selector panel missing');
+          if (!dashboard.includes('/api/strategies/capacity')) throw new Error('Strategy capacity polling endpoint missing');
+
+          console.log(JSON.stringify({
+            deployed: true,
+            counters: Object.fromEntries(Object.entries(expected).map(([id, max]) => [id, `0 / ${max}`])),
+            globalPortfolioRiskPercent: global.maximumPortfolioRiskPercent,
+            globalDailyLossPercent: global.maximumDailyLossPercent,
+            dashboardSelectorPresent: true,
+            liveFundsUsed: payload.liveFundsUsed,
+          }, null, 2));
+          NODE
