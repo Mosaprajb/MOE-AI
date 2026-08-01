@@ -18,6 +18,7 @@ import {
 const directory = dirname(fileURLToPath(import.meta.url));
 const root = join(directory, '..', '..');
 const entrySource = readFileSync(join(root, 'worker/src/sandbox-simulation-entry.js'), 'utf8');
+const rpcEntrySource = readFileSync(join(root, 'worker/src/sandbox-simulation-rpc-entry.js'), 'utf8');
 const engineSource = readFileSync(join(root, 'worker/src/simulation/simulation-engine.js'), 'utf8');
 const strategySource = readFileSync(join(root, 'worker/src/simulation/simulation-strategies.js'), 'utf8');
 const dashboardSource = readFileSync(join(root, 'worker/src/simulation/simulation-dashboard.js'), 'utf8');
@@ -168,8 +169,15 @@ test('source safety prevents Webull access, live execution, and browser secret p
   assert.match(entrySource, /HttpOnly; Secure; SameSite=Strict/);
 });
 
+test('SimulationDriver RPC export inherits from the Cloudflare DurableObject base class', () => {
+  assert.match(rpcEntrySource, /import \{ DurableObject \} from 'cloudflare:workers'/);
+  assert.match(rpcEntrySource, /export class SimulationDriver extends DurableObject/);
+  assert.match(rpcEntrySource, /super\(ctx, env\)/);
+  assert.match(rpcEntrySource, /this\.#core = new SimulationDriverCore\(ctx, env\)/);
+});
+
 test('Sandbox configuration keeps Pilot disarmed and every Live gate locked', () => {
-  assert.equal(config.main, 'worker/src/sandbox-simulation-entry.js');
+  assert.equal(config.main, 'worker/src/sandbox-simulation-rpc-entry.js');
   assert.equal(config.vars.MOE_SIMULATION_ENABLED, 'true');
   assert.equal(config.vars.MOE_SANDBOX_PILOT_ENABLED, 'false');
   assert.equal(config.vars.MOE_LIVE_MODE_UNLOCKED, 'false');
