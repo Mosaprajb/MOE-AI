@@ -1,7 +1,7 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "moerand-alerts-sandbox",
-  "main": "worker/src/sandbox-runtime-pilot-entry.js",
+  "main": "worker/src/sandbox-operations-entry.js",
   "compatibility_date": "2026-07-22",
   "observability": {
     "enabled": true,
@@ -38,6 +38,7 @@
     "APP_ORIGIN": "https://mosaprajb.github.io",
     "APP_URL": "https://mosaprajb.github.io/MOE-AI/",
     "MOE_RUNTIME_ENVIRONMENT": "SANDBOX_PILOT",
+    "MOE_SANDBOX_DEFAULT_CAPITAL": "25000",
     "MOE_SANDBOX_PILOT_ENABLED": "false",
     "MOE_SANDBOX_PILOT_OBSERVABILITY_ENABLED": "true",
     "MOE_SANDBOX_PILOT_MAX_SUBMISSIONS_TOTAL": "1",
