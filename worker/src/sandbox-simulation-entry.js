@@ -5,6 +5,10 @@
 // remains statically locked and every simulated broker event stays inside Durable Object storage.
 
 import baseWorker, { AlertCoordinator as BaseAlertCoordinator } from './sandbox-operations-v2-entry.js';
+import {
+  LIVE_SCANNER_STORAGE_KEY,
+  createLiveScannerSnapshot,
+} from './dashboard/live-scanner.js';
 import { enhanceStrategySelectorDashboard } from './dashboard/strategy-selector.js';
 import { enhanceSimulationDashboard } from './simulation/simulation-dashboard.js';
 import {
@@ -237,8 +241,20 @@ export class AlertCoordinator extends BaseAlertCoordinator {
 
   async recordOpportunitySelection(selection = {}) {
     const capacity = await this.strategyCapacitySnapshot();
-    const filtered = applyStrategyCapacityToSelection(selection, capacity);
-    for (const blocked of filtered.blocked) {
+    const incoming = applyStrategyCapacityToSelection(selection, capacity);
+    const merged = await super.recordOpportunitySelection(incoming.selection);
+    const persisted = applyStrategyCapacityToSelection(merged?.opportunitySelection || {}, capacity);
+    const sanitized = createLiveScannerSnapshot(persisted.selection, {
+      now: Date.now(),
+      topN: Number(merged?.topN || 10),
+    });
+    await this.ctx.storage.put(LIVE_SCANNER_STORAGE_KEY, sanitized);
+
+    const blockedByKey = new Map();
+    for (const blocked of [...incoming.blocked, ...persisted.blocked]) {
+      blockedByKey.set(`${blocked.code}|${blocked.strategyId}|${blocked.opportunityId || blocked.symbol || ''}`, blocked);
+    }
+    for (const blocked of blockedByKey.values()) {
       await recordStrategyCapacityAudit(this.ctx.storage, {
         type: 'STRATEGY_OPPORTUNITY_BLOCKED',
         code: blocked.code,
@@ -252,7 +268,7 @@ export class AlertCoordinator extends BaseAlertCoordinator {
         maxConcurrentPositions: blocked.maxConcurrentPositions,
       });
     }
-    return super.recordOpportunitySelection(filtered.selection);
+    return sanitized;
   }
 }
 
@@ -326,10 +342,15 @@ async function handleSimulationApi(request, env, pathname) {
 
 async function strategyCapacityResponse(env) {
   try {
-    const capacity = await coordinator(env).strategyCapacitySnapshot();
+    const stub = coordinator(env);
+    const [capacity, recentAudit] = await Promise.all([
+      stub.strategyCapacitySnapshot(),
+      stub.strategyCapacityAudit({ limit: 50 }),
+    ]);
     return json({
       ok: true,
       strategyCapacity: capacity,
+      recentAudit,
       storage: 'DURABLE_OBJECT',
       mode: 'SANDBOX',
       liveFundsUsed: false,
