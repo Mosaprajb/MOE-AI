@@ -5,6 +5,7 @@
 // remains statically locked and every simulated broker event stays inside Durable Object storage.
 
 import baseWorker, { AlertCoordinator as BaseAlertCoordinator } from './sandbox-operations-v2-entry.js';
+import { enhanceStrategySelectorDashboard } from './dashboard/strategy-selector.js';
 import { enhanceSimulationDashboard } from './simulation/simulation-dashboard.js';
 import {
   compactSimulationLiveScanner,
@@ -19,6 +20,16 @@ import {
   stopHistoricalSimulation,
   tickHistoricalSimulation,
 } from './simulation/simulation-engine.js';
+import {
+  STRATEGY_CAPACITY_API_PATH,
+  applyStrategyCapacityToSelection,
+  buildStrategyCapacitySnapshot,
+  finalizeStrategyOrderReservation,
+  listStrategyCapacityAudit,
+  recordStrategyCapacityAudit,
+  releaseStrategyOrderReservation,
+  reserveStrategyOrderSubmission,
+} from './strategy/strategy-capacity.js';
 
 export { SimulationDriver };
 
@@ -203,6 +214,46 @@ export class AlertCoordinator extends BaseAlertCoordinator {
   async historicalSimulationReport() {
     return readHistoricalSimulationReport(this.ctx.storage);
   }
+
+  async strategyCapacitySnapshot() {
+    return buildStrategyCapacitySnapshot(this.ctx.storage, this.env);
+  }
+
+  async strategyCapacityAudit(options = {}) {
+    return listStrategyCapacityAudit(this.ctx.storage, options);
+  }
+
+  async reserveOrderSubmission(payload = {}) {
+    return reserveStrategyOrderSubmission(this.ctx.storage, payload, this.env);
+  }
+
+  async finalizeOrderReservation(id, patch = {}) {
+    return finalizeStrategyOrderReservation(this.ctx.storage, id, patch, this.env);
+  }
+
+  async releaseOrderReservation(id, reason = 'RELEASED') {
+    return releaseStrategyOrderReservation(this.ctx.storage, id, reason);
+  }
+
+  async recordOpportunitySelection(selection = {}) {
+    const capacity = await this.strategyCapacitySnapshot();
+    const filtered = applyStrategyCapacityToSelection(selection, capacity);
+    for (const blocked of filtered.blocked) {
+      await recordStrategyCapacityAudit(this.ctx.storage, {
+        type: 'STRATEGY_OPPORTUNITY_BLOCKED',
+        code: blocked.code,
+        reason: blocked.code,
+        strategyId: blocked.strategyId,
+        symbol: blocked.symbol,
+        opportunityId: blocked.opportunityId,
+        dailyTrades: blocked.dailyTrades,
+        maxDailyTrades: blocked.maxDailyTrades,
+        concurrentPositions: blocked.concurrentPositions,
+        maxConcurrentPositions: blocked.maxConcurrentPositions,
+      });
+    }
+    return super.recordOpportunitySelection(filtered.selection);
+  }
 }
 
 async function handleSimulationApi(request, env, pathname) {
@@ -273,6 +324,28 @@ async function handleSimulationApi(request, env, pathname) {
   return json({ ok: false, error: 'Method not allowed' }, 405);
 }
 
+async function strategyCapacityResponse(env) {
+  try {
+    const capacity = await coordinator(env).strategyCapacitySnapshot();
+    return json({
+      ok: true,
+      strategyCapacity: capacity,
+      storage: 'DURABLE_OBJECT',
+      mode: 'SANDBOX',
+      liveFundsUsed: false,
+      globalPortfolioRiskBypassed: false,
+    });
+  } catch (error) {
+    return json({
+      ok: false,
+      code: 'STRATEGY_CAPACITY_UNAVAILABLE',
+      error: error instanceof Error ? error.message : 'Strategy capacity is unavailable.',
+      liveFundsUsed: false,
+      globalPortfolioRiskBypassed: false,
+    }, 500);
+  }
+}
+
 async function simulationLiveScanner(env) {
   const simulation = await coordinator(env).historicalSimulationStatus();
   if (!simulation.active) return null;
@@ -333,6 +406,12 @@ export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
     const pathname = url.pathname;
+
+    if (pathname === STRATEGY_CAPACITY_API_PATH) {
+      if (request.method !== 'GET') return json({ ok: false, error: 'Method not allowed' }, 405);
+      return strategyCapacityResponse(env);
+    }
+
     if (Object.values(PATHS).includes(pathname) && pathname !== PATHS.liveScanner) {
       try {
         return await handleSimulationApi(request, env, pathname);
@@ -355,7 +434,9 @@ export default {
 
     const response = await baseWorker.fetch(request, env, ctx);
     if (!DASHBOARD_PATHS.has(pathname)) return response;
-    return stabilizeSimulationDashboardResponse(await enhanceSimulationDashboard(response));
+    const withStrategySelector = await enhanceStrategySelectorDashboard(response);
+    const withSimulation = await enhanceSimulationDashboard(withStrategySelector);
+    return stabilizeSimulationDashboardResponse(withSimulation);
   },
 
   scheduled(controller, env, ctx) {
