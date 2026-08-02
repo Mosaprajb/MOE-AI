@@ -23,11 +23,19 @@ export async function enhanceSimulationStrategyDashboard(response) {
   let output = html;
   output = output.replace(
     "new Set(['FUSION_V2','MOERAND_SIMPLE_INTERNAL'])",
-    "new Set(['FUSION_V2','MOERAND_SIMPLE_INTERNAL','MOERAND_SCALP_INTERNAL'])",
+    "new Set(['FUSION_V2','MOERAND_SIMPLE_INTERNAL','MOERAND_SCALP_INTERNAL','MOERAND_CLEAN_INTERNAL'])",
   );
   output = output.replace(
     '> MOERAND_SIMPLE_INTERNAL</label></div></div>',
-    '> MOERAND_SIMPLE_INTERNAL</label><label class="sim-option"><input type="checkbox" name="sim-strategy" value="MOERAND_SCALP_INTERNAL" \'+checked(\'MOERAND_SCALP_INTERNAL\')+\' \'+(active?\'disabled\':\'\')+\'> MOERAND_SCALP_INTERNAL</label></div></div>',
+    '> MOERAND_SIMPLE_INTERNAL</label><label class="sim-option"><input type="checkbox" name="sim-strategy" value="MOERAND_SCALP_INTERNAL" \'+checked(\'MOERAND_SCALP_INTERNAL\')+\' \'+(active?\'disabled\':\'\')+\'> MOERAND_SCALP_INTERNAL</label><label class="sim-option"><input type="checkbox" name="sim-strategy" value="MOERAND_CLEAN_INTERNAL" \'+checked(\'MOERAND_CLEAN_INTERNAL\')+\' \'+(active?\'disabled\':\'\')+\'> MOERAND_CLEAN_INTERNAL</label></div></div>',
+  );
+  output = output.replace(
+    ".sim-badge.fusion{color:#79b7ff}.sim-badge.moerand{color:#ffad67}",
+    ".sim-badge.fusion{color:#79b7ff}.sim-badge.moerand{color:#ffad67}.sim-badge.clean{color:#c084fc}",
+  );
+  output = output.replace(
+    "const strategyClass=value=>String(value).includes('FUSION')?'fusion':'moerand';",
+    "const strategyClass=value=>String(value).includes('FUSION')?'fusion':String(value).includes('CLEAN')?'clean':'moerand';",
   );
   output = output.replace(
     "+metric('AVG R',Number(m.averageR||0).toFixed(3))",
