@@ -7,6 +7,13 @@ import baseWorker, {
 import { AUTO_SCANNER_SYMBOLS } from './auto-scanner.js';
 import { enhanceScanModeDashboard } from './dashboard/scan-mode-selector.js';
 import {
+  readHistoricalSimulation,
+  readHistoricalSimulationReport,
+  startHistoricalSimulation,
+  stopHistoricalSimulation,
+  tickHistoricalSimulation,
+} from './simulation/simulation-engine-v2.js';
+import {
   SCAN_SOURCE_MODE_API_PATH,
   SCAN_SOURCE_MODES,
   createScanFilteredFetch,
@@ -49,6 +56,26 @@ function sameOriginControlAllowed(request, env = {}) {
 }
 
 export class AlertCoordinator extends BaseAlertCoordinator {
+  async startHistoricalSimulation(options = {}) {
+    return startHistoricalSimulation(this.ctx.storage, this.env, options);
+  }
+
+  async tickHistoricalSimulation() {
+    return tickHistoricalSimulation(this.ctx.storage, this.env);
+  }
+
+  async stopHistoricalSimulation() {
+    return stopHistoricalSimulation(this.ctx.storage, this.env);
+  }
+
+  async historicalSimulationStatus() {
+    return readHistoricalSimulation(this.ctx.storage);
+  }
+
+  async historicalSimulationReport() {
+    return readHistoricalSimulationReport(this.ctx.storage);
+  }
+
   async scanSourceMode() {
     return readScanSourceMode(this.ctx.storage, { fullUniverseSize: AUTO_SCANNER_SYMBOLS.length });
   }
