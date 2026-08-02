@@ -6,6 +6,7 @@
 
 import { DurableObject } from 'cloudflare:workers';
 import simulationWorker, { AlertCoordinator } from './sandbox-simulation-entry.js';
+import { enhanceSimulationStrategyDashboard } from './simulation/simulation-dashboard-v2.js';
 import { SimulationDriver as SimulationDriverCore } from './simulation/simulation-server-runtime.js';
 
 export { AlertCoordinator };
@@ -35,4 +36,10 @@ export class SimulationDriver extends DurableObject {
   }
 }
 
-export default simulationWorker;
+export default {
+  ...simulationWorker,
+  async fetch(request, env, ctx) {
+    const response = await simulationWorker.fetch(request, env, ctx);
+    return enhanceSimulationStrategyDashboard(response);
+  },
+};
