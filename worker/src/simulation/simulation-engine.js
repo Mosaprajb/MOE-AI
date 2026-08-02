@@ -10,12 +10,18 @@ import {
   SIMULATION_STRATEGIES,
   normalizeSimulationStrategies,
   runSimulationStrategies,
-} from './simulation-strategies.js';
+} from './simulation-strategies-v2.js';
+import {
+  createSimulationStrategyLimits,
+  evaluateSimulationStrategyCapacity,
+  recordSimulationStrategyTrade,
+  simulationStrategyCapacitySnapshot,
+} from './simulation-strategy-capacity.js';
 
 export const SIMULATION_STATE_KEY = 'sandbox-simulation:state:v1';
 export const SIMULATION_REPORT_KEY = 'sandbox-simulation:last-report:v1';
 export const SIMULATION_SCHEMA = 'MOE.SandboxHistoricalSimulation';
-export const SIMULATION_VERSION = '1.0.0';
+export const SIMULATION_VERSION = '1.1.0';
 
 const FIVE_MINUTES_MS = 5 * 60_000;
 const DEFAULT_SYMBOLS = Object.freeze(['SPY', 'QQQ', 'NVDA', 'AAPL', 'MSFT', 'AMD', 'TSLA', 'AMZN', 'META', 'GOOGL']);
@@ -180,7 +186,7 @@ async function buildHistoricalDataset(env, { range, capturedAt }) {
   };
 }
 
-function blankMetrics() {
+function blankMetrics(limits = {}) {
   return {
     detected: 0,
     accepted: 0,
@@ -193,6 +199,8 @@ function blankMetrics() {
     realizedR: 0,
     averageR: 0,
     winRate: 0,
+    maxDailyTrades: finite(limits.maxDailyTrades),
+    maxConcurrentPositions: finite(limits.maxConcurrentPositions),
   };
 }
 
@@ -208,6 +216,7 @@ function initialReport(run) {
     webullRequestsMade: 0,
     runId: run.runId,
     selectedStrategies: [...run.selectedStrategies],
+    strategyLimits: run.strategyLimits,
     historicalRange: run.range,
     historicalSessions: [...run.sessions],
     symbols: [...run.symbols],
@@ -216,7 +225,11 @@ function initialReport(run) {
     completedAt: null,
     stoppedAt: null,
     status: run.status,
-    byStrategy: Object.fromEntries(run.selectedStrategies.map((strategy) => [strategy, blankMetrics()])),
+    byStrategy: Object.fromEntries(run.selectedStrategies.map((strategy) => [
+      strategy,
+      blankMetrics(run.strategyLimits?.[strategy]),
+    ])),
+    strategyCapacity: null,
     trades: [],
   };
 }
@@ -360,6 +373,38 @@ function processExistingTrades(state, symbol, bar, closeInstructions) {
   }
 }
 
+function synchronizeRejectedEntryState(state, strategy, symbol) {
+  const strategyKey = `${strategy}:${symbol}`;
+  const active = Boolean(state.activeTrades[activeTradeKey(strategy, symbol)]);
+  const current = state.strategyState?.[strategyKey];
+  if (!current || active) return;
+
+  if (Object.hasOwn(current, 'inPosition')) {
+    state.strategyState[strategyKey] = {
+      ...current,
+      inPosition: false,
+      lastSignal: 'WAIT',
+    };
+    return;
+  }
+
+  if (current.moe && typeof current.moe === 'object') {
+    state.strategyState[strategyKey] = {
+      ...current,
+      moe: {
+        ...current.moe,
+        tradeActive: false,
+        averageEntry: null,
+        initialRisk: null,
+        smartStop: null,
+        referenceTarget: null,
+        highWatermark: null,
+        entryCount: 0,
+      },
+    };
+  }
+}
+
 function publicOpportunity(result, state) {
   const opportunity = result.opportunity;
   return {
@@ -461,6 +506,7 @@ function publicState(state) {
     completedTrades: state.completedTrades.slice(0, 100),
     timeline: state.timelineEvents.slice(0, 200),
     report: state.report,
+    strategyCapacity: simulationStrategyCapacitySnapshot(state, {}, state.simulatedAt),
     liveScanner: simulationLiveScanner(state),
     broker: 'LOCAL_SIMULATOR_NO_WEBULL',
     webullRequestsMade: 0,
@@ -508,6 +554,7 @@ export async function startHistoricalSimulation(storage, env, options = {}) {
   const capturedAt = Date.now();
   const dataset = await buildHistoricalDataset(env, { range, capturedAt });
   const runId = crypto.randomUUID();
+  const strategyLimits = createSimulationStrategyLimits(selectedStrategies, env);
 
   for (const [symbol, bars] of Object.entries(dataset.barsBySymbol)) {
     await storage.put(datasetKey(runId, symbol), bars);
@@ -525,6 +572,8 @@ export async function startHistoricalSimulation(storage, env, options = {}) {
     historicalSource: dataset.historicalSource,
     currentSessionExcluded: dataset.currentSessionExcluded,
     selectedStrategies,
+    strategyLimits,
+    strategyCapacity: null,
     range: range.id,
     sessions: dataset.sessions,
     symbols: dataset.symbols,
@@ -546,8 +595,10 @@ export async function startHistoricalSimulation(storage, env, options = {}) {
     report: null,
   };
   state.report = initialReport(state);
+  state.report.strategyCapacity = simulationStrategyCapacitySnapshot(state, env, dataset.timeline[0]);
   pushEvent(state, 'SIMULATION_STARTED', {
     selectedStrategies: [...selectedStrategies],
+    strategyLimits,
     range: range.id,
     sessions: [...dataset.sessions],
     symbols: [...dataset.symbols],
@@ -565,7 +616,6 @@ export async function tickHistoricalSimulation(storage, env) {
   const datasets = await loadDatasets(storage, state);
   const barTime = state.timeline[state.cursor];
   state.simulatedAt = iso(barTime);
-  const closeInstructionsBySymbol = {};
 
   for (const symbol of state.symbols) {
     const allBars = datasets[symbol] || [];
@@ -583,32 +633,59 @@ export async function tickHistoricalSimulation(storage, env) {
     });
     state.strategyState = execution.strategyState;
     const closeInstructions = execution.results.map((result) => result.closeInstruction).filter(Boolean);
-    closeInstructionsBySymbol[symbol] = closeInstructions;
+
+    // Existing positions are always managed first. A target, stop, or strategy exit on this bar
+    // can free the strategy's concurrent-position capacity before a new entry is considered.
+    processExistingTrades(state, symbol, current, closeInstructions);
 
     for (const result of execution.results) {
       if (!result.detected) continue;
       const metrics = state.report.byStrategy[result.strategy];
       metrics.detected += 1;
-      if (result.accepted) metrics.accepted += 1;
+
+      const capacity = result.accepted
+        ? evaluateSimulationStrategyCapacity(state, result.strategy, symbol, env, barTime)
+        : null;
+      const accepted = result.accepted === true && capacity?.allowed !== false;
+      const capacityBlocked = result.accepted === true && capacity?.allowed === false;
+      if (accepted) metrics.accepted += 1;
       else metrics.rejected += 1;
 
-      const opportunity = result.accepted
-        ? publicOpportunity(result, state)
+      const rejectionReasons = capacityBlocked
+        ? [capacity.reason]
+        : (result.rejection?.reasons || ['STRATEGY_REJECTED']);
+      const opportunity = accepted
+        ? publicOpportunity({ ...result, accepted: true }, state)
         : {
           id: `SIM-REJECT-${crypto.randomUUID()}`,
           symbol,
           sourceStrategy: result.strategy,
           strategyBadge: result.strategy === SIMULATION_STRATEGIES.FUSION_V2 ? 'BLUE' : 'ORANGE',
           status: 'REJECTED',
-          score: result.rejection?.score ?? 0,
-          reasons: result.rejection?.reasons || ['STRATEGY_REJECTED'],
+          score: result.rejection?.score ?? result.opportunity?.score ?? 0,
+          reasons: rejectionReasons,
+          capacity: capacityBlocked ? capacity : null,
           simulatedAt: state.simulatedAt,
           mode: 'SIMULATION',
           simulation: true,
           notRealMarketData: true,
         };
       state.opportunities = [opportunity, ...state.opportunities].slice(0, MAX_OPPORTUNITIES);
-      pushEvent(state, result.accepted ? 'SIMULATION_OPPORTUNITY_ACCEPTED' : 'SIMULATION_OPPORTUNITY_REJECTED', {
+
+      if (capacityBlocked) {
+        pushEvent(state, 'SIMULATION_STRATEGY_CAPACITY_BLOCKED', {
+          strategy: result.strategy,
+          symbol,
+          opportunityId: opportunity.id,
+          reason: capacity.reason,
+          sessionKey: capacity.sessionKey,
+          dailyTrades: capacity.dailyTrades,
+          maxDailyTrades: capacity.maxDailyTrades,
+          openPositions: capacity.openPositions,
+          maxConcurrentPositions: capacity.maxConcurrentPositions,
+        });
+      }
+      pushEvent(state, accepted ? 'SIMULATION_OPPORTUNITY_ACCEPTED' : 'SIMULATION_OPPORTUNITY_REJECTED', {
         strategy: result.strategy,
         symbol,
         opportunityId: opportunity.id,
@@ -616,12 +693,16 @@ export async function tickHistoricalSimulation(storage, env) {
       });
 
       const key = activeTradeKey(result.strategy, symbol);
-      if (result.accepted && !state.activeTrades[key]) createSimulatedOrder(state, result.opportunity);
+      if (accepted && !state.activeTrades[key]) {
+        createSimulatedOrder(state, result.opportunity);
+        recordSimulationStrategyTrade(state, result.strategy, env, barTime);
+      } else if (capacityBlocked) {
+        synchronizeRejectedEntryState(state, result.strategy, symbol);
+      }
     }
-
-    processExistingTrades(state, symbol, current, closeInstructionsBySymbol[symbol]);
   }
 
+  state.report.strategyCapacity = simulationStrategyCapacitySnapshot(state, env, barTime);
   state.cursor += 1;
   state.lastTickAt = iso();
   if (state.cursor >= state.timeline.length) {
@@ -630,6 +711,7 @@ export async function tickHistoricalSimulation(storage, env) {
     state.completedAt = iso();
     state.report.status = state.status;
     state.report.completedAt = state.completedAt;
+    state.report.strategyCapacity = simulationStrategyCapacitySnapshot(state, env, barTime);
     pushEvent(state, 'SIMULATION_COMPLETED', {});
     await storage.put(SIMULATION_REPORT_KEY, state.report);
   }
@@ -637,7 +719,7 @@ export async function tickHistoricalSimulation(storage, env) {
   return publicState(state);
 }
 
-export async function completeHistoricalSimulation(storage) {
+export async function completeHistoricalSimulation(storage, env = {}) {
   const state = await storage.get(SIMULATION_STATE_KEY);
   if (!state) return publicState(null);
   if (state.status === 'RUNNING') {
@@ -646,6 +728,7 @@ export async function completeHistoricalSimulation(storage) {
     state.completedAt = iso();
     state.report.status = state.status;
     state.report.completedAt = state.completedAt;
+    state.report.strategyCapacity = simulationStrategyCapacitySnapshot(state, env, state.simulatedAt);
     pushEvent(state, 'SIMULATION_COMPLETED', {});
     await storage.put(SIMULATION_REPORT_KEY, state.report);
     await storage.put(SIMULATION_STATE_KEY, state);
@@ -653,7 +736,7 @@ export async function completeHistoricalSimulation(storage) {
   return publicState(state);
 }
 
-export async function stopHistoricalSimulation(storage) {
+export async function stopHistoricalSimulation(storage, env = {}) {
   const state = await storage.get(SIMULATION_STATE_KEY);
   if (!state) return publicState(null);
   if (state.status === 'RUNNING') {
@@ -662,6 +745,7 @@ export async function stopHistoricalSimulation(storage) {
     state.stoppedAt = iso();
     state.report.status = state.status;
     state.report.stoppedAt = state.stoppedAt;
+    state.report.strategyCapacity = simulationStrategyCapacitySnapshot(state, env, state.simulatedAt);
     pushEvent(state, 'SIMULATION_STOPPED', {});
     await storage.put(SIMULATION_REPORT_KEY, state.report);
     await storage.put(SIMULATION_STATE_KEY, state);
@@ -687,6 +771,8 @@ export async function readHistoricalSimulationReport(storage) {
     webullRequestsMade: 0,
     status: 'NOT_AVAILABLE',
     selectedStrategies: [],
+    strategyLimits: {},
+    strategyCapacity: null,
     byStrategy: {},
     trades: [],
   };
