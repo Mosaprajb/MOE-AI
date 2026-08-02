@@ -2,6 +2,7 @@
 // Existing FUSION_V2, MOERAND_SIMPLE_INTERNAL, and MOERAND_SCALP_INTERNAL behavior is untouched.
 
 import {
+  SIMULATION_REPORT_KEY,
   SIMULATION_STATE_KEY,
   completeHistoricalSimulation as completeBaseSimulation,
   readHistoricalSimulation as readBaseSimulation,
@@ -152,6 +153,9 @@ async function finalizeCompatibility(storage, previousClosedIds) {
   restoreActiveCleanTradeDisplays(state);
   correctNewlyClosedCleanTrades(state, previousClosedIds);
   await storage.put(SIMULATION_STATE_KEY, state);
+  if (state.report && ['COMPLETED', 'STOPPED'].includes(state.status)) {
+    await storage.put(SIMULATION_REPORT_KEY, state.report);
+  }
 }
 
 async function runProtected(storage, operation, options = {}) {
