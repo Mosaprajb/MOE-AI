@@ -37,7 +37,6 @@ export function runMoerandCleanStrategy({
   const buySignal = evaluated.signal === 'BUY';
   const sellSignal = evaluated.signal === 'SELL';
   const entry = evaluated.entryPrice;
-  const initialRisk = Math.max(finite(evaluated.initialRisk), 0.01);
   const opportunity = buySignal
     ? {
       id: `SIM-MOERAND-CLEAN-${symbol}-${evaluated.signalBarTime}`,
@@ -48,9 +47,9 @@ export function runMoerandCleanStrategy({
       confidence: { value: 80, source: MOERAND_CLEAN_STRATEGY_ID },
       entry: roundPrice(entry),
       stopLoss: roundPrice(evaluated.stopLevel),
-      // The simulator schema requires a target, but MOERAND Clean never exits on this value.
-      // simulation-engine.js explicitly disables target exits for this strategy.
-      takeProfit: roundPrice(entry + initialRisk * 2),
+      // The common simulator schema requires a target. Clean has no target exit, so use an
+      // unreachable sentinel and close only from the strategy's trailing/session instruction.
+      takeProfit: Number.MAX_SAFE_INTEGER,
       createdAt: iso(simulatedAt),
       validForMs: 30 * 60_000,
       reasons: ['EMA_TREND_PRIOR_HIGH_BREAKOUT_RVOL'],
@@ -66,6 +65,9 @@ export function runMoerandCleanStrategy({
         fullyClosedBarOnly: true,
         sessionIsolated: true,
         dynamicTrailingStop: true,
+        fixedTargetEnabled: false,
+        initialRisk: evaluated.initialRisk,
+        initialStopLevel: evaluated.stopLevel,
         breakevenEnabled: definition.settings.enableBreakeven,
         configuration: definition.settings,
       },
