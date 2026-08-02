@@ -4,6 +4,8 @@ import {
   evaluateMoerandClean,
 } from '../strategies/moerand-clean.js';
 
+export { MOERAND_CLEAN_STRATEGY_ID };
+
 function finite(value, fallback = 0) {
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : fallback;
