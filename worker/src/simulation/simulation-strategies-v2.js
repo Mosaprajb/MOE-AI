@@ -1,7 +1,8 @@
 // Extended simulation strategy registry.
 //
-// This wrapper preserves the existing FUSION_V2 and MOERAND_SIMPLE_INTERNAL implementations
-// while adding MOERAND_SCALP_INTERNAL as an independently tracked strategy.
+// This wrapper preserves the existing FUSION_V2, MOERAND_SIMPLE_INTERNAL, and
+// MOERAND_SCALP_INTERNAL implementations while adding MOERAND_CLEAN_INTERNAL as an
+// independently evaluated and independently tracked strategy.
 
 import {
   SIMULATION_STRATEGIES as BASE_STRATEGIES,
@@ -11,10 +12,15 @@ import {
   MOERAND_SCALP_STRATEGY_ID,
   runMoerandScalpStrategy,
 } from './moerand-scalp-strategy.js';
+import {
+  MOERAND_CLEAN_STRATEGY_ID,
+  runMoerandCleanStrategy,
+} from './moerand-clean-strategy.js';
 
 export const SIMULATION_STRATEGIES = Object.freeze({
   ...BASE_STRATEGIES,
   MOERAND_SCALP_INTERNAL: MOERAND_SCALP_STRATEGY_ID,
+  MOERAND_CLEAN_INTERNAL: MOERAND_CLEAN_STRATEGY_ID,
 });
 
 const STRATEGY_VALUES = Object.freeze(Object.values(SIMULATION_STRATEGIES));
@@ -37,7 +43,11 @@ export async function runSimulationStrategies({
   simulatedAt = Date.now(),
 } = {}) {
   const selected = normalizeSimulationStrategies(selectedStrategies);
-  const baseSelected = selected.filter((strategy) => strategy !== MOERAND_SCALP_STRATEGY_ID);
+  const extensionStrategies = new Set([
+    MOERAND_SCALP_STRATEGY_ID,
+    MOERAND_CLEAN_STRATEGY_ID,
+  ]);
+  const baseSelected = selected.filter((strategy) => !extensionStrategies.has(strategy));
   let nextState = { ...strategyState };
   const byStrategy = new Map();
 
@@ -65,6 +75,19 @@ export async function runSimulationStrategies({
     });
     nextState[key] = result.nextState;
     byStrategy.set(MOERAND_SCALP_STRATEGY_ID, result);
+  }
+
+  if (selected.includes(MOERAND_CLEAN_STRATEGY_ID)) {
+    const key = `${MOERAND_CLEAN_STRATEGY_ID}:${symbol}`;
+    const result = runMoerandCleanStrategy({
+      symbol,
+      bars,
+      previousState: nextState[key],
+      env,
+      simulatedAt,
+    });
+    nextState[key] = result.nextState;
+    byStrategy.set(MOERAND_CLEAN_STRATEGY_ID, result);
   }
 
   return {
