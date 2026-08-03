@@ -2,6 +2,10 @@ import { aggregateBars, createMoeState, evaluateMoe, MOE_CONFIG } from '../../li
 import { handleWebullSandboxOrder } from './webull-sandbox.js';
 import { buildMarketIntelligence, enrichCandidateWithMarket } from './market-intelligence.js';
 import { rankBrainCandidates, MOE_AI_BRAIN_VERSION } from './moe-ai-brain.js';
+import {
+  createMoerandCleanCandidate,
+  moerandCleanScannerEnabled,
+} from './scanner/moerand-clean-candidate.js';
 
 const SYMBOLS = [
   'AAPL','MSFT','NVDA','AMZN','META','GOOGL','GOOG','TSLA','AVGO','AMD','NFLX','PLTR','MU','ARM','INTC','QCOM','TSM','ASML',
@@ -209,6 +213,9 @@ function higherTimeframeAligned(bars, higherMinutes) {
 function candidate(symbol, bars, now, window, profile, env) {
   const timeframeMs = profile.primaryMinutes * 60_000;
   const complete = bars.filter((bar) => bar.t + timeframeMs <= now).slice(-1800);
+  if (moerandCleanScannerEnabled(env)) {
+    return createMoerandCleanCandidate({ symbol, bars: complete, now, profile, env });
+  }
   if (complete.length < 80 || !higherTimeframeAligned(complete, profile.higherMinutes)) return null;
 
   const latest = complete.at(-1);
@@ -325,7 +332,8 @@ function sessionMinimumRelativeVolume(env, window) {
 
 async function submitCandidate(item, env, window) {
   const profileToken = item.timeframe.replace(/[^0-9A-Z]/gi, '').toUpperCase();
-  const signalId = `AUTO${profileToken}-${window.session}-${item.symbol}-${item.barTime}`.slice(0, 64);
+  const strategyToken = item.sourceStrategy === 'MOERAND_CLEAN_INTERNAL' ? 'CLEAN' : 'FUSION';
+  const signalId = `AUTO${strategyToken}${profileToken}-${window.session}-${item.symbol}-${item.barTime}`.slice(0, 64);
   const request = new Request('https://moerand.internal/api/tradingview/signal', {
     method: 'POST',
     headers: {
@@ -340,7 +348,9 @@ async function submitCandidate(item, env, window) {
       limitPrice: item.entry,
       stopLoss: item.stopLoss,
       takeProfit: item.takeProfit,
-      source: `MOERAND_AUTO_${window.session}`,
+      source: item.sourceStrategy === 'MOERAND_CLEAN_INTERNAL'
+        ? `MOERAND_AUTO_CLEAN_${window.session}`
+        : `MOERAND_AUTO_${window.session}`,
       signalId,
       submitSandbox: true,
       timeframe: item.timeframe,
@@ -348,7 +358,11 @@ async function submitCandidate(item, env, window) {
       barTime: item.barTime,
       sector: item.sector,
       context: {
-        htfAligned: true,
+        htfAligned: item.htfAligned === true,
+        sourceStrategy: item.sourceStrategy || 'FUSION_V2',
+        signalTiming: item.signalTiming || null,
+        candleSource: item.candleSource || null,
+        strategySettings: item.strategySettings || null,
         relativeVolume: item.relativeVolume,
         atr: item.atr,
         liquidityScore: window.session === 'NIGHT' ? 60 : window.label === 'EXTENDED' ? 72 : 85,
@@ -532,6 +546,7 @@ export async function runAutoScanner(env, scheduledTime = Date.now()) {
     liveTrading: env.WEBULL_LIVE_TRADING === 'true',
     universeSize: SYMBOLS.length,
     configuredProfiles: scannerProfiles(env).map(profileLabel),
+    activeStrategy: String(env.MOE_ACTIVE_STRATEGY || 'FUSION_V2').toUpperCase(),
     tradingHoursMode: normalizedHoursMode(env),
     sessionWindow: window,
     scheduledAt: new Date(now).toISOString(),
