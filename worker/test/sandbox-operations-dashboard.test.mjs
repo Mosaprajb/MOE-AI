@@ -9,6 +9,7 @@ const root = join(directory, '..', '..');
 const source = readFileSync(join(root, 'worker/src/sandbox-operations-entry.js'), 'utf8');
 const v2Source = readFileSync(join(root, 'worker/src/sandbox-operations-v2-entry.js'), 'utf8');
 const scanModeEntry = readFileSync(join(root, 'worker/src/sandbox-scan-mode-entry.js'), 'utf8');
+const liveWatchlistEntry = readFileSync(join(root, 'worker/src/sandbox-mobile-live-watchlist-entry.js'), 'utf8');
 const cleanEntry = readFileSync(join(root, 'worker/src/sandbox-moerand-clean-utbot-entry.js'), 'utf8');
 const mobilePhoneEntry = readFileSync(join(root, 'worker/src/sandbox-mobile-phone-fix-entry.js'), 'utf8');
 const mobileAccountBalancesEntry = readFileSync(join(root, 'worker/src/sandbox-mobile-account-balances-entry.js'), 'utf8');
@@ -20,7 +21,9 @@ const alpacaSource = readFileSync(join(root, 'worker/src/alpaca-market-regime.js
 const config = readFileSync(join(root, 'wrangler.sandbox.jsonc'), 'utf8');
 
 test('sandbox Worker is wired through the isolated simulation entry', () => {
-  assert.match(config, /"main": "worker\/src\/sandbox-moerand-clean-utbot-entry\.js"/);
+  assert.match(config, /"main": "worker\/src\/sandbox-mobile-live-watchlist-entry\.js"/);
+  assert.match(liveWatchlistEntry, /from '\.\/sandbox-moerand-clean-utbot-entry\.js'/);
+  assert.match(liveWatchlistEntry, /\/api\/mobile\/watchlist\/quotes/);
   assert.match(cleanEntry, /from '\.\/sandbox-mobile-account-balances-entry\.js'/);
   assert.match(mobileAccountBalancesEntry, /from '\.\/sandbox-mobile-account-balances-implementation\.js'/);
   assert.match(mobileAccountBalancesEntry, /repairMobileAccountBalanceHtml/);
