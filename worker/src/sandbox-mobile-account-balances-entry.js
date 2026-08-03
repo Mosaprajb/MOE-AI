@@ -7,11 +7,21 @@ import {
   handleMobileScannerMonitor,
 } from './mobile-scanner-monitor.js';
 import { enhanceMobileScannerVisibleUi } from './mobile-scanner-visible-ui.js';
+import {
+  enhanceMobilePaperBrokerGateUi,
+  ensureMobilePaperBrokerSafeRuntime,
+  isMobileClientRequest,
+  mobilePaperArmIntent,
+  normalizeMobileHealthForPaperBroker,
+  paperBrokerOfflineStartResponse,
+} from './mobile-paper-broker-gate.js';
 
 export { AlertCoordinator, SimulationDriver };
 
 const MOBILE_PATHS = new Set(['/m', '/m/', '/mobile', '/mobile/']);
 const ACTIVITY_PATH = '/api/scanner/live-activity';
+const MODE_PATH = '/api/trading/mode';
+const HEALTH_PATH = '/api/health';
 const ACCOUNT_BALANCE_MARKER = 'moe-mobile-two-account-balances';
 const VISIBLE_SCANNER_DOM_FIX_MARKER = 'moe-mobile-scanner-dom-insertion-fixed';
 
@@ -102,29 +112,50 @@ async function repairVisibleScannerDomInsertion(response, request) {
   );
 }
 
+async function mobileSafety(env = {}, actor = 'MOBILE_SCANNER_GATE') {
+  return ensureMobilePaperBrokerSafeRuntime(env, coordinator(env), actor);
+}
+
+function stoppedStage(safety) {
+  if (safety?.broker?.connected === true) return 'Scanner stopped — press Start trading';
+  return safety?.broker?.configured === false
+    ? 'Paper broker not configured — scanner stopped'
+    : 'Paper broker offline — scanner stopped';
+}
+
+function stoppedReason(safety) {
+  if (safety?.broker?.connected === true) {
+    return 'Press Start trading to begin scheduled scanner cycles.';
+  }
+  return safety?.broker?.configured === false
+    ? 'Paper broker is not configured. Scanner cycles are blocked.'
+    : 'Paper broker is offline. Scanner cycles are blocked.';
+}
+
 async function normalizeMonitorReadiness(response, env = {}) {
   const payload = await response.clone().json().catch(() => null);
   if (!payload) return response;
 
-  const runtime = await mobileRuntime(env);
-  const armed = runtime?.armed === true;
-  if (!armed) {
+  const safety = await mobileSafety(env, 'MOBILE_MONITOR_BROKER_GATE');
+  if (!safety.armed) {
     return rewrittenJson(response, {
       ...payload,
       plan: null,
       readiness: {
         percent: 0,
-        stage: 'Scanner stopped — press Start trading',
+        stage: stoppedStage(safety),
         color: 'red',
         estimateOnly: true,
       },
       scanner: {
         ...(payload.scanner && typeof payload.scanner === 'object' ? payload.scanner : {}),
         armed: false,
+        reason: stoppedReason(safety),
       },
+      paperBrokerGate: safety.broker,
       scannerArmed: false,
     }, {
-      'x-moe-mobile-scanner-gate': 'stopped',
+      'x-moe-mobile-scanner-gate': safety.broker.connected ? 'stopped' : 'broker-offline',
     });
   }
 
@@ -143,6 +174,7 @@ async function normalizeMonitorReadiness(response, env = {}) {
       ...(payload.scanner && typeof payload.scanner === 'object' ? payload.scanner : {}),
       armed: true,
     },
+    paperBrokerGate: safety.broker,
     scannerArmed: true,
   }, {
     'x-moe-mobile-scanner-gate': 'armed',
@@ -152,10 +184,11 @@ async function normalizeMonitorReadiness(response, env = {}) {
 async function normalizeActivityWhenStopped(response, env = {}) {
   const payload = await response.clone().json().catch(() => null);
   if (!payload) return response;
-  const runtime = await mobileRuntime(env);
-  if (runtime?.armed === true) {
+  const safety = await mobileSafety(env, 'MOBILE_ACTIVITY_BROKER_GATE');
+  if (safety.armed) {
     return rewrittenJson(response, {
       ...payload,
+      paperBrokerGate: safety.broker,
       scannerArmed: true,
     }, {
       'x-moe-mobile-activity-gate': 'armed',
@@ -165,8 +198,8 @@ async function normalizeActivityWhenStopped(response, env = {}) {
   const waiting = {
     id: 'mobile_scanner_waiting_visible',
     type: 'SCANNER_WAITING',
-    status: 'STOPPED',
-    reason: 'Press Start trading to begin scheduled scanner cycles.',
+    status: safety.broker.connected ? 'STOPPED' : 'BROKER_OFFLINE',
+    reason: stoppedReason(safety),
     createdAt: new Date().toISOString(),
   };
   return rewrittenJson(response, {
@@ -174,9 +207,10 @@ async function normalizeActivityWhenStopped(response, env = {}) {
     events: [waiting],
     activity: [waiting],
     items: [waiting],
+    paperBrokerGate: safety.broker,
     scannerArmed: false,
   }, {
-    'x-moe-mobile-activity-gate': 'stopped',
+    'x-moe-mobile-activity-gate': safety.broker.connected ? 'stopped' : 'broker-offline',
   });
 }
 
@@ -184,6 +218,10 @@ export default {
   ...baseWorker,
   async fetch(request, env, ctx) {
     const pathname = new URL(request.url).pathname;
+    const paperArmIntent = pathname === MODE_PATH
+      ? await mobilePaperArmIntent(request)
+      : false;
+
     if (pathname === MOBILE_SCANNER_MONITOR_PATH) {
       const response = await handleMobileScannerMonitor(request, env);
       return normalizeMonitorReadiness(response, env);
@@ -194,13 +232,39 @@ export default {
     }
 
     const response = await baseWorker.fetch(request, env, ctx);
+
+    if (pathname === MODE_PATH && paperArmIntent && response.ok) {
+      const safety = await mobileSafety(env, 'MOBILE_START_BROKER_GATE');
+      if (safety.broker.connected !== true) {
+        return paperBrokerOfflineStartResponse(safety.broker);
+      }
+    }
+
+    if (pathname === HEALTH_PATH && isMobileClientRequest(request)) {
+      return normalizeMobileHealthForPaperBroker(response, env, coordinator(env));
+    }
+
     if (!MOBILE_PATHS.has(pathname)) return response;
 
     const repaired = await repairMobileAccountBalanceHtml(response, request);
     const enhanced = await enhanceMobileScannerVisibleUi(repaired, request);
-    return repairVisibleScannerDomInsertion(enhanced, request);
+    const brokerGated = await enhanceMobilePaperBrokerGateUi(enhanced, request);
+    return repairVisibleScannerDomInsertion(brokerGated, request);
   },
-  scheduled(controller, env, ctx) {
+  async scheduled(controller, env, ctx) {
+    const safety = await mobileSafety(env, 'MOBILE_SCHEDULE_BROKER_GATE');
+    if (!safety.armed) {
+      return {
+        ok: true,
+        skipped: safety.wasArmed && safety.broker.connected !== true
+          ? 'MOBILE_PAPER_BROKER_OFFLINE'
+          : 'MOBILE_DASHBOARD_NOT_ARMED',
+        paperBrokerConnected: safety.broker.connected === true,
+        executionAuthorityChanged: false,
+        liveFundsUsed: false,
+        createdAt: new Date().toISOString(),
+      };
+    }
     return baseWorker.scheduled(controller, env, ctx);
   },
 };
