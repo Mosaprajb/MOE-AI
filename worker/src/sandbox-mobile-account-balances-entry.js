@@ -36,12 +36,33 @@ async function repairMobileAccountBalanceHtml(response, request) {
   });
 }
 
+async function normalizeMonitorReadiness(response) {
+  const payload = await response.clone().json().catch(() => null);
+  if (!payload || payload?.plan?.driftPassed !== false || !payload.readiness) return response;
+
+  const headers = new Headers(response.headers);
+  headers.delete('content-length');
+  return new Response(JSON.stringify({
+    ...payload,
+    readiness: {
+      ...payload.readiness,
+      percent: Math.min(82, Number(payload.readiness.percent) || 82),
+      color: 'amber',
+    },
+  }), {
+    status: response.status,
+    statusText: response.statusText,
+    headers,
+  });
+}
+
 export default {
   ...baseWorker,
   async fetch(request, env, ctx) {
     const pathname = new URL(request.url).pathname;
     if (pathname === MOBILE_SCANNER_MONITOR_PATH) {
-      return handleMobileScannerMonitor(request, env);
+      const response = await handleMobileScannerMonitor(request, env);
+      return normalizeMonitorReadiness(response);
     }
 
     const response = await baseWorker.fetch(request, env, ctx);
