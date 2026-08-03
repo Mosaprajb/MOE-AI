@@ -6,8 +6,18 @@ on:
       - feature/moe-core-domain-v2
     paths:
       - 'worker/src/mobile-scanner-visible-ui.js'
+      - 'worker/src/mobile-paper-broker-gate.js'
+      - 'worker/src/sandbox-moerand-clean-utbot-entry.js'
       - 'worker/src/sandbox-mobile-account-balances-entry.js'
+      - 'worker/src/sandbox-mobile-account-balances-implementation.js'
       - 'worker/test/mobile-scanner-monitor-contract.test.mjs'
+      - 'worker/test/moerand-clean-mobile-settings.test.mjs'
+      - 'worker/test/sandbox-operations-dashboard.test.mjs'
+      - 'worker/test/sandbox-runtime-pilot-observability.test.mjs'
+      - 'worker/test/sandbox-simulation-mode.test.mjs'
+      - 'wrangler.sandbox.jsonc'
+      - 'package.json'
+      - 'package-lock.json'
       - '.github/workflows/deploy-mobile-scanner-visible-ui.yml'
 
 permissions:
@@ -45,6 +55,7 @@ jobs:
         run: |
           node --test --test-concurrency=1 worker/test/sandbox-simulation-mode.test.mjs
           node --test --test-concurrency=1 worker/test/sandbox-runtime-pilot-observability.test.mjs
+          node --test --test-concurrency=1 worker/test/sandbox-operations-dashboard.test.mjs
 
       - name: Run complete Worker suite
         run: npm run test:worker
@@ -54,6 +65,9 @@ jobs:
           node <<'NODE'
           const { readFileSync } = require('node:fs');
           const config = JSON.parse(readFileSync('wrangler.sandbox.jsonc', 'utf8'));
+          const cleanEntry = readFileSync('worker/src/sandbox-moerand-clean-utbot-entry.js', 'utf8');
+          const accountEntry = readFileSync('worker/src/sandbox-mobile-account-balances-entry.js', 'utf8');
+          const implementation = readFileSync('worker/src/sandbox-mobile-account-balances-implementation.js', 'utf8');
           const expected = {
             MOE_SANDBOX_PILOT_ENABLED: 'false',
             MOE_LIVE_MODE_UNLOCKED: 'false',
@@ -63,13 +77,35 @@ jobs:
             WEBULL_LIVE_AUTOMATION_ARMED: 'false',
             WEBULL_LIVE_KILL_SWITCH: 'true',
           };
-          if (config.main !== 'worker/src/sandbox-mobile-account-balances-entry.js') {
+          if (config.main !== 'worker/src/sandbox-moerand-clean-utbot-entry.js') {
             throw new Error(`Unexpected Sandbox entry: ${config.main}`);
+          }
+          if (!/from '\.\/sandbox-mobile-account-balances-entry\.js'/.test(cleanEntry)) {
+            throw new Error('Clean wrapper does not delegate to the protected mobile account entry');
+          }
+          if (!/from '\.\/sandbox-mobile-account-balances-implementation\.js'/.test(accountEntry)) {
+            throw new Error('Mobile account wrapper does not delegate to its protected implementation');
           }
           for (const [key, value] of Object.entries(expected)) {
             if (config.vars?.[key] !== value) throw new Error(`${key} must remain ${value}`);
           }
-          console.log(JSON.stringify({ sandboxEntry: config.main, ...expected }, null, 2));
+          for (const token of [
+            "WEBULL_LIVE_TRADING: 'false'",
+            "WEBULL_LIVE_ORDER_SUBMISSION: 'false'",
+            "WEBULL_LIVE_AUTOMATION_ARMED: 'false'",
+            "WEBULL_LIVE_KILL_SWITCH: 'true'",
+          ]) {
+            if (!implementation.includes(token)) throw new Error(`Implementation missing safety token: ${token}`);
+          }
+          if (implementation.includes('placeWebullSandboxOrder')) {
+            throw new Error('Read-only mobile implementation must not submit orders');
+          }
+          console.log(JSON.stringify({
+            sandboxEntry: config.main,
+            wrapperChainVerified: true,
+            implementationSafetyVerified: true,
+            ...expected,
+          }, null, 2));
           NODE
 
       - name: Build Cloudflare Worker
