@@ -34,7 +34,7 @@
       "WEBULL_APP_KEY",
       "WEBULL_APP_SECRET",
       "WEBULL_ACCESS_TOKEN",
-      "WEBULL_ACCOUNT_ID",
+      "WEBULL_ACCOUNT_ID"
     ]
   },
   "vars": {
