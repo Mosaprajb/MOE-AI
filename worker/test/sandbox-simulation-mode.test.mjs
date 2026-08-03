@@ -177,7 +177,7 @@ test('SimulationDriver RPC export inherits from the Cloudflare DurableObject bas
 });
 
 test('Sandbox configuration keeps Pilot disarmed and every Live gate locked', () => {
-  assert.equal(config.main, 'worker/src/sandbox-simulation-rpc-entry.js');
+  assert.equal(config.main, 'worker/src/sandbox-scan-mode-entry.js');
   assert.equal(config.vars.MOE_SIMULATION_ENABLED, 'true');
   assert.equal(config.vars.MOE_SANDBOX_PILOT_ENABLED, 'false');
   assert.equal(config.vars.MOE_LIVE_MODE_UNLOCKED, 'false');

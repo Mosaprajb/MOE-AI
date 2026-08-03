@@ -16,6 +16,9 @@ const DASHBOARD_PATHS = new Set(['/', '/moe-ai', '/moe-ai/', '/dashboard', '/das
 const PRESETS = Object.freeze({
   CORE_ONLY: ['CORE'],
   PREMARKET_ONLY: ['PREMARKET'],
+  PREMARKET_AND_CORE: ['PREMARKET', 'CORE'],
+  CORE_AND_AFTER_HOURS: ['CORE', 'AFTER_HOURS'],
+  DAY_SESSIONS: ['PREMARKET', 'CORE', 'AFTER_HOURS'],
   AFTER_HOURS_ONLY: ['AFTER_HOURS'],
   OVERNIGHT_ONLY: ['OVERNIGHT'],
   PREMARKET_AND_OVERNIGHT: ['PREMARKET', 'OVERNIGHT'],
@@ -44,15 +47,51 @@ function normalizePreset(value, env = {}) {
   return preset;
 }
 
+function normalizeAllowedSessions(values) {
+  if (!Array.isArray(values)) return null;
+  const mapped = [...new Set(values.map((value) => {
+    const normalized = String(value || '').trim().toUpperCase();
+    return normalized === 'REGULAR' ? 'CORE' : normalized;
+  }))];
+  const allowed = new Set(['PREMARKET', 'CORE', 'AFTER_HOURS', 'OVERNIGHT']);
+  if (!mapped.length || mapped.some((value) => !allowed.has(value))) throw new Error('Unsupported trading-session policy.');
+  return mapped;
+}
+
+function presetForSessions(values, env = {}) {
+  const sessions = normalizeAllowedSessions(values);
+  if (!sessions) return defaultPreset(env);
+  const key = [...sessions].sort().join(',');
+  return Object.entries(PRESETS).find(([, candidate]) => [...candidate].sort().join(',') === key)?.[0]
+    || null;
+}
+
 function policySnapshot(saved, env = {}) {
-  const preset = normalizePreset(saved?.preset, env);
+  const savedSessions = normalizeAllowedSessions(saved?.allowedSessions);
+  const preset = savedSessions ? (presetForSessions(savedSessions, env) || 'CUSTOM') : normalizePreset(saved?.preset, env);
+  const allowedSessions = savedSessions || [...PRESETS[preset]];
   return {
     version: POLICY_VERSION,
     preset,
-    allowedSessions: [...PRESETS[preset]],
+    allowedSessions,
+    sessions: allowedSessions.filter((value) => value !== 'OVERNIGHT').map((value) => value === 'CORE' ? 'REGULAR' : value),
     updatedAt: saved?.updatedAt || null,
     updatedBy: saved?.updatedBy || null,
   };
+}
+
+export async function updateTradingSessionPolicySessions(storage, sessions, env = {}, actor = 'MOBILE_DASHBOARD') {
+  const allowedSessions = normalizeAllowedSessions(sessions);
+  const preset = presetForSessions(allowedSessions, env) || 'CUSTOM';
+  const saved = {
+    version: POLICY_VERSION,
+    preset,
+    allowedSessions,
+    updatedAt: new Date().toISOString(),
+    updatedBy: String(actor || 'MOBILE_DASHBOARD').slice(0, 64),
+  };
+  await storage.put(POLICY_KEY, saved);
+  return policySnapshot(saved, env);
 }
 
 function scannerEnvironment(env, policy, session) {
@@ -115,6 +154,9 @@ async function enhanceDashboard(response) {
     const labels={
       CORE_ONLY:'السوق العادي فقط',
       PREMARKET_ONLY:'ما قبل السوق فقط',
+      PREMARKET_AND_CORE:'ما قبل السوق + السوق العادي',
+      CORE_AND_AFTER_HOURS:'السوق العادي + ما بعد السوق',
+      DAY_SESSIONS:'كل جلسات اليوم',
       AFTER_HOURS_ONLY:'ما بعد السوق فقط',
       OVERNIGHT_ONLY:'الأوفرنايت فقط',
       PREMARKET_AND_OVERNIGHT:'ما قبل السوق + الأوفرنايت',
@@ -193,6 +235,10 @@ export class AlertCoordinator extends BaseAlertCoordinator {
     return policySnapshot(saved, this.env);
   }
 
+  async updateTradingSessionPolicyFromMobile(sessions = [], actor = 'MOBILE_DASHBOARD') {
+    return updateTradingSessionPolicySessions(this.ctx.storage, sessions, this.env, actor);
+  }
+
   async processTradingSessionAlerts(payload = {}) {
     return processSessionAlerts(this.ctx.storage, payload, this.env);
   }
@@ -240,7 +286,7 @@ export default {
     const url = new URL(request.url);
     if (url.pathname === POLICY_PATH) {
       if (request.method === 'GET') {
-        try { return secureJson({ ok: true, ...(await policyStatus(env)) }); }
+        try { const status = await policyStatus(env); return secureJson({ ok: true, ...status, sessions: status.policy.sessions }); }
         catch (error) { return secureJson({ ok: false, error: error instanceof Error ? error.message : 'Trading-session policy failed' }, 500); }
       }
       if (request.method === 'PUT') {
@@ -249,7 +295,7 @@ export default {
         try {
           const policy = await coordinator(env).updateTradingSessionPolicy(payload);
           const currentSession = currentTradingSession();
-          return secureJson({ ok: true, policy, currentSession, currentSessionAllowed: sessionAllowed(policy, currentSession) });
+          return secureJson({ ok: true, policy, sessions: policy.sessions, currentSession, currentSessionAllowed: sessionAllowed(policy, currentSession) });
         } catch (error) {
           return secureJson({ ok: false, blocked: true, error: error instanceof Error ? error.message : 'Trading-session policy update failed' }, 423);
         }

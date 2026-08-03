@@ -66,11 +66,17 @@ export class AlertCoordinator extends TradingAlertCoordinator {
   }
 
   async activePositionIntelligence() {
-    const [trades, lifecycleReport] = await Promise.all([
+    const [trades, lifecycleReport, mobileConfig] = await Promise.all([
       this.listAllTrades(),
       this.latestLifecycleReport(),
+      this.mobileDashboardConfig(),
     ]);
-    return buildActivePositionIntelligence({ trades, lifecycleReport, now: Date.now() });
+    return buildActivePositionIntelligence({
+      trades,
+      lifecycleReport,
+      takeProfitR: mobileConfig.takeProfitR,
+      now: Date.now(),
+    });
   }
 
   async portfolioRiskIntelligence() {
@@ -201,7 +207,14 @@ export default {
       if (request.method !== 'GET') return secureJson({ ok: false, error: 'Method not allowed' }, 405);
       try {
         const activePosition = await coordinator(env).activePositionIntelligence();
-        return secureJson({ ok: true, activePosition, storage: 'DURABLE_OBJECT' });
+        const positions = activePosition?.available ? [activePosition] : [];
+        return secureJson({
+          ok: true,
+          activePosition,
+          position: positions[0] || null,
+          positions,
+          storage: 'DURABLE_OBJECT',
+        });
       } catch (error) {
         return secureJson({
           ok: false,
@@ -224,7 +237,18 @@ export default {
       }
       try {
         const portfolioRisk = await coordinator(env).portfolioRiskIntelligence();
-        return secureJson({ ok: true, portfolioRisk, storage: 'DURABLE_OBJECT' });
+        const cashBalance = portfolioRisk?.capital?.cashBalance ?? null;
+        const marginBalance = portfolioRisk?.capital?.marginExcess
+          ?? portfolioRisk?.capital?.dayBuyingPower
+          ?? null;
+        return secureJson({
+          ok: true,
+          portfolioRisk,
+          portfolio: { ...portfolioRisk, cashBalance, marginBalance },
+          cashBalance,
+          marginBalance,
+          storage: 'DURABLE_OBJECT',
+        });
       } catch (error) {
         return secureJson({
           ok: false,

@@ -6,7 +6,8 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "test:worker": "node worker/test/run-all.mjs"
+    "test:worker": "node worker/test/run-all.mjs",
+    "hash:mobile-passcode": "node scripts/hash-mobile-passcode.mjs"
   },
   "dependencies": {
     "@pushforge/builder": "2.0.5",

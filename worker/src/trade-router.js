@@ -297,7 +297,7 @@ async function handleTradeAnalytics(request, env) {
   if (request.method !== 'GET') return secureJson({ ok: false, error: 'Method not allowed' }, 405, headers);
 
   const analytics = await coordinator(env).tradeAnalytics();
-  return secureJson({ ok: true, analytics, storage: 'DURABLE_OBJECT' }, 200, headers);
+  return secureJson({ ok: true, analytics, byStrategy: analytics.byStrategy || [], storage: 'DURABLE_OBJECT' }, 200, headers);
 }
 
 async function handleTradeReconcile(request, env) {

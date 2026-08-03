@@ -4,7 +4,14 @@ import { getTradingMode, TRADING_MODES, updateTradingMode } from './trading-mode
 import { getLiveTradingReadiness, handleWebullLiveOrder } from './webull-live.js';
 import { handleLiveCertification } from './live-certification.js';
 import { AUTO_SCANNER_SYMBOLS, activeTradingWindow, scannerProfiles } from './auto-scanner.js';
-import { applyRuntimeLiveControl, getLiveControlState, updateLiveControlState, verifyLiveControlPin } from './live-control-service.js';
+import {
+  applyRuntimeLiveControl,
+  forceSafeDisarmFromAuthenticatedSession,
+  getLiveControlState,
+  setSandboxAutomationFromAuthenticatedSession,
+  updateLiveControlState,
+  verifyLiveControlPin,
+} from './live-control-service.js';
 import { marketSessionStatus } from './market-session.js';
 import { runReadOnlyProductionAudit } from './live-production-audit.js';
 import { buildLifecycleReport, readSandboxLifecycleSnapshot } from './order-lifecycle.js';
@@ -25,6 +32,8 @@ export class AlertCoordinator extends BaseAlertCoordinator {
   async getLiveControlState() { return getLiveControlState(this.ctx.storage, this.env); }
   async updateLiveControlState(patch = {}) { return updateLiveControlState(this.ctx.storage, patch, this.env); }
   async verifyLiveControlPin(pin) { return verifyLiveControlPin(this.ctx.storage, pin, this.env); }
+  async setSandboxAutomationFromMobile(armed, actor = 'MOBILE_DASHBOARD') { return setSandboxAutomationFromAuthenticatedSession(this.ctx.storage, armed, actor, this.env); }
+  async forceSafeDisarmFromMobile(actor = 'MOBILE_DASHBOARD') { return forceSafeDisarmFromAuthenticatedSession(this.ctx.storage, actor, this.env); }
   async getTradingMode() { const control = await this.getLiveControlState(); return getTradingMode(this.ctx.storage, applyRuntimeLiveControl(this.env, control)); }
   async updateTradingMode(patch = {}) { const control = await this.getLiveControlState(); return updateTradingMode(this.ctx.storage, patch, applyRuntimeLiveControl(this.env, control)); }
   async listAllTrades() { const trades = await this.ctx.storage.get('trade-history:v1'); return Array.isArray(trades) ? trades.slice(0, 2000) : []; }

@@ -338,7 +338,15 @@ async function publicObservabilityResponse(request, env, ctx, pathname) {
   try {
     const internalResponse = await baseWorker.fetch(internalAuthorizedRequest(request, env), env, ctx);
     const payload = await readJson(internalResponse);
-    if (pathname === '/api/health') return json(publicHealth(payload));
+    if (pathname === '/api/health') {
+      const health = publicHealth(payload);
+      const webull = await probeWebullSandbox(env);
+      return json({
+        ...health,
+        broker: { connected: webull.status === 'CONNECTED', status: webull.status, reason: webull.reason || null },
+        armed: health.pilotArmed === true,
+      });
+    }
     if (pathname === '/api/readiness') return json(await publicReadiness(payload, env));
     if (pathname === '/api/sandbox/audit') return json(publicAudit(payload, env));
     if (pathname === '/api/sandbox/orders/status') return json(publicOrders(payload));

@@ -231,6 +231,7 @@ function reset(state, sessionKey) {
 }
 
 function price(value) {
+  if (value == null || value === '') return null;
   return Number.isFinite(Number(value)) ? Number(Number(value).toFixed(6)) : null;
 }
 

@@ -7,6 +7,15 @@ import baseWorker, {
 import { AUTO_SCANNER_SYMBOLS } from './auto-scanner.js';
 import { enhanceScanModeDashboard } from './dashboard/scan-mode-selector.js';
 import {
+  handleMobilePasscode,
+  isMobileClientRequest,
+  isMobileDashboardPath,
+  isMobileProtectedApiPath,
+  mobileSessionErrorResponse,
+  serveMobileDashboard,
+} from './dashboard/mobile-dashboard.js';
+import { handleAuthenticatedMobileApi } from './dashboard/mobile-dashboard-api.js';
+import {
   readHistoricalSimulation,
   readHistoricalSimulationReport,
   startHistoricalSimulation,
@@ -194,6 +203,24 @@ export default {
   ...baseWorker,
   async fetch(request, env, ctx) {
     const pathname = new URL(request.url).pathname;
+    if (isMobileDashboardPath(pathname)) return serveMobileDashboard(request);
+
+    const stub = coordinator(env);
+    if (pathname === '/api/trading/mode' && request.method === 'POST') {
+      const passcodeResponse = await handleMobilePasscode(request, env, stub);
+      if (passcodeResponse) return passcodeResponse;
+    }
+
+    const mobileRequest = isMobileClientRequest(request) && isMobileProtectedApiPath(pathname);
+    if (mobileRequest) {
+      const sessionError = await mobileSessionErrorResponse(request, env);
+      if (sessionError) return sessionError;
+      const mobileResponse = await handleAuthenticatedMobileApi(request, env, stub, {
+        baseFetch: (nextRequest) => baseWorker.fetch(nextRequest, env, ctx),
+      });
+      if (mobileResponse) return mobileResponse;
+    }
+
     if (pathname === SCAN_SOURCE_MODE_API_PATH) return handleScanModeApi(request, env);
     const response = await baseWorker.fetch(request, env, ctx);
     return DASHBOARD_PATHS.has(pathname) ? enhanceScanModeDashboard(response) : response;

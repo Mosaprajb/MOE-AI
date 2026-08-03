@@ -1,6 +1,16 @@
 import alertsWorker, { AlertCoordinator as BaseAlertCoordinator } from './index.js';
 import { handleWebullSandboxOrder } from './webull-sandbox.js';
 import { createWebullAccessToken, getWebullAccounts, getWebullAccountSnapshot } from './webull-client.js';
+import {
+  handleMobilePasscode,
+  isMobileDashboardPath,
+  readMobileConfig,
+  readMobileRuntime,
+  serveMobileDashboard,
+  updateMobileConfig,
+  updateMobileRuntime,
+  verifyMobilePasscode,
+} from './dashboard/mobile-dashboard.js';
 
 const WEBULL_WEBHOOK_PATH = '/api/tradingview/webull-preview';
 const TRADINGVIEW_SIGNAL_PATH = '/api/tradingview/signal';
@@ -28,6 +38,26 @@ export class AlertCoordinator extends BaseAlertCoordinator {
     const current = (await this.ctx.storage.get(DECISIONS_STORAGE_KEY)) || [];
     const decisions = Array.isArray(current) ? current.slice(0, requestedLimit) : [];
     return { count: decisions.length, decisions };
+  }
+
+  async verifyMobilePasscode(passcode) {
+    return verifyMobilePasscode(this.ctx.storage, passcode, this.env);
+  }
+
+  async mobileDashboardConfig() {
+    return readMobileConfig(this.ctx.storage, this.env);
+  }
+
+  async updateMobileDashboardConfig(patch = {}) {
+    return updateMobileConfig(this.ctx.storage, patch, this.env);
+  }
+
+  async mobileDashboardRuntime() {
+    return readMobileRuntime(this.ctx.storage, this.env);
+  }
+
+  async updateMobileDashboardRuntime(patch = {}, actor = 'MOBILE_DASHBOARD') {
+    return updateMobileRuntime(this.ctx.storage, patch, this.env, actor);
   }
 }
 
@@ -365,6 +395,13 @@ export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
 
+    if (isMobileDashboardPath(url.pathname)) return serveMobileDashboard(request);
+    if (url.pathname === '/api/trading/mode' && request.method === 'POST') {
+      const payload = await request.clone().json().catch(() => null);
+      if (payload?.action === 'verifyPasscode') {
+        return handleMobilePasscode(request, env, coordinator(env));
+      }
+    }
     if (url.pathname === TRADINGVIEW_SIGNAL_PATH) return handleTradingViewSignal(request, env);
     if (url.pathname === TRADINGVIEW_DECISIONS_PATH) return handleTradingViewDecisions(request, env);
     if (url.pathname === WEBULL_WEBHOOK_PATH) return handleWebullSandboxOrder(request, env);

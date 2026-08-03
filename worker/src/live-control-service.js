@@ -195,3 +195,39 @@ export function applyRuntimeLiveControl(env = {}, state = {}) {
     WEBULL_LIVE_KILL_SWITCH: liveActive ? 'false' : 'true',
   };
 }
+// Authenticated mobile control may only change Sandbox automation or move the
+// whole runtime toward a safer state. It cannot unlock Live, clear the kill
+// switch, or arm Live automation.
+export async function setSandboxAutomationFromAuthenticatedSession(storage, armed, actor = 'MOBILE_DASHBOARD', env = {}) {
+  const current = await getLiveControlState(storage, env);
+  const next = {
+    version: VERSION,
+    sandboxAutomationEnabled: armed === true,
+    liveControlsUnlocked: current.liveControlsUnlocked === true,
+    liveAutomationArmed: current.liveAutomationArmed === true,
+    killSwitch: current.killSwitch !== false,
+    updatedAt: new Date().toISOString(),
+    updatedBy: String(actor || 'MOBILE_DASHBOARD').slice(0, 64),
+    lastAction: armed === true ? 'MOBILE_SANDBOX_AUTOMATION_ENABLED' : 'MOBILE_SANDBOX_AUTOMATION_DISABLED',
+  };
+  if (armed === true && (next.liveControlsUnlocked || next.killSwitch === false || next.liveAutomationArmed)) {
+    throw new Error('Sandbox automation cannot be armed while any Live control is active.');
+  }
+  await storage.put(CONTROL_KEY, next);
+  return getLiveControlState(storage, env);
+}
+
+export async function forceSafeDisarmFromAuthenticatedSession(storage, actor = 'MOBILE_DASHBOARD', env = {}) {
+  const next = {
+    version: VERSION,
+    sandboxAutomationEnabled: false,
+    liveControlsUnlocked: false,
+    liveAutomationArmed: false,
+    killSwitch: true,
+    updatedAt: new Date().toISOString(),
+    updatedBy: String(actor || 'MOBILE_DASHBOARD').slice(0, 64),
+    lastAction: 'MOBILE_FORCE_SAFE_DISARM',
+  };
+  await storage.put(CONTROL_KEY, next);
+  return getLiveControlState(storage, env);
+}

@@ -62,7 +62,8 @@ export function normalizeTrade(input = {}, previous = null) {
   const reward = Number((rewardPerShare * quantity).toFixed(2));
   const entryTime = isoDate(input.entryTime ?? previous?.entryTime);
   const exitTime = exitPrice == null ? null : isoDate(input.exitTime ?? previous?.exitTime);
-  const holdingMinutes = exitTime ? Math.max(0, Math.round((new Date(exitTime) - new Date(entryTime)) / 60000)) : null;
+  const holdingSeconds = exitTime ? Math.max(0, Math.floor((new Date(exitTime) - new Date(entryTime)) / 1000)) : null;
+  const holdingMinutes = holdingSeconds == null ? null : Math.round(holdingSeconds / 60);
   const currentPrice = nullableFinite(input.currentPrice ?? input.lastPrice, previous?.currentPrice ?? null);
   const unrealizedPnl = currentPrice == null ? previous?.unrealizedPnl ?? null : Number(((currentPrice - entryPrice) * quantity * multiplier).toFixed(2));
   const replay = safeObject(input.decisionReplay ?? input.decision ?? previous?.decisionReplay, previous?.decisionReplay ?? null);
@@ -77,6 +78,7 @@ export function normalizeTrade(input = {}, previous = null) {
     symbol: text(input.symbol ?? previous?.symbol).toUpperCase(),
     direction,
     timeframe: text(input.timeframe ?? previous?.timeframe),
+    source: text(input.source ?? input.strategy ?? previous?.source ?? previous?.strategy, 'UNKNOWN').toUpperCase(),
     marketRegime: text(input.marketRegime ?? replay?.marketRegime ?? previous?.marketRegime, 'UNKNOWN'),
     sector: text(input.sector ?? previous?.sector, 'OTHER'),
     entryPrice,
@@ -118,7 +120,10 @@ export function normalizeTrade(input = {}, previous = null) {
     riskReward: risk > 0 ? Number((reward / risk).toFixed(2)) : 0,
     realizedPnl,
     realizedPnlPercent: exitPrice == null || !entryPrice ? null : Number((((exitPrice - entryPrice) / entryPrice) * 100 * multiplier).toFixed(2)),
+    holdingSeconds,
     holdingMinutes,
+    realizedR: exitPrice == null || !(risk > 0) ? null : Number((realizedPnl / risk).toFixed(4)),
+    initialRiskPerShare: Number(riskPerShare.toFixed(8)),
     brainScore: finite(input.brainScore ?? previous?.brainScore),
     marketScore: finite(input.marketScore ?? previous?.marketScore),
     sectorScore: finite(input.sectorScore ?? previous?.sectorScore),
@@ -347,6 +352,67 @@ export async function listTrades(storage, options = {}) {
   return trades.filter((trade) => (!status || trade.status === status) && (!symbol || trade.symbol === symbol) && (!capitalSource || trade.capitalSource === capitalSource)).slice(0, limit);
 }
 
+function realizedRForTrade(trade = {}) {
+  const explicit = nullableFinite(trade.realizedR, null);
+  if (explicit != null) return explicit;
+  const risk = nullableFinite(trade.risk, null);
+  const pnl = nullableFinite(trade.realizedPnl, null);
+  if (risk != null && risk > 0 && pnl != null) return pnl / risk;
+  const entry = nullableFinite(trade.entryPrice, null);
+  const exit = nullableFinite(trade.exitPrice, null);
+  const stop = nullableFinite(trade.stopLoss ?? trade.initialStopPrice, null);
+  if (entry == null || exit == null || stop == null || entry === stop) return null;
+  const directionValue = text(trade.direction, 'BUY').toUpperCase();
+  const direction = ['SELL', 'SHORT', 'BEARISH'].includes(directionValue) ? -1 : 1;
+  return ((exit - entry) * direction) / Math.abs(entry - stop);
+}
+
+function strategySource(trade = {}) {
+  return text(
+    trade.source
+      ?? trade.strategy
+      ?? trade.decisionReplay?.source
+      ?? trade.decisionReplay?.strategy
+      ?? trade.decisionReplay?.signal?.source,
+    'UNKNOWN',
+  ).toUpperCase();
+}
+
+export function strategyAnalyticsFromTrades(trades = []) {
+  const completed = [...(Array.isArray(trades) ? trades : [])]
+    .filter((trade) => text(trade?.status).toUpperCase() === 'CLOSED')
+    .map((trade) => ({ trade, realizedR: realizedRForTrade(trade) }))
+    .filter((item) => Number.isFinite(item.realizedR))
+    .sort((left, right) => Date.parse(left.trade.exitTime || left.trade.updatedAt || 0) - Date.parse(right.trade.exitTime || right.trade.updatedAt || 0));
+  const groups = new Map();
+  for (const item of completed) {
+    const source = strategySource(item.trade);
+    const group = groups.get(source) || [];
+    group.push(item.realizedR);
+    groups.set(source, group);
+  }
+  return [...groups.entries()].map(([source, values]) => {
+    let cumulative = 0;
+    let peak = 0;
+    let maxDrawdownR = 0;
+    for (const value of values) {
+      cumulative += value;
+      peak = Math.max(peak, cumulative);
+      maxDrawdownR = Math.max(maxDrawdownR, peak - cumulative);
+    }
+    const totalR = values.reduce((sum, value) => sum + value, 0);
+    return {
+      source,
+      trades: values.length,
+      wins: values.filter((value) => value > 0).length,
+      expectancy: Number((totalR / values.length).toFixed(4)),
+      maxDrawdownR: Number(maxDrawdownR.toFixed(4)),
+      history: values.slice(-12).map((value) => Number(value.toFixed(4))),
+      totalR: Number(totalR.toFixed(4)),
+    };
+  }).sort((left, right) => right.expectancy - left.expectancy || right.trades - left.trades || left.source.localeCompare(right.source));
+}
+
 export async function tradeAnalytics(storage) {
   const trades = await readTrades(storage);
   const closed = trades.filter((trade) => trade.status === 'CLOSED' && Number.isFinite(trade.realizedPnl));
@@ -366,6 +432,7 @@ export async function tradeAnalytics(storage) {
   });
   const decisions = trades.filter((trade) => Number.isFinite(trade.decisionConfidence));
   const averageDecisionConfidence = decisions.length ? decisions.reduce((sum, trade) => sum + trade.decisionConfidence, 0) / decisions.length : 0;
+  const byStrategy = strategyAnalyticsFromTrades(trades);
 
   return {
     generatedAt: new Date().toISOString(),
@@ -389,5 +456,6 @@ export async function tradeAnalytics(storage) {
     decisionsRecorded: decisions.length,
     averageDecisionConfidence: Number(averageDecisionConfidence.toFixed(2)),
     equityCurve,
+    byStrategy,
   };
 }

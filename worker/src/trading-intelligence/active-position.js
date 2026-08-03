@@ -197,7 +197,7 @@ function riskState(lifecycle, metrics) {
   return 'NORMAL';
 }
 
-export function buildActivePositionIntelligence({ trades = [], lifecycleReport = null, now = Date.now() } = {}) {
+export function buildActivePositionIntelligence({ trades = [], lifecycleReport = null, takeProfitR = 2, now = Date.now() } = {}) {
   const selected = activeTrade(trades, lifecycleReport);
   if (!selected) {
     return freeze({
@@ -217,10 +217,19 @@ export function buildActivePositionIntelligence({ trades = [], lifecycleReport =
   const direction = normalizeDirection(trade.direction, trade.side, lifecycle?.position?.side);
   const entry = positive(lifecycle?.averageFillPrice, lifecycle?.position?.averagePrice, trade.entryPrice, trade.entry, trade.averagePrice);
   const current = positive(lifecycle?.currentPrice, lifecycle?.position?.lastPrice, trade.currentPrice, trade.marketPrice, trade.lastPrice, trade.markPrice, entry);
-  const stop = positive(lifecycle?.orders?.stopLoss?.stopPrice, lifecycle?.orders?.stopLoss?.limitPrice, trade.stopLoss, trade.stopPrice, trade.stop, trade.sl);
-  const target = positive(lifecycle?.orders?.takeProfit?.limitPrice, lifecycle?.orders?.takeProfit?.stopPrice, trade.takeProfit, trade.targetPrice, trade.target, trade.tp, trade.takeProfit1);
+  const initialStop = positive(trade.initialStopPrice, trade.initialStop, trade.stopLoss, trade.stopPrice, trade.stop, trade.sl);
+  const stop = positive(lifecycle?.orders?.stopLoss?.stopPrice, lifecycle?.orders?.stopLoss?.limitPrice, trade.trailingStop, trade.trailingStopPrice, initialStop);
+  const configuredTarget = positive(lifecycle?.orders?.takeProfit?.limitPrice, lifecycle?.orders?.takeProfit?.stopPrice, trade.takeProfit, trade.targetPrice, trade.target, trade.tp, trade.takeProfit1);
+  const normalizedTakeProfitR = Math.max(0.1, finite(trade.takeProfitR, finite(takeProfitR, 2)));
+  const initialRiskDistance = entry != null && initialStop != null ? Math.abs(entry - initialStop) : null;
+  const calculatedTarget = entry != null && initialRiskDistance > 0
+    ? direction === 'SHORT'
+      ? entry - normalizedTakeProfitR * initialRiskDistance
+      : entry + normalizedTakeProfitR * initialRiskDistance
+    : null;
+  const target = positive(configuredTarget, calculatedTarget);
   const target2 = positive(trade.takeProfit2, trade.targetPrice2, trade.tp2);
-  const metrics = priceMetrics({ direction, entry, current, stop, target });
+  const metrics = priceMetrics({ direction, entry, current, stop: initialStop, target });
   const state = positionState(lifecycle, metrics);
   const risk = riskState(lifecycle, metrics);
   const startedAt = trade.entryTime || trade.filledAt || trade.createdAt || null;
@@ -230,6 +239,10 @@ export function buildActivePositionIntelligence({ trades = [], lifecycleReport =
     : null;
   const quantity = Math.abs(finite(lifecycle?.position?.quantity, finite(trade.quantity, 0)));
   const unrealizedPnl = finite(trade.unrealizedPnl, finite(trade.pnl, null));
+  const breakevenLocked = entry != null && stop != null && direction !== 'UNKNOWN'
+    ? direction === 'SHORT' ? stop <= entry : stop >= entry
+    : false;
+  const source = String(trade.source || trade.strategy || trade.decisionReplay?.source || trade.decisionReplay?.strategy || 'UNKNOWN').toUpperCase();
   const anomalies = Array.isArray(lifecycle?.anomalies) ? lifecycle.anomalies.slice(0, 12) : [];
 
   return freeze({
@@ -246,11 +259,18 @@ export function buildActivePositionIntelligence({ trades = [], lifecycleReport =
     entryPrice: entry,
     currentPrice: current,
     stopLoss: stop,
+    stopPrice: stop,
+    initialStopPrice: initialStop,
     takeProfit1: target,
+    targetPrice: target,
     takeProfit2: target2,
     quantity,
     unrealizedPnl,
     timeInTradeSeconds,
+    holdingSeconds: timeInTradeSeconds,
+    breakevenLocked,
+    source,
+    takeProfitR: normalizedTakeProfitR,
     progress: metrics,
     timeline: timeline(trade, lifecycle, state),
     anomalies,

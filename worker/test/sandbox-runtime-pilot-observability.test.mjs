@@ -219,6 +219,8 @@ test('Sandbox pilot wrapper, simulation isolation, endpoints, and secret hygiene
   const entry = readFileSync(join(root, 'worker/src/sandbox-runtime-pilot-entry.js'), 'utf8');
   const operationsEntry = readFileSync(join(root, 'worker/src/sandbox-operations-entry.js'), 'utf8');
   const operationsV2Entry = readFileSync(join(root, 'worker/src/sandbox-operations-v2-entry.js'), 'utf8');
+  const scanModeEntry = readFileSync(join(root, 'worker/src/sandbox-scan-mode-entry.js'), 'utf8');
+  const rpcEntry = readFileSync(join(root, 'worker/src/sandbox-simulation-rpc-entry.js'), 'utf8');
   const simulationEntry = readFileSync(join(root, 'worker/src/sandbox-simulation-entry.js'), 'utf8');
   const simulationEngine = readFileSync(join(root, 'worker/src/simulation/simulation-engine.js'), 'utf8');
   const dashboardEntry = readFileSync(join(root, 'worker/src/trading-dashboard-entry.js'), 'utf8');
@@ -226,7 +228,9 @@ test('Sandbox pilot wrapper, simulation isolation, endpoints, and secret hygiene
   const gitignore = readFileSync(join(root, '.gitignore'), 'utf8');
 
   assert.equal(config.name, 'moerand-alerts-sandbox');
-  assert.equal(config.main, 'worker/src/sandbox-simulation-rpc-entry.js');
+  assert.equal(config.main, 'worker/src/sandbox-scan-mode-entry.js');
+  assert.match(scanModeEntry, /from '\.\/sandbox-simulation-rpc-entry\.js'/);
+  assert.match(rpcEntry, /from '\.\/sandbox-simulation-entry\.js'/);
   assert.deepEqual(config.triggers.crons, ['* * * * *']);
   assert.equal(config.durable_objects.bindings[0].name, 'ALERT_COORDINATOR');
   assert.equal(config.observability.enabled, true);
