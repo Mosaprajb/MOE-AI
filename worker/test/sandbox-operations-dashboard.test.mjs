@@ -9,6 +9,7 @@ const root = join(directory, '..', '..');
 const source = readFileSync(join(root, 'worker/src/sandbox-operations-entry.js'), 'utf8');
 const v2Source = readFileSync(join(root, 'worker/src/sandbox-operations-v2-entry.js'), 'utf8');
 const scanModeEntry = readFileSync(join(root, 'worker/src/sandbox-scan-mode-entry.js'), 'utf8');
+const mobilePhoneEntry = readFileSync(join(root, 'worker/src/sandbox-mobile-phone-fix-entry.js'), 'utf8');
 const rpcEntry = readFileSync(join(root, 'worker/src/sandbox-simulation-rpc-entry.js'), 'utf8');
 const simulationSource = readFileSync(join(root, 'worker/src/sandbox-simulation-entry.js'), 'utf8');
 const simulationDashboard = readFileSync(join(root, 'worker/src/simulation/simulation-dashboard.js'), 'utf8');
@@ -16,7 +17,8 @@ const alpacaSource = readFileSync(join(root, 'worker/src/alpaca-market-regime.js
 const config = readFileSync(join(root, 'wrangler.sandbox.jsonc'), 'utf8');
 
 test('sandbox Worker is wired through the isolated simulation entry', () => {
-  assert.match(config, /"main": "worker\/src\/sandbox-scan-mode-entry\.js"/);
+  assert.match(config, /"main": "worker\/src\/sandbox-mobile-phone-fix-entry\.js"/);
+  assert.match(mobilePhoneEntry, /from '\.\/sandbox-mobile-final-entry\.js'/);
   assert.match(scanModeEntry, /from '\.\/sandbox-simulation-rpc-entry\.js'/);
   assert.match(rpcEntry, /from '\.\/sandbox-simulation-entry\.js'/);
   assert.match(config, /"MOE_SIMULATION_ENABLED": "true"/);
