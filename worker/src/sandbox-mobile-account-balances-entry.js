@@ -12,6 +12,7 @@ export { AlertCoordinator, SimulationDriver };
 
 const MOBILE_PATHS = new Set(['/m', '/m/', '/mobile', '/mobile/']);
 const ACCOUNT_BALANCE_MARKER = 'moe-mobile-two-account-balances';
+const VISIBLE_SCANNER_DOM_FIX_MARKER = 'moe-mobile-scanner-dom-insertion-fixed';
 
 async function repairMobileAccountBalanceHtml(response, request) {
   if (request.method === 'HEAD') return response;
@@ -34,6 +35,44 @@ async function repairMobileAccountBalanceHtml(response, request) {
     statusText: response.statusText,
     headers,
   });
+}
+
+async function repairVisibleScannerDomInsertion(response, request) {
+  if (request.method === 'HEAD') return response;
+  const contentType = response.headers.get('content-type') || '';
+  if (!contentType.toLowerCase().includes('text/html')) return response;
+
+  const html = await response.text();
+  const repaired = html
+    .replace(
+      "stack?card.insertBefore(panel,stack):chips.insertAdjacentElement('afterend',panel);",
+      "chips.insertAdjacentElement('afterend',panel);",
+    )
+    .replace(
+      'body.insertBefore(holder.firstElementChild,body.firstChild);',
+      "body.insertAdjacentElement('afterbegin',holder.firstElementChild);",
+    )
+    .replace(
+      'body.insertBefore(tools,list);',
+      "list.insertAdjacentElement('beforebegin',tools);",
+    );
+
+  const headers = new Headers(response.headers);
+  headers.delete('content-length');
+  headers.set('cache-control', 'no-store, no-cache, must-revalidate');
+  headers.set('x-moe-mobile-scanner-dom-fix', 'enabled');
+
+  return new Response(
+    repaired.replace(
+      '</body>',
+      `<meta id="${VISIBLE_SCANNER_DOM_FIX_MARKER}" data-state="enabled">\n</body>`,
+    ),
+    {
+      status: response.status,
+      statusText: response.statusText,
+      headers,
+    },
+  );
 }
 
 async function normalizeMonitorReadiness(response) {
@@ -69,7 +108,8 @@ export default {
     if (!MOBILE_PATHS.has(pathname)) return response;
 
     const repaired = await repairMobileAccountBalanceHtml(response, request);
-    return enhanceMobileScannerVisibleUi(repaired, request);
+    const enhanced = await enhanceMobileScannerVisibleUi(repaired, request);
+    return repairVisibleScannerDomInsertion(enhanced, request);
   },
   scheduled(controller, env, ctx) {
     return baseWorker.scheduled(controller, env, ctx);
