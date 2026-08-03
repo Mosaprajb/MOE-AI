@@ -30,7 +30,7 @@ test('watchlist reads multi-symbol Alpaca IEX snapshots without exposing credent
   assert.equal(source.includes("WEBULL_LIVE_TRADING: 'true'"), false);
 });
 
-test('watchlist UI is inserted server-side and exposes modern live rows and quote details', () => {
+test('watchlist UI is guaranteed server-side and exposes modern live rows and quote details', () => {
   for (const token of [
     'moe-live-watchlist-script',
     'data-moe-watchlist-root',
@@ -48,13 +48,18 @@ test('watchlist UI is inserted server-side and exposes modern live rows and quot
     'Quote age',
     'MutationObserver',
     'data-watch-remove',
+    'guaranteeRoots',
+    'insertAfterElementById',
+    'data-view="main"',
+    'data-view="sheet"',
   ]) {
     assert.equal(source.includes(token), true, `missing live watchlist token: ${token}`);
   }
-  assert.match(source, /insertAfter\(output, '<div class="chips" id="chips"><\/div>', WATCHLIST_MAIN_HTML\)/);
-  assert.match(source, /insertAfter\(output, '<div class="chips" id="chips2" style="margin-top:16px"><\/div>', WATCHLIST_SHEET_HTML\)/);
+  assert.match(source, /insertAfterElementById\(html, 'chips', WATCHLIST_ROOT\)/);
+  assert.match(source, /insertAfterElementById\(output, 'chips2', WATCHLIST_SHEET_ROOT\)/);
+  assert.match(source, /id=["']openSymbols["']/);
+  assert.match(source, /id=["']symInput2["']/);
   assert.match(source, /setInterval\(function\(\)\{if\(!document\.hidden\)refresh\(false\);\},3000\)/);
-  assert.match(source, /insertAdjacentElement\('afterend',root\)/);
 });
 
 test('scanner activation freezes the original symbol list in both browser and server', () => {
@@ -68,12 +73,14 @@ test('scanner activation freezes the original symbol list in both browser and se
     'data-watch-locked-action',
     'blockSymbolMutationWhileRunning',
     'x-moe-symbol-lock',
+    'Scanner active — selected symbols are frozen',
   ]) {
     assert.equal(source.includes(token), true, `missing symbol-lock token: ${token}`);
   }
   assert.match(source, /if \(pathname === SCAN_SOURCE_MODE_PATH\)/);
   assert.match(source, /return json\([\s\S]*SCANNER_RUNNING_SYMBOLS_LOCKED[\s\S]*409/);
   assert.match(source, /event\.stopImmediatePropagation\(\)/);
+  assert.match(source, /runtime = await coordinator\(env\)\.mobileDashboardRuntime\(\)/);
 });
 
 test('embedded live watchlist browser script parses successfully', () => {
