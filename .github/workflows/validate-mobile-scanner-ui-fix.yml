@@ -93,7 +93,10 @@ jobs:
           }
           for (const token of [
             '/api/mobile/watchlist/quotes',
+            '/api/mobile/watchlist/state',
             'data.alpaca.markets/v2/stocks/snapshots',
+            'SCANNER_RUNNING_SYMBOLS_LOCKED',
+            'LOCKED_WHILE_SCANNER_RUNNING',
             'liveTradingLocked: true',
             'liveFundsUsed: false',
           ]) {
@@ -109,6 +112,7 @@ jobs:
             sandboxEntry: config.main,
             wrapperChainVerified: true,
             liveWatchlistVerified: true,
+            symbolFreezeVerified: true,
             ...expected,
           }, null, 2));
           NODE
@@ -127,6 +131,7 @@ jobs:
           MOBILE_URL: https://moerand-alerts-sandbox.mosaprajb.workers.dev/m
           MONITOR_URL: https://moerand-alerts-sandbox.mosaprajb.workers.dev/api/scanner/monitor?symbol=SPY
           WATCHLIST_URL: https://moerand-alerts-sandbox.mosaprajb.workers.dev/api/mobile/watchlist/quotes?symbols=SPY,AAPL
+          WATCHLIST_STATE_URL: https://moerand-alerts-sandbox.mosaprajb.workers.dev/api/mobile/watchlist/state
           ACTIVITY_URL: https://moerand-alerts-sandbox.mosaprajb.workers.dev/api/scanner/live-activity
         run: |
           node <<'NODE'
@@ -155,9 +160,11 @@ jobs:
           for (const token of [
             'id="moe-mobile-scanner-visible-ui"',
             'id="moe-live-watchlist-script"',
-            'moe-watch-row',
-            'Live prices · IEX',
+            'data-moe-watchlist-root',
+            'moe-watchlist-row',
+            'Direct IEX market prices',
             'Top movers',
+            'Stop trading before adding or removing symbols',
             "chips.insertAdjacentElement('afterend',makeMonitor('main'))",
             "body.insertAdjacentElement('afterbegin',makeMonitor('scanner'))",
             "list.insertAdjacentElement('beforebegin',tools)",
@@ -203,6 +210,22 @@ jobs:
             throw new Error('Watchlist safety lock changed unexpectedly');
           }
 
+          const watchlistState = await retry('watchlist edit policy', async () => {
+            const response = await fetch(`${process.env.WATCHLIST_STATE_URL}?t=${Date.now()}`, { cache: 'no-store', headers });
+            const payload = await response.json().catch(() => ({}));
+            if (!response.ok || payload.ok !== true) throw new Error(`HTTP ${response.status}: ${payload.error || 'invalid payload'}`);
+            return payload;
+          });
+          if (!['LOCKED_WHILE_SCANNER_RUNNING', 'EDITABLE_BEFORE_START'].includes(watchlistState.editPolicy)) {
+            throw new Error('Watchlist edit policy is invalid');
+          }
+          if (watchlistState.locked !== (watchlistState.armed === true)) {
+            throw new Error('Watchlist lock does not match scanner state');
+          }
+          if (watchlistState.liveTradingLocked !== true || watchlistState.liveFundsUsed !== false) {
+            throw new Error('Watchlist state safety lock changed unexpectedly');
+          }
+
           const activity = await retry('scanner activity', async () => {
             const response = await fetch(`${process.env.ACTIVITY_URL}?t=${Date.now()}`, { cache: 'no-store', headers });
             const payload = await response.json().catch(() => ({}));
@@ -222,6 +245,7 @@ jobs:
             livePrice: monitor.quote.price,
             watchlistSymbols: watchlist.quotes.map((quote) => quote.symbol),
             watchlistPrices: watchlist.quotes.map((quote) => quote.price),
+            watchlistEditPolicy: watchlistState.editPolicy,
             scannerArmed: monitor.scannerArmed,
             planVisible: monitor.plan !== null,
             readinessPercent: monitor.readiness?.percent,
