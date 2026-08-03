@@ -62,14 +62,84 @@ function sameOriginControlAllowed(request, env = {}) {
     || origin === 'http://localhost:3000';
 }
 
+const MOBILE_CONNECTION_STYLE = `
+<style id="mobileTradingConnectionStyles">
+.trading-connections{display:grid;grid-template-columns:1fr 1fr;gap:9px;margin:0 0 16px}
+.trading-connection{display:flex;align-items:center;gap:9px;min-width:0;padding:11px 12px;border:1px solid var(--line);border-radius:14px;background:var(--panel)}
+.trading-connection-dot{flex:none;width:11px;height:11px;border-radius:50%;background:var(--red);box-shadow:0 0 12px rgba(229,72,77,.75)}
+.trading-connection[data-connected="true"] .trading-connection-dot{background:var(--green);box-shadow:0 0 12px rgba(74,222,128,.75)}
+.trading-connection-copy{display:grid;gap:1px;min-width:0}
+.trading-connection-name{font-size:12px;font-weight:900;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.trading-connection-state{font-family:'IBM Plex Mono',ui-monospace,monospace;font-size:10px;font-weight:700;color:var(--red);text-transform:uppercase;letter-spacing:.05em}
+.trading-connection[data-connected="true"] .trading-connection-state{color:var(--green)}
+</style>`;
+
+const MOBILE_CONNECTION_HTML = `
+<section class="trading-connections" aria-label="Trading connection status">
+  <div class="trading-connection" id="paperConnection" data-connected="false">
+    <i class="trading-connection-dot" aria-hidden="true"></i>
+    <span class="trading-connection-copy">
+      <span class="trading-connection-name">Paper Trading</span>
+      <span class="trading-connection-state" id="paperConnectionState">Checking</span>
+    </span>
+  </div>
+  <div class="trading-connection" id="liveConnection" data-connected="false">
+    <i class="trading-connection-dot" aria-hidden="true"></i>
+    <span class="trading-connection-copy">
+      <span class="trading-connection-name">Live Trading</span>
+      <span class="trading-connection-state" id="liveConnectionState">Checking</span>
+    </span>
+  </div>
+</section>`;
+
+const MOBILE_CONNECTION_SCRIPT = `
+function setTradingConnection(id,stateId,connected){
+  const card=$(id), label=$(stateId);
+  if(card) card.dataset.connected=String(connected===true);
+  if(label) label.textContent=connected===true?'Connected':'Not connected';
+}
+function connectionState(value){
+  return String(value??'').trim().toUpperCase();
+}
+async function refreshTradingConnections(){
+  let paperConnected=false;
+  let liveConnected=false;
+  try{
+    const h=await api(API.health);
+    const brokerState=connectionState(h?.broker?.status);
+    const webullState=connectionState(h?.webull?.status??h?.webull);
+    const alpacaState=connectionState(h?.alpaca?.status??h?.alpaca);
+    paperConnected=h?.broker?.connected===true
+      || brokerState==='CONNECTED'
+      || webullState==='CONNECTED'
+      || alpacaState==='CONNECTED';
+  }catch(_){}
+  try{
+    const m=await api(API.mode);
+    const control=m?.control||{};
+    const capability=control.staticLiveCapability||{};
+    const checks=capability.checks||{};
+    liveConnected=control.effectiveLiveUnlocked===true
+      && control.killSwitch===false
+      && capability.ready===true
+      && checks.productionCredentials===true;
+  }catch(_){}
+  setTradingConnection('paperConnection','paperConnectionState',paperConnected);
+  setTradingConnection('liveConnection','liveConnectionState',liveConnected);
+}
+`;
+
 async function serveMobileDashboard(request) {
   const response = serveMobileDashboardBase(request);
   if (request.method === 'HEAD') return response;
 
   const html = await response.text();
-  const unlockedHtml = html.replace(
-    /\nlock\(\);\n<\/script>/,
-    `\nlock = function(){
+  const unlockedHtml = html
+    .replace('</head>', `${MOBILE_CONNECTION_STYLE}\n</head>`)
+    .replace('</header>', `</header>\n${MOBILE_CONNECTION_HTML}`)
+    .replace(
+      /\nlock\(\);\n<\/script>/,
+      `${MOBILE_CONNECTION_SCRIPT}\nlock = function(){
   state.unlocked=true;
   pin='';
   paintDots();
@@ -79,8 +149,11 @@ async function serveMobileDashboard(request) {
 if($('lockNow')) $('lockNow').hidden=true;
 lock();
 boot();
+refreshTradingConnections();
+clearInterval(window.__moeConnectionTick);
+window.__moeConnectionTick=setInterval(refreshTradingConnections,8000);
 </script>`,
-  );
+    );
 
   return new Response(unlockedHtml, {
     status: response.status,
