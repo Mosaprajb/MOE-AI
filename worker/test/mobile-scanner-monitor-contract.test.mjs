@@ -16,6 +16,16 @@ test('mobile scanner monitor is wired into the deployed Sandbox entry', () => {
   assert.match(entrySource, /pathname === MOBILE_SCANNER_MONITOR_PATH/);
   assert.match(entrySource, /handleMobileScannerMonitor\(request, env\)/);
   assert.match(entrySource, /enhanceMobileScannerVisibleUi\(repaired, request\)/);
+  assert.match(entrySource, /repairVisibleScannerDomInsertion\(enhanced, request\)/);
+});
+
+test('visible scanner runtime repairs nested DOM insertion before the page is returned', () => {
+  assert.match(entrySource, /stack\?card\.insertBefore\(panel,stack\):chips\.insertAdjacentElement\('afterend',panel\);/);
+  assert.match(entrySource, /chips\.insertAdjacentElement\('afterend',panel\);/);
+  assert.match(entrySource, /body\.insertAdjacentElement\('afterbegin',holder\.firstElementChild\);/);
+  assert.match(entrySource, /list\.insertAdjacentElement\('beforebegin',tools\);/);
+  assert.match(entrySource, /x-moe-mobile-scanner-dom-fix/);
+  assert.match(entrySource, /moe-mobile-scanner-dom-insertion-fixed/);
 });
 
 test('visible mobile scanner UI exposes live quote, protected prices, readiness, refresh, and clear controls', () => {
