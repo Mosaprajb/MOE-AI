@@ -7,6 +7,7 @@ on:
     paths:
       - 'worker/src/sandbox-mobile-account-balances-entry.js'
       - 'worker/src/sandbox-mobile-phone-fix-entry.js'
+      - 'worker/test/sandbox-operations-dashboard.test.mjs'
       - 'worker/test/sandbox-runtime-pilot-observability.test.mjs'
       - 'worker/test/sandbox-simulation-mode.test.mjs'
       - 'wrangler.sandbox.jsonc'
@@ -39,6 +40,9 @@ jobs:
 
       - name: Install locked dependencies
         run: npm ci
+
+      - name: Test deployed mobile entry chain
+        run: node --test --test-concurrency=1 worker/test/sandbox-operations-dashboard.test.mjs
 
       - name: Test Sandbox wrapper and observability
         run: node --test --test-concurrency=1 worker/test/sandbox-runtime-pilot-observability.test.mjs
