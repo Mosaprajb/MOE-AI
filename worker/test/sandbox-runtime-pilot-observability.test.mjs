@@ -216,6 +216,7 @@ test('order status enforces the one-submission Sandbox pilot ceiling', async () 
 test('Sandbox pilot wrapper, simulation isolation, endpoints, and secret hygiene stay locked', () => {
   const configText = readFileSync(join(root, 'wrangler.sandbox.jsonc'), 'utf8');
   const config = JSON.parse(configText);
+  const mobileAccountEntry = readFileSync(join(root, 'worker/src/sandbox-mobile-account-balances-entry.js'), 'utf8');
   const mobilePhoneEntry = readFileSync(join(root, 'worker/src/sandbox-mobile-phone-fix-entry.js'), 'utf8');
   const mobileFinalEntry = readFileSync(join(root, 'worker/src/sandbox-mobile-final-entry.js'), 'utf8');
   const mobileRuntimeEntry = readFileSync(join(root, 'worker/src/sandbox-mobile-runtime-fix-entry.js'), 'utf8');
@@ -233,7 +234,11 @@ test('Sandbox pilot wrapper, simulation isolation, endpoints, and secret hygiene
   const gitignore = readFileSync(join(root, '.gitignore'), 'utf8');
 
   assert.equal(config.name, 'moerand-alerts-sandbox');
-  assert.equal(config.main, 'worker/src/sandbox-mobile-phone-fix-entry.js');
+  assert.equal(config.main, 'worker/src/sandbox-mobile-account-balances-entry.js');
+  assert.match(mobileAccountEntry, /from '\.\/sandbox-mobile-phone-fix-entry\.js'/);
+  assert.match(mobileAccountEntry, /WEBULL_LIVE_APP_KEY/);
+  assert.match(mobileAccountEntry, /paper-live-read-only/);
+  assert.equal(mobileAccountEntry.includes('placeWebullSandboxOrder'), false);
   assert.match(mobilePhoneEntry, /from '\.\/sandbox-mobile-final-entry\.js'/);
   assert.match(mobileFinalEntry, /from '\.\/sandbox-mobile-runtime-fix-entry\.js'/);
   assert.match(mobileRuntimeEntry, /from '\.\/sandbox-mobile-settings-entry\.js'/);
