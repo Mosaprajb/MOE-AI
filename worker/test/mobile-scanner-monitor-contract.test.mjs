@@ -8,15 +8,18 @@ const directory = dirname(fileURLToPath(import.meta.url));
 const root = join(directory, '..', '..');
 const monitorSource = readFileSync(join(root, 'worker/src/mobile-scanner-monitor.js'), 'utf8');
 const visibleUiSource = readFileSync(join(root, 'worker/src/mobile-scanner-visible-ui.js'), 'utf8');
+const brokerGateSource = readFileSync(join(root, 'worker/src/mobile-paper-broker-gate.js'), 'utf8');
 const entrySource = readFileSync(join(root, 'worker/src/sandbox-mobile-account-balances-entry.js'), 'utf8');
 
 test('mobile scanner monitor is wired into the deployed Sandbox entry', () => {
   assert.match(entrySource, /from '\.\/mobile-scanner-monitor\.js'/);
   assert.match(entrySource, /from '\.\/mobile-scanner-visible-ui\.js'/);
+  assert.match(entrySource, /from '\.\/mobile-paper-broker-gate\.js'/);
   assert.match(entrySource, /pathname === MOBILE_SCANNER_MONITOR_PATH/);
   assert.match(entrySource, /handleMobileScannerMonitor\(request, env\)/);
   assert.match(entrySource, /enhanceMobileScannerVisibleUi\(repaired, request\)/);
-  assert.match(entrySource, /repairVisibleScannerDomInsertion\(enhanced, request\)/);
+  assert.match(entrySource, /enhanceMobilePaperBrokerGateUi\(enhanced, request\)/);
+  assert.match(entrySource, /repairVisibleScannerDomInsertion\(brokerGated, request\)/);
 });
 
 test('visible scanner UI uses valid direct DOM insertion', () => {
@@ -75,6 +78,39 @@ test('stopped scanner hides executable plan and old activity', () => {
   assert.match(entrySource, /x-moe-mobile-activity-gate/);
 });
 
+test('offline Paper broker fails closed before scanner cycles can continue', () => {
+  assert.match(brokerGateSource, /getWebullAccountSnapshot/);
+  assert.match(brokerGateSource, /updateMobileDashboardRuntime\(\{ armed: false \}, actor\)/);
+  assert.match(brokerGateSource, /PAPER_BROKER_OFFLINE/);
+  assert.match(brokerGateSource, /Trading was not started/);
+  assert.match(entrySource, /mobilePaperArmIntent\(request\)/);
+  assert.match(entrySource, /paperBrokerOfflineStartResponse\(safety\.broker\)/);
+  assert.match(entrySource, /normalizeMobileHealthForPaperBroker/);
+  assert.match(entrySource, /MOBILE_PAPER_BROKER_OFFLINE/);
+  assert.match(entrySource, /MOBILE_SCHEDULE_BROKER_GATE/);
+  assert.match(entrySource, /return baseWorker\.scheduled\(controller, env, ctx\)/);
+});
+
+test('mobile Start button is disabled and click-blocked while Paper broker is offline', () => {
+  const match = brokerGateSource.match(/const BROKER_GATE_UI_SCRIPT = String\.raw`[\s\S]*?<script[^>]*>\n([\s\S]*?)\n<\/script>`;/);
+  assert.ok(match, 'embedded Paper broker gate script was not found');
+  assert.doesNotThrow(() => new Function(match[1]));
+
+  for (const token of [
+    'moe-mobile-paper-broker-gate',
+    'Paper broker offline',
+    'Trading cannot start until the Paper account reconnects',
+    "start.dataset.brokerGate='offline'",
+    'start.disabled=true',
+    'event.stopImmediatePropagation()',
+    "headers:{accept:'application/json','x-moe-mobile-client':'1'}",
+    'refreshGate(true)',
+  ]) {
+    assert.equal(brokerGateSource.includes(token), true, `missing Paper broker gate token: ${token}`);
+  }
+  assert.match(brokerGateSource, /setInterval\(function\(\)\{if\(!document\.hidden\)refreshGate\(false\);\},5000\)/);
+});
+
 test('mobile scanner monitor reads Alpaca market data and returns an estimated protected plan', () => {
   assert.match(monitorSource, /data\.alpaca\.markets\/v2\/stocks\/bars/);
   assert.match(monitorSource, /snapshot\?feed=iex/);
@@ -100,4 +136,6 @@ test('mobile scanner monitor remains same-origin, read-only, and cannot unlock L
   assert.equal(monitorSource.includes("WEBULL_LIVE_AUTOMATION_ARMED: 'true'"), false);
   assert.equal(visibleUiSource.includes('placeWebullSandboxOrder'), false);
   assert.equal(visibleUiSource.includes('placeWebullLiveOrder'), false);
+  assert.equal(brokerGateSource.includes('placeWebullSandboxOrder'), false);
+  assert.equal(brokerGateSource.includes('placeWebullLiveOrder'), false);
 });
