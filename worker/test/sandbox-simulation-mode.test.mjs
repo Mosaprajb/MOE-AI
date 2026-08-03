@@ -17,6 +17,7 @@ import {
 
 const directory = dirname(fileURLToPath(import.meta.url));
 const root = join(directory, '..', '..');
+const cleanEntrySource = readFileSync(join(root, 'worker/src/sandbox-moerand-clean-utbot-entry.js'), 'utf8');
 const mobileAccountEntrySource = readFileSync(join(root, 'worker/src/sandbox-mobile-account-balances-entry.js'), 'utf8');
 const mobileAccountImplementationSource = readFileSync(join(root, 'worker/src/sandbox-mobile-account-balances-implementation.js'), 'utf8');
 const mobilePhoneEntrySource = readFileSync(join(root, 'worker/src/sandbox-mobile-phone-fix-entry.js'), 'utf8');
@@ -185,7 +186,8 @@ test('SimulationDriver RPC export inherits from the Cloudflare DurableObject bas
 });
 
 test('Sandbox configuration keeps Pilot disarmed and every Live gate locked', () => {
-  assert.equal(config.main, 'worker/src/sandbox-mobile-account-balances-entry.js');
+  assert.equal(config.main, 'worker/src/sandbox-moerand-clean-utbot-entry.js');
+  assert.match(cleanEntrySource, /from '\.\/sandbox-mobile-account-balances-entry\.js'/);
   assert.match(mobileAccountEntrySource, /from '\.\/sandbox-mobile-account-balances-implementation\.js'/);
   assert.match(mobileAccountImplementationSource, /from '\.\/sandbox-mobile-phone-fix-entry\.js'/);
   assert.match(mobileAccountImplementationSource, /WEBULL_LIVE_TRADING: 'false'/);
