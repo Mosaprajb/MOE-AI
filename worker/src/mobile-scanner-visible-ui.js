@@ -32,14 +32,14 @@ const VISIBLE_UI_SCRIPT = String.raw`
   window.__moeMobileScannerVisibleUi=true;
   const MONITOR_ENDPOINT='/api/scanner/monitor';
   const ACTIVITY_ENDPOINT='/api/scanner/live-activity';
-  const SYMBOL_KEY='moe-mobile-monitor-symbol-v2';
-  const CLEAR_KEY='moe-mobile-activity-cleared-at-v2';
+  const SYMBOL_KEY='moe-mobile-monitor-symbol-v3';
+  const CLEAR_KEY='moe-mobile-activity-cleared-at-v3';
   let selectedSymbol='';
   let monitorLoading=false;
   let activityLoading=false;
 
   function node(id){return document.getElementById(id);}
-  function safe(value){return String(value??'').replace(/[&<>"']/g,function(char){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot',"'":'&#39;'}[char];});}
+  function safe(value){return String(value==null?'':value).replace(/[&<>"']/g,function(char){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char];});}
   function money(value){const parsed=Number(value);return Number.isFinite(parsed)?'$'+parsed.toFixed(2):'—';}
   function symbols(){
     const values=Array.from(document.querySelectorAll('#chips [data-rm]')).map(function(button){return String(button.dataset.rm||'').trim().toUpperCase();}).filter(Boolean);
@@ -55,37 +55,39 @@ const VISIBLE_UI_SCRIPT = String.raw`
       '<div class="moe-visible-monitor-price" data-moe-monitor-field="price">—</div>'+
       '<div class="moe-visible-monitor-meta" data-moe-monitor-field="meta">Choose a ticker to load its live quote.</div>'+
       '<div class="moe-visible-monitor-grid"><div class="moe-visible-monitor-cell"><span>Entry</span><b data-moe-monitor-field="entry">—</b></div><div class="moe-visible-monitor-cell"><span>Target / exit</span><b data-moe-monitor-field="exit">—</b></div><div class="moe-visible-monitor-cell"><span>Stop loss</span><b data-moe-monitor-field="stop">—</b></div></div>'+
-      '<div class="moe-visible-ready"><div class="moe-visible-ready-top"><span data-moe-monitor-field="stage">Waiting for symbol</span><b data-moe-monitor-field="percent">0%</b></div><div class="moe-visible-ready-track"><div class="moe-visible-ready-fill" data-moe-monitor-field="fill"></div></div><div class="moe-visible-ready-note" data-moe-monitor-field="note">Execution prices appear only after the scanner builds a valid protected setup.</div></div>'+
+      '<div class="moe-visible-ready"><div class="moe-visible-ready-top"><span data-moe-monitor-field="stage">Waiting for scanner</span><b data-moe-monitor-field="percent">0%</b></div><div class="moe-visible-ready-track"><div class="moe-visible-ready-fill" data-moe-monitor-field="fill"></div></div><div class="moe-visible-ready-note" data-moe-monitor-field="note">Press Start trading before execution prices and readiness are activated.</div></div>'+
       '</section>';
+  }
+
+  function makeMonitor(location){
+    const holder=document.createElement('div');
+    holder.innerHTML=monitorMarkup(location);
+    return holder.firstElementChild;
   }
 
   function ensureMainMonitor(){
     if(document.querySelector('[data-moe-monitor-location="main"]'))return;
     const chips=node('chips');
-    const card=chips?.closest('.card');
-    const stack=card?.querySelector('.stack');
-    if(!chips||!card)return;
-    const holder=document.createElement('div');holder.innerHTML=monitorMarkup('main');
-    const panel=holder.firstElementChild;
-    stack?card.insertBefore(panel,stack):chips.insertAdjacentElement('afterend',panel);
+    if(!chips)return;
+    chips.insertAdjacentElement('afterend',makeMonitor('main'));
   }
 
   function ensureScannerMonitor(){
     if(document.querySelector('[data-moe-monitor-location="scanner"]'))return;
-    const body=document.querySelector('#sheetScanner .sheet-body');if(!body)return;
-    const holder=document.createElement('div');holder.innerHTML=monitorMarkup('scanner');
-    body.insertBefore(holder.firstElementChild,body.firstChild);
+    const body=document.querySelector('#sheetScanner .sheet-body');
+    if(!body)return;
+    body.insertAdjacentElement('afterbegin',makeMonitor('scanner'));
   }
 
   function ensureActivityTools(){
     if(node('moeActivityToolsVisible'))return;
-    const body=document.querySelector('#sheetActivity .sheet-body');
     const list=node('activityList');
-    if(!body||!list)return;
+    if(!list)return;
     const tools=document.createElement('div');
-    tools.id='moeActivityToolsVisible';tools.className='moe-visible-activity-tools';
+    tools.id='moeActivityToolsVisible';
+    tools.className='moe-visible-activity-tools';
     tools.innerHTML='<button type="button" class="btn" id="moeActivityRefreshVisible">↻ Refresh</button><button type="button" class="btn ghost" id="moeActivityClearVisible">Clear old</button>';
-    body.insertBefore(tools,list);
+    list.insertAdjacentElement('beforebegin',tools);
     node('moeActivityRefreshVisible').addEventListener('click',function(){refreshActivity(true);});
     node('moeActivityClearVisible').addEventListener('click',function(){
       try{localStorage.setItem(CLEAR_KEY,String(Date.now()));}catch(_){}
@@ -97,7 +99,8 @@ const VISIBLE_UI_SCRIPT = String.raw`
   function text(name,value){fields(name).forEach(function(element){element.textContent=value;});}
   function paintSelectedChips(){
     document.querySelectorAll('#chips .chip,#chips2 .chip').forEach(function(chip){
-      const value=String(chip.querySelector('[data-rm]')?.dataset.rm||'').toUpperCase();
+      const remove=chip.querySelector('[data-rm]');
+      const value=String(remove&&remove.dataset.rm||'').toUpperCase();
       chip.dataset.monitorSelected=String(Boolean(selectedSymbol&&value===selectedSymbol));
     });
   }
@@ -107,9 +110,12 @@ const VISIBLE_UI_SCRIPT = String.raw`
     const candidate=String(preferred||'').toUpperCase();
     if(candidate&&list.includes(candidate))selectedSymbol=candidate;
     if(!list.includes(selectedSymbol)){
-      const saved=savedSymbol();selectedSymbol=list.includes(saved)?saved:(list[0]||'');
+      const saved=savedSymbol();
+      selectedSymbol=list.includes(saved)?saved:(list[0]||'');
     }
-    saveSymbol(selectedSymbol);paintSelectedChips();text('symbol',selectedSymbol||'No symbol selected');
+    saveSymbol(selectedSymbol);
+    paintSelectedChips();
+    text('symbol',selectedSymbol||'No symbol selected');
     return selectedSymbol;
   }
 
@@ -120,19 +126,24 @@ const VISIBLE_UI_SCRIPT = String.raw`
   }
 
   function renderMonitor(payload){
-    const quote=payload.quote||{},plan=payload.plan||null,ready=payload.readiness||{};
+    const quote=payload.quote||{};
+    const plan=payload.plan||null;
+    const ready=payload.readiness||{};
+    const armed=payload.scannerArmed===true||payload.scanner&&payload.scanner.armed===true;
     text('symbol',(payload.symbol||selectedSymbol)+' · live quote');
     text('price',money(quote.price));
     const updated=quote.updatedAt?new Date(quote.updatedAt).toLocaleTimeString('en-US',{hour12:false}):'—';
     text('meta',(quote.feed||'ALPACA')+' · Bid '+money(quote.bid)+' · Ask '+money(quote.ask)+' · '+updated);
-    text('entry',plan?money(plan.entryPrice):'Not ready');
-    text('exit',plan?money(plan.exitPrice):'Not ready');
-    text('stop',plan?money(plan.stopLossPrice):'Not ready');
-    text('stage',ready.stage||payload.scanner?.reason||'Scanning selected symbol');
-    const percent=Math.max(0,Math.min(100,Number(ready.percent)||0));
+    text('entry',armed&&plan?money(plan.entryPrice):'Not active');
+    text('exit',armed&&plan?money(plan.exitPrice):'Not active');
+    text('stop',armed&&plan?money(plan.stopLossPrice):'Not active');
+    text('stage',ready.stage||payload.scanner&&payload.scanner.reason||'Waiting for scanner');
+    const percent=armed?Math.max(0,Math.min(100,Number(ready.percent)||0)):0;
     text('percent',Math.round(percent)+'%');
     fields('fill').forEach(function(fill){fill.style.width=percent+'%';fill.style.background=percent>=90?'var(--green)':percent>=60?'var(--amber)':'var(--red)';});
-    text('note',plan?'Protected Paper plan from the current scanner signal.':'No executable setup yet. Entry, target, and stop will appear when all scanner gates pass.');
+    text('note',armed
+      ? (plan?'Protected Paper plan from the current scanner signal.':'No executable setup yet. Entry, target, and stop will appear when all scanner gates pass.')
+      : 'Scanner stopped. Press Start trading to activate execution prices and readiness.');
   }
 
   async function refreshMonitor(force){
@@ -140,54 +151,78 @@ const VISIBLE_UI_SCRIPT = String.raw`
     syncSelectedSymbol();
     if(!selectedSymbol){text('price','—');text('meta','Choose a ticker to load its live quote.');return;}
     if(monitorLoading&&!force)return;
-    monitorLoading=true;setLoading('Refreshing '+selectedSymbol+' live quote…');
+    monitorLoading=true;
+    setLoading('Refreshing '+selectedSymbol+' live quote…');
     try{
       const response=await fetch(MONITOR_ENDPOINT+'?symbol='+encodeURIComponent(selectedSymbol)+'&t='+Date.now(),{cache:'no-store',credentials:'same-origin',headers:{accept:'application/json','x-moe-mobile-client':'1'}});
       const payload=await response.json().catch(function(){return {};});
       if(!response.ok||payload.ok===false)throw new Error(payload.error||'Scanner monitor unavailable');
       renderMonitor(payload);
     }catch(error){
-      text('price','—');text('meta',error?.message||'Live monitor unavailable');text('stage','Monitor unavailable');
+      text('price','—');
+      text('meta',error&&error.message||'Live monitor unavailable');
+      text('stage','Monitor unavailable');
     }finally{
-      monitorLoading=false;document.querySelectorAll('[data-moe-monitor-refresh]').forEach(function(button){button.disabled=false;});
+      monitorLoading=false;
+      document.querySelectorAll('[data-moe-monitor-refresh]').forEach(function(button){button.disabled=false;});
     }
   }
 
   async function refreshActivity(manual){
-    ensureActivityTools();if(activityLoading)return;
+    ensureActivityTools();
+    if(activityLoading)return;
     activityLoading=true;
-    const button=node('moeActivityRefreshVisible');if(button&&manual){button.disabled=true;button.textContent='Refreshing…';}
+    const button=node('moeActivityRefreshVisible');
+    if(button&&manual){button.disabled=true;button.textContent='Refreshing…';}
     try{
       const response=await fetch(ACTIVITY_ENDPOINT+'?t='+Date.now(),{cache:'no-store',credentials:'same-origin',headers:{accept:'application/json','x-moe-mobile-client':'1'}});
       const payload=await response.json().catch(function(){return {};});
       if(!response.ok||payload.ok===false)throw new Error(payload.error||'Activity unavailable');
-      let cutoff=0;try{cutoff=Number(localStorage.getItem(CLEAR_KEY)||0);}catch(_){}
+      let cutoff=0;
+      try{cutoff=Number(localStorage.getItem(CLEAR_KEY)||0);}catch(_){}
       const items=(payload.events||payload.activity||payload.items||[]).filter(function(item){const time=Date.parse(item.createdAt||item.timestamp||0);return !cutoff||!Number.isFinite(time)||time>cutoff;}).slice(0,100);
       node('activityList').innerHTML=items.length?'<div class="log">'+items.map(function(item){
-        const stamp=item.createdAt||item.timestamp;const time=stamp?new Date(stamp).toLocaleTimeString('en-US',{hour12:false}):'';
+        const stamp=item.createdAt||item.timestamp;
+        const time=stamp?new Date(stamp).toLocaleTimeString('en-US',{hour12:false}):'';
         return '<div><b>'+safe(time)+'</b> '+safe(item.type||item.event||'')+' '+safe(item.symbol||'')+' '+safe(item.reason||item.message||'')+'</div>';
       }).join('')+'</div>':'<div class="empty">No new activity after the last clear.</div>';
-    }catch(error){node('activityList').innerHTML='<div class="empty">'+safe(error?.message||'Activity is unavailable right now.')+'</div>';}
-    finally{activityLoading=false;if(button&&manual){button.disabled=false;button.textContent='↻ Refresh';}}
+    }catch(error){
+      node('activityList').innerHTML='<div class="empty">'+safe(error&&error.message||'Activity is unavailable right now.')+'</div>';
+    }finally{
+      activityLoading=false;
+      if(button&&manual){button.disabled=false;button.textContent='↻ Refresh';}
+    }
   }
 
   function ensureAll(){
-    ensureMainMonitor();ensureScannerMonitor();ensureActivityTools();
+    ensureMainMonitor();
+    ensureScannerMonitor();
+    ensureActivityTools();
     document.querySelectorAll('[data-moe-monitor-refresh]').forEach(function(button){
-      if(button.dataset.bound==='1')return;button.dataset.bound='1';button.addEventListener('click',function(){refreshMonitor(true);});
+      if(button.dataset.bound==='1')return;
+      button.dataset.bound='1';
+      button.addEventListener('click',function(){refreshMonitor(true);});
     });
   }
 
   function install(){
-    ensureAll();syncSelectedSymbol();
-    node('chips')?.addEventListener('click',function(event){
-      if(event.target.closest('[data-rm]'))return;
-      const chip=event.target.closest('.chip');const value=chip?.querySelector('[data-rm]')?.dataset.rm;
-      if(value){syncSelectedSymbol(value);refreshMonitor(true);}
-    });
-    node('openScanner')?.addEventListener('click',function(){setTimeout(function(){ensureAll();refreshMonitor(true);},0);});
-    node('openActivity')?.addEventListener('click',function(){setTimeout(function(){ensureAll();refreshActivity(false);},0);});
-    const chips=node('chips');if(chips)new MutationObserver(function(){const before=selectedSymbol;syncSelectedSymbol();if(selectedSymbol&&selectedSymbol!==before)refreshMonitor(true);}).observe(chips,{childList:true,subtree:true});
+    ensureAll();
+    syncSelectedSymbol();
+    const chips=node('chips');
+    if(chips){
+      chips.addEventListener('click',function(event){
+        if(event.target.closest('[data-rm]'))return;
+        const chip=event.target.closest('.chip');
+        const remove=chip&&chip.querySelector('[data-rm]');
+        const value=remove&&remove.dataset.rm;
+        if(value){syncSelectedSymbol(value);refreshMonitor(true);}
+      });
+      new MutationObserver(function(){const before=selectedSymbol;syncSelectedSymbol();if(selectedSymbol&&selectedSymbol!==before)refreshMonitor(true);}).observe(chips,{childList:true,subtree:true});
+    }
+    const openScanner=node('openScanner');
+    if(openScanner)openScanner.addEventListener('click',function(){setTimeout(function(){ensureAll();refreshMonitor(true);},0);});
+    const openActivity=node('openActivity');
+    if(openActivity)openActivity.addEventListener('click',function(){setTimeout(function(){ensureAll();refreshActivity(false);},0);});
     new MutationObserver(ensureAll).observe(document.body,{childList:true,subtree:true});
     refreshMonitor(true);
     clearInterval(window.__moeVisibleMonitorTick);
