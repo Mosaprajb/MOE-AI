@@ -9,10 +9,12 @@ on:
       - 'package.json'
       - 'package-lock.json'
       - 'wrangler.sandbox.jsonc'
+      - 'worker/src/sandbox-mobile-live-watchlist-entry.js'
       - 'worker/src/sandbox-moerand-clean-utbot-entry.js'
       - 'worker/src/strategies/moerand-clean-core.js'
       - 'worker/src/scanner/moerand-clean-candidate.js'
       - 'worker/src/auto-scanner.js'
+      - 'worker/test/mobile-live-watchlist.test.mjs'
       - 'worker/test/moerand-clean-mobile-settings.test.mjs'
       - '.github/workflows/test-moerand-clean-wrangler.yml'
 
@@ -44,6 +46,9 @@ jobs:
 
       - name: Verify local Wrangler package
         run: npx --no-install wrangler --version
+
+      - name: Validate live watchlist wrapper
+        run: node --check worker/src/sandbox-mobile-live-watchlist-entry.js
 
       - name: Run complete Worker test suite
         run: npm run test:worker
