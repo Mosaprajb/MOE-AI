@@ -35,8 +35,6 @@
       "WEBULL_APP_SECRET",
       "WEBULL_ACCESS_TOKEN",
       "WEBULL_ACCOUNT_ID",
-      "MOE_MOBILE_PASSCODE_HASH",
-      "MOE_MOBILE_SESSION_SECRET"
     ]
   },
   "vars": {
