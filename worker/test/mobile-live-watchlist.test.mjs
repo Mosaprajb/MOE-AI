@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const source = readFileSync(join(root, 'worker/src/sandbox-mobile-live-watchlist-entry.js'), 'utf8');
+const scanModeSource = readFileSync(join(root, 'worker/src/sandbox-scan-mode-entry.js'), 'utf8');
 const config = JSON.parse(readFileSync(join(root, 'wrangler.sandbox.jsonc'), 'utf8'));
 
 test('modern mobile watchlist is the deployed wrapper and preserves the Clean entry chain', () => {
@@ -60,6 +61,30 @@ test('watchlist UI is guaranteed server-side and exposes modern live rows and qu
   assert.match(source, /insertAfterElementById\(html, 'chips', WATCHLIST_ROOT\)/);
   assert.match(source, /insertAfterElementById\(output, 'chips2', WATCHLIST_SHEET_ROOT\)/);
   assert.match(source, /setInterval\(function\(\)\{if\(!document\.hidden\)refresh\(false\);\},3000\)/);
+});
+
+test('mobile symbol picker commits taps reliably on iPhone and gives explicit save feedback', () => {
+  for (const token of [
+    'symbol-add-action',
+    'symbol-picker-feedback',
+    'Tap to select',
+    "list.addEventListener('pointerdown',chooseFromEvent,true)",
+    "list.addEventListener('touchend',chooseFromEvent,{capture:true,passive:false})",
+    "list.addEventListener('click',chooseFromEvent,true)",
+    "addButton.addEventListener('pointerdown',addFromEvent,true)",
+    "await api(API.scanMode",
+    'state.symbols=previous',
+    'added to the scanner',
+    'Stop trading to edit',
+  ]) {
+    assert.equal(scanModeSource.includes(token), true, `missing touch-safe picker token: ${token}`);
+  }
+  assert.match(scanModeSource, /event\.stopImmediatePropagation\(\)/);
+  assert.match(scanModeSource, /MOE_SYMBOL_UNIVERSE\.includes\(symbol\)/);
+  const match = scanModeSource.match(/const MOBILE_CONNECTION_SCRIPT = `\n([\s\S]*?)\n`;/);
+  assert.ok(match, 'embedded mobile connection script was not found');
+  const browserScript = match[1].replace('${JSON.stringify(AUTO_SCANNER_SYMBOLS)}', '[]');
+  assert.doesNotThrow(() => new Function(browserScript));
 });
 
 test('scanner activation freezes the original symbol list in both browser and server', () => {
