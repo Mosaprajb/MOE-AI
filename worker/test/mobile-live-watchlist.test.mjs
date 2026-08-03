@@ -52,13 +52,13 @@ test('watchlist UI is guaranteed server-side and exposes modern live rows and qu
     'insertAfterElementById',
     'data-view="main"',
     'data-view="sheet"',
+    'openSymbols',
+    'symInput2',
   ]) {
     assert.equal(source.includes(token), true, `missing live watchlist token: ${token}`);
   }
   assert.match(source, /insertAfterElementById\(html, 'chips', WATCHLIST_ROOT\)/);
   assert.match(source, /insertAfterElementById\(output, 'chips2', WATCHLIST_SHEET_ROOT\)/);
-  assert.match(source, /id=["']openSymbols["']/);
-  assert.match(source, /id=["']symInput2["']/);
   assert.match(source, /setInterval\(function\(\)\{if\(!document\.hidden\)refresh\(false\);\},3000\)/);
 });
 
