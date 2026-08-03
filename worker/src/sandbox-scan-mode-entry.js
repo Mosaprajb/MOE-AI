@@ -7,12 +7,10 @@ import baseWorker, {
 import { AUTO_SCANNER_SYMBOLS } from './auto-scanner.js';
 import { enhanceScanModeDashboard } from './dashboard/scan-mode-selector.js';
 import {
-  handleMobilePasscode,
   isMobileClientRequest,
   isMobileDashboardPath,
   isMobileProtectedApiPath,
-  mobileSessionErrorResponse,
-  serveMobileDashboard,
+  serveMobileDashboard as serveMobileDashboardBase,
 } from './dashboard/mobile-dashboard.js';
 import { handleAuthenticatedMobileApi } from './dashboard/mobile-dashboard-api.js';
 import {
@@ -62,6 +60,33 @@ function sameOriginControlAllowed(request, env = {}) {
     || origin === String(env.APP_ORIGIN || '').replace(/\/$/, '')
     || origin === appOrigin
     || origin === 'http://localhost:3000';
+}
+
+async function serveMobileDashboard(request) {
+  const response = serveMobileDashboardBase(request);
+  if (request.method === 'HEAD') return response;
+
+  const html = await response.text();
+  const unlockedHtml = html.replace(
+    /\nlock\(\);\n<\/script>/,
+    `\nlock = function(){
+  state.unlocked=true;
+  pin='';
+  paintDots();
+  $('lock').hidden=true;
+  document.body.style.overflow='';
+};
+if($('lockNow')) $('lockNow').hidden=true;
+lock();
+boot();
+</script>`,
+  );
+
+  return new Response(unlockedHtml, {
+    status: response.status,
+    statusText: response.statusText,
+    headers: response.headers,
+  });
 }
 
 export class AlertCoordinator extends BaseAlertCoordinator {
@@ -206,15 +231,8 @@ export default {
     if (isMobileDashboardPath(pathname)) return serveMobileDashboard(request);
 
     const stub = coordinator(env);
-    if (pathname === '/api/trading/mode' && request.method === 'POST') {
-      const passcodeResponse = await handleMobilePasscode(request, env, stub);
-      if (passcodeResponse) return passcodeResponse;
-    }
-
     const mobileRequest = isMobileClientRequest(request) && isMobileProtectedApiPath(pathname);
     if (mobileRequest) {
-      const sessionError = await mobileSessionErrorResponse(request, env);
-      if (sessionError) return sessionError;
       const mobileResponse = await handleAuthenticatedMobileApi(request, env, stub, {
         baseFetch: (nextRequest) => baseWorker.fetch(nextRequest, env, ctx),
       });
