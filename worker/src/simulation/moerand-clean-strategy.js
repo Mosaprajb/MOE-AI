@@ -25,12 +25,16 @@ export function runMoerandCleanStrategy({
   bars,
   previousState = {},
   env = {},
+  settings = null,
   simulatedAt = Date.now(),
 } = {}) {
   const definition = getStrategyDefinition(MOERAND_CLEAN_STRATEGY_ID, env);
-  const evaluated = evaluateMoerandClean(bars, definition.settings, {
+  const configuration = settings && typeof settings === 'object'
+    ? { ...definition.settings, ...settings }
+    : definition.settings;
+  const evaluated = evaluateMoerandClean(bars, configuration, {
     previousState,
-    now: simulatedAt + definition.settings.timeframeMinutes * 60_000,
+    now: simulatedAt + configuration.timeframeMinutes * 60_000,
     allCandlesClosed: true,
   });
 
@@ -42,19 +46,19 @@ export function runMoerandCleanStrategy({
       id: `SIM-MOERAND-CLEAN-${symbol}-${evaluated.signalBarTime}`,
       symbol,
       direction: 'LONG',
-      timeframe: `${definition.settings.timeframeMinutes}m`,
+      timeframe: `${configuration.timeframeMinutes}m`,
       score: 80,
       confidence: { value: 80, source: MOERAND_CLEAN_STRATEGY_ID },
       entry: roundPrice(entry),
       stopLoss: roundPrice(evaluated.stopLevel),
-      // The common simulator schema requires a target. Clean has no target exit, so use an
-      // unreachable sentinel and close only from the strategy's trailing/session instruction.
+      // The common simulator schema requires a target. UT Bot exits from its closed-bar
+      // SELL instruction, so the generic target remains unreachable.
       takeProfit: Number.MAX_SAFE_INTEGER,
       createdAt: iso(simulatedAt),
-      validForMs: 30 * 60_000,
-      reasons: ['EMA_TREND_PRIOR_HIGH_BREAKOUT_RVOL'],
+      validForMs: Math.max(60_000, configuration.timeframeMinutes * 60_000),
+      reasons: ['UT_BOT_ATR_CLOSED_BAR_CROSSOVER'],
       metadata: {
-        setupFamily: 'MOERAND_CLEAN_BREAKOUT',
+        setupFamily: 'MOERAND_CLEAN_UT_BOT_ATR',
         strategyId: MOERAND_CLEAN_STRATEGY_ID,
         sourceStrategy: MOERAND_CLEAN_STRATEGY_ID,
         sourceType: definition.sourceType,
@@ -63,13 +67,16 @@ export function runMoerandCleanStrategy({
         notRealMarketData: true,
         historicalBarTime: iso(evaluated.signalBarTime),
         fullyClosedBarOnly: true,
-        sessionIsolated: true,
+        signalTiming: 'CANDLE_CLOSE_ONLY',
+        candleSource: configuration.useHeikinAshi ? 'HEIKIN_ASHI_CLOSE' : 'REGULAR_CLOSE',
+        timeframeMinutes: configuration.timeframeMinutes,
+        keyValue: configuration.keyValue,
+        atrPeriod: configuration.atrPeriod,
         dynamicTrailingStop: true,
         fixedTargetEnabled: false,
         initialRisk: evaluated.initialRisk,
         initialStopLevel: evaluated.stopLevel,
-        breakevenEnabled: definition.settings.enableBreakeven,
-        configuration: definition.settings,
+        configuration,
       },
       observationOnly: true,
       executionEnabled: false,
@@ -85,8 +92,9 @@ export function runMoerandCleanStrategy({
       price: roundPrice(evaluated.exitPrice),
       reason: evaluated.exitReason,
       simulatedAt: iso(evaluated.signalBarTime),
-      immediate: true,
+      immediate: false,
       closeBased: true,
+      executeAfterBarClose: true,
     }
     : null;
 
@@ -100,7 +108,7 @@ export function runMoerandCleanStrategy({
     closeInstruction,
     stopLevel: evaluated.stopLevel,
     entryPrice: evaluated.entryPrice,
-    breakevenLocked: evaluated.breakevenLocked,
+    breakevenLocked: false,
     exitReason: evaluated.exitReason,
     nextState: evaluated.state,
     diagnostics: {
@@ -109,7 +117,7 @@ export function runMoerandCleanStrategy({
       stopLevel: evaluated.stopLevel,
       entryPrice: evaluated.entryPrice,
       initialRisk: evaluated.initialRisk,
-      breakevenLocked: evaluated.breakevenLocked,
+      breakevenLocked: false,
       exitReason: evaluated.exitReason,
       sourceType: definition.sourceType,
       strategyBadge: definition.badgeColor,
