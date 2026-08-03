@@ -39,7 +39,7 @@ test('visible mobile scanner UI exposes live quote, protected prices, readiness,
   }
 
   for (const field of ['price', 'entry', 'exit', 'stop', 'stage', 'percent', 'fill']) {
-    assert.equal(visibleUiSource.includes(`data-moe-monitor-field=\\"${field}\\"`), true, `missing monitor field: ${field}`);
+    assert.equal(visibleUiSource.includes(`data-moe-monitor-field="${field}"`), true, `missing monitor field: ${field}`);
   }
 
   assert.match(visibleUiSource, /setInterval\(function\(\)\{if\(!document\.hidden\)refreshMonitor\(false\);\},3000\)/);
