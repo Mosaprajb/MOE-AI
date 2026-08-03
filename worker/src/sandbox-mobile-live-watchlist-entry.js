@@ -7,6 +7,8 @@ export { AlertCoordinator, SimulationDriver };
 
 const MOBILE_PATHS = new Set(['/m', '/m/', '/mobile', '/mobile/']);
 const WATCHLIST_QUOTES_PATH = '/api/mobile/watchlist/quotes';
+const WATCHLIST_STATE_PATH = '/api/mobile/watchlist/state';
+const SCAN_SOURCE_MODE_PATH = '/api/scanner/source-mode';
 const ALPACA_SNAPSHOTS_URL = 'https://data.alpaca.markets/v2/stocks/snapshots';
 const MAX_SYMBOLS = 30;
 const CACHE_SECONDS = 2;
@@ -18,7 +20,7 @@ function json(payload, status = 200, extraHeaders = {}) {
       'cache-control': 'no-store, no-cache, must-revalidate',
       'content-type': 'application/json; charset=utf-8',
       'x-content-type-options': 'nosniff',
-      'x-moe-mobile-watchlist': 'live-iex-v1',
+      'x-moe-mobile-watchlist': 'live-iex-v2',
       ...extraHeaders,
     },
   });
@@ -29,16 +31,25 @@ function sameOrigin(request) {
   return !origin || origin === new URL(request.url).origin;
 }
 
+function mobileRequestAllowed(request) {
+  return sameOrigin(request) && request.headers.get('x-moe-mobile-client') === '1';
+}
+
+function coordinator(env) {
+  return env.ALERT_COORDINATOR.getByName('global');
+}
+
 function number(value, fallback = null) {
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : fallback;
 }
 
 function normalizeSymbols(value) {
+  const values = Array.isArray(value) ? value : String(value || '').split(',');
   const seen = new Set();
   const symbols = [];
-  for (const item of String(value || '').split(',')) {
-    const symbol = item.trim().toUpperCase();
+  for (const item of values) {
+    const symbol = String(item || '').trim().toUpperCase();
     if (!/^[A-Z][A-Z0-9.-]{0,9}$/.test(symbol) || seen.has(symbol)) continue;
     seen.add(symbol);
     symbols.push(symbol);
@@ -132,15 +143,24 @@ async function fetchAlpacaSnapshots(symbols, env) {
 
 async function handleWatchlistQuotes(request, env, ctx) {
   if (request.method !== 'GET') return json({ ok: false, error: 'Method not allowed.' }, 405);
-  if (!sameOrigin(request) || request.headers.get('x-moe-mobile-client') !== '1') {
-    return json({ ok: false, error: 'Mobile watchlist access denied.' }, 403);
-  }
+  if (!mobileRequestAllowed(request)) return json({ ok: false, error: 'Mobile watchlist access denied.' }, 403);
 
   const symbols = normalizeSymbols(new URL(request.url).searchParams.get('symbols'));
-  if (!symbols.length) return json({ ok: true, symbols: [], quotes: [], feed: 'IEX', updatedAt: new Date().toISOString() });
+  if (!symbols.length) {
+    return json({
+      ok: true,
+      symbols: [],
+      quotes: [],
+      feed: 'IEX',
+      session: newYorkSession(),
+      updatedAt: new Date().toISOString(),
+      liveTradingLocked: true,
+      liveFundsUsed: false,
+    });
+  }
 
   const cache = globalThis.caches?.default;
-  const cacheUrl = `https://moerand.internal/mobile-watchlist-quotes-v1?symbols=${encodeURIComponent([...symbols].sort().join(','))}`;
+  const cacheUrl = `https://moerand.internal/mobile-watchlist-quotes-v2?symbols=${encodeURIComponent([...symbols].sort().join(','))}`;
   const cacheKey = new Request(cacheUrl);
   if (cache) {
     const cached = await cache.match(cacheKey);
@@ -188,46 +208,111 @@ async function handleWatchlistQuotes(request, env, ctx) {
   }
 }
 
+async function readWatchlistState(env) {
+  const stub = coordinator(env);
+  const [runtime, scanMode] = await Promise.all([
+    stub.mobileDashboardRuntime(),
+    typeof stub.scanSourceMode === 'function' ? stub.scanSourceMode() : Promise.resolve(null),
+  ]);
+  return {
+    armed: runtime?.armed === true,
+    locked: runtime?.armed === true,
+    symbols: normalizeSymbols(scanMode?.symbols || runtime?.symbols || []),
+    mode: scanMode?.mode || null,
+    strategy: runtime?.strategy || null,
+    updatedAt: runtime?.updatedAt || null,
+  };
+}
+
+async function handleWatchlistState(request, env) {
+  if (request.method !== 'GET') return json({ ok: false, error: 'Method not allowed.' }, 405);
+  if (!mobileRequestAllowed(request)) return json({ ok: false, error: 'Mobile watchlist access denied.' }, 403);
+  const state = await readWatchlistState(env);
+  return json({
+    ok: true,
+    ...state,
+    editPolicy: state.locked ? 'LOCKED_WHILE_SCANNER_RUNNING' : 'EDITABLE_BEFORE_START',
+    maximumSymbols: MAX_SYMBOLS,
+    liveTradingLocked: true,
+    liveFundsUsed: false,
+  });
+}
+
+async function blockSymbolMutationWhileRunning(request, env) {
+  if (request.method !== 'PUT') return null;
+  if (!sameOrigin(request)) return null;
+  const state = await readWatchlistState(env);
+  if (!state.locked) return null;
+  return json({
+    ok: false,
+    code: 'SCANNER_RUNNING_SYMBOLS_LOCKED',
+    error: 'Watchlist locked while scanner is running. Stop trading before adding or removing symbols.',
+    alert: 'Stop trading first. The active scanner keeps the original symbol list frozen for safety.',
+    scannerArmed: true,
+    symbolsLocked: true,
+    liveTradingLocked: true,
+    liveFundsUsed: false,
+  }, 409, { 'x-moe-symbol-lock': 'SCANNER_RUNNING' });
+}
+
+const WATCHLIST_MAIN_HTML = String.raw`
+<div class="moe-watchlist-v2" data-moe-watchlist-root data-view="main" data-state="loading">
+  <div class="moe-watchlist-v2-head">
+    <div><div class="moe-watchlist-v2-kicker"><span class="moe-watchlist-v2-dot"></span>Live watchlist</div><div class="moe-watchlist-v2-sub">Direct IEX market prices</div></div>
+    <div class="moe-watchlist-v2-session" data-watch-session>Connecting</div>
+  </div>
+  <div class="moe-watchlist-v2-lock" data-watch-lock hidden><span>🔒</span><div><b>Symbol list locked</b><small>Stop trading to add or remove stocks.</small></div></div>
+  <div class="moe-watchlist-v2-tools"><button type="button" data-watch-sort>Top movers</button><button type="button" data-watch-refresh>Refresh</button><span data-watch-count>0 / 30</span></div>
+  <div class="moe-watchlist-v2-list" data-watch-list><div class="moe-watchlist-v2-empty"><b>Your live watchlist is ready</b><span>Add stocks above before starting the scanner.</span></div></div>
+  <div class="moe-watchlist-v2-foot"><span data-watch-updated>Waiting for symbols</span><span>IEX · read only</span></div>
+</div>`;
+
+const WATCHLIST_SHEET_HTML = String.raw`
+<div class="moe-watchlist-v2 moe-watchlist-v2-sheet" data-moe-watchlist-root data-view="sheet" data-state="loading">
+  <div class="moe-watchlist-v2-head">
+    <div><div class="moe-watchlist-v2-kicker"><span class="moe-watchlist-v2-dot"></span>Selected stocks</div><div class="moe-watchlist-v2-sub">Tap a row for quote details</div></div>
+    <div class="moe-watchlist-v2-session" data-watch-session>Connecting</div>
+  </div>
+  <div class="moe-watchlist-v2-lock" data-watch-lock hidden><span>🔒</span><div><b>Scanner is active</b><small>This list is frozen until trading is stopped.</small></div></div>
+  <div class="moe-watchlist-v2-tools"><button type="button" data-watch-sort>Top movers</button><button type="button" data-watch-refresh>Refresh</button><span data-watch-count>0 / 30</span></div>
+  <div class="moe-watchlist-v2-list" data-watch-list><div class="moe-watchlist-v2-empty"><b>No symbols selected</b><span>Add at least one stock before starting.</span></div></div>
+  <div class="moe-watchlist-v2-foot"><span data-watch-updated>Waiting for symbols</span><span>Prices refresh every 3 seconds</span></div>
+</div>`;
+
 const WATCHLIST_STYLE = String.raw`
 <style id="moe-live-watchlist-style">
-#chips{display:none!important}
-.moe-watchlist{margin-top:14px;border:1px solid var(--line);border-radius:18px;overflow:hidden;background:linear-gradient(180deg,rgba(255,255,255,.025),transparent),var(--panel-2)}
-.moe-watchlist-head{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:14px 14px 12px;border-bottom:1px solid var(--line)}
-.moe-watchlist-live{display:flex;align-items:center;gap:8px;min-width:0;font:700 12px 'IBM Plex Mono',monospace;color:var(--muted);letter-spacing:.04em;text-transform:uppercase}
-.moe-watchlist-dot{width:8px;height:8px;border-radius:50%;background:var(--green);box-shadow:0 0 0 4px rgba(74,222,128,.12);animation:moeWatchPulse 1.8s infinite}
-.moe-watchlist[data-state="error"] .moe-watchlist-dot{background:var(--red);box-shadow:0 0 0 4px rgba(229,72,77,.12);animation:none}
-.moe-watchlist[data-state="loading"] .moe-watchlist-dot{background:var(--amber);box-shadow:0 0 0 4px rgba(255,176,32,.12)}
-@keyframes moeWatchPulse{50%{opacity:.45;transform:scale(.78)}}
-.moe-watchlist-actions{display:flex;align-items:center;gap:8px}
-.moe-watchlist-time{font:600 10px 'IBM Plex Mono',monospace;color:var(--muted);white-space:nowrap}
-.moe-watchlist-sort{appearance:none;border:1px solid var(--line);border-radius:999px;background:var(--panel);color:var(--text);padding:7px 10px;font:700 11px 'IBM Plex Mono',monospace;cursor:pointer}
-.moe-watchlist-list{display:grid}
-.moe-watch-row{position:relative;display:grid;grid-template-columns:44px minmax(0,1fr) auto;gap:11px;align-items:center;padding:13px 44px 13px 13px;border-bottom:1px solid rgba(138,155,171,.16);cursor:pointer;transition:background .18s}
-.moe-watch-row:last-child{border-bottom:0}
-.moe-watch-row:active,.moe-watch-row[data-open="true"]{background:rgba(61,214,208,.08)}
-.moe-watch-logo{width:42px;height:42px;border-radius:50%;display:grid;place-items:center;background:linear-gradient(145deg,var(--accent-dim),var(--panel));border:1px solid color-mix(in srgb,var(--accent) 55%,var(--line));color:var(--accent);font:900 12px 'Archivo',sans-serif;letter-spacing:-.03em;box-shadow:inset 0 1px 0 rgba(255,255,255,.08)}
-.moe-watch-name{min-width:0}
-.moe-watch-symbol{display:flex;align-items:center;gap:7px;font:900 18px 'Archivo',sans-serif;letter-spacing:-.01em}
-.moe-watch-feed{padding:2px 5px;border-radius:6px;background:var(--accent-dim);color:var(--accent);font:700 8px 'IBM Plex Mono',monospace;letter-spacing:.05em}
-.moe-watch-company{margin-top:2px;color:var(--muted);font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.moe-watch-price{text-align:right;font-family:'IBM Plex Mono',monospace;font-variant-numeric:tabular-nums}
-.moe-watch-last{font-size:17px;font-weight:700;letter-spacing:-.02em}
-.moe-watch-change{margin-top:3px;font-size:11px;font-weight:700}
-.moe-watch-change.up{color:var(--green)}.moe-watch-change.down{color:var(--red)}.moe-watch-change.flat{color:var(--muted)}
-.moe-watch-after{display:block;margin-top:3px;font-size:9px;color:var(--muted)}
-.moe-watch-remove{position:absolute;right:9px;top:50%;transform:translateY(-50%);appearance:none;width:29px;height:29px;border:0;border-radius:50%;background:transparent;color:var(--muted);font-size:20px;line-height:1;cursor:pointer}
-.moe-watch-remove:active{background:rgba(229,72,77,.16);color:var(--red)}
-.moe-watch-detail{grid-column:2/4;display:none;grid-template-columns:repeat(4,minmax(0,1fr));gap:7px;margin-top:6px;padding-top:10px;border-top:1px solid rgba(138,155,171,.16)}
-.moe-watch-row[data-open="true"] .moe-watch-detail{display:grid}
-.moe-watch-stat{min-width:0}
-.moe-watch-stat span{display:block;color:var(--muted);font:600 8px 'IBM Plex Mono',monospace;text-transform:uppercase;letter-spacing:.08em}
-.moe-watch-stat b{display:block;margin-top:3px;color:var(--text);font:700 10px 'IBM Plex Mono',monospace;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.moe-watch-empty{padding:24px 16px;text-align:center;color:var(--muted);font-size:14px}
-.moe-watch-foot{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:10px 13px;border-top:1px solid var(--line);color:var(--muted);font:600 10px/1.4 'IBM Plex Mono',monospace}
-.moe-watch-refresh{appearance:none;border:0;background:transparent;color:var(--accent);font:700 11px 'IBM Plex Mono',monospace;cursor:pointer;padding:5px}
-.moe-watch-tick-up .moe-watch-last{animation:moeTickUp .7s}.moe-watch-tick-down .moe-watch-last{animation:moeTickDown .7s}
-@keyframes moeTickUp{0%{background:rgba(74,222,128,.28)}100%{background:transparent}}@keyframes moeTickDown{0%{background:rgba(229,72,77,.28)}100%{background:transparent}}
-@media(max-width:390px){.moe-watch-row{grid-template-columns:40px minmax(0,1fr) auto;padding-left:10px}.moe-watch-logo{width:38px;height:38px}.moe-watch-detail{grid-template-columns:repeat(2,minmax(0,1fr))}.moe-watch-time{display:none}}
+#chips,#chips2{display:none!important}
+.moe-watchlist-v2{margin-top:15px;border:1px solid var(--line);border-radius:20px;overflow:hidden;background:radial-gradient(circle at 90% 0,rgba(61,214,208,.10),transparent 36%),linear-gradient(180deg,rgba(255,255,255,.028),transparent),var(--panel-2);box-shadow:0 16px 45px rgba(0,0,0,.18)}
+.moe-watchlist-v2-head{display:flex;align-items:center;justify-content:space-between;gap:14px;padding:15px;border-bottom:1px solid rgba(138,155,171,.18)}
+.moe-watchlist-v2-kicker{display:flex;align-items:center;gap:9px;font:900 14px 'Archivo',sans-serif;letter-spacing:.02em;text-transform:uppercase}
+.moe-watchlist-v2-dot{width:9px;height:9px;border-radius:50%;background:var(--green);box-shadow:0 0 0 5px rgba(74,222,128,.10),0 0 18px rgba(74,222,128,.55);animation:moeWatchPulse 1.8s infinite}
+.moe-watchlist-v2[data-state="loading"] .moe-watchlist-v2-dot{background:var(--amber);box-shadow:0 0 0 5px rgba(255,176,32,.10)}
+.moe-watchlist-v2[data-state="error"] .moe-watchlist-v2-dot{background:var(--red);box-shadow:0 0 0 5px rgba(229,72,77,.10);animation:none}
+@keyframes moeWatchPulse{50%{opacity:.45;transform:scale(.75)}}
+.moe-watchlist-v2-sub{margin-top:3px;color:var(--muted);font:600 11px 'IBM Plex Mono',monospace}
+.moe-watchlist-v2-session{padding:7px 10px;border:1px solid var(--line);border-radius:999px;background:rgba(11,15,20,.36);color:var(--accent);font:700 10px 'IBM Plex Mono',monospace;white-space:nowrap;text-transform:uppercase;letter-spacing:.05em}
+.moe-watchlist-v2-lock{display:flex;align-items:center;gap:11px;margin:12px 12px 0;padding:12px;border:1px solid rgba(255,176,32,.45);border-radius:14px;background:rgba(255,176,32,.09);color:var(--amber)}
+.moe-watchlist-v2-lock[hidden]{display:none}
+.moe-watchlist-v2-lock>span{font-size:22px}.moe-watchlist-v2-lock b{display:block;font-size:13px}.moe-watchlist-v2-lock small{display:block;margin-top:2px;color:var(--muted);font:600 10px 'IBM Plex Mono',monospace}
+.moe-watchlist-v2-tools{display:grid;grid-template-columns:auto auto 1fr;gap:8px;align-items:center;padding:11px 12px;border-bottom:1px solid rgba(138,155,171,.15)}
+.moe-watchlist-v2-tools button{appearance:none;border:1px solid var(--line);border-radius:999px;background:var(--panel);color:var(--text);padding:8px 11px;font:700 10px 'IBM Plex Mono',monospace;cursor:pointer}
+.moe-watchlist-v2-tools button:active{border-color:var(--accent);color:var(--accent)}
+.moe-watchlist-v2-tools span{justify-self:end;color:var(--muted);font:700 10px 'IBM Plex Mono',monospace}
+.moe-watchlist-v2-list{display:grid}
+.moe-watchlist-row{position:relative;display:grid;grid-template-columns:44px minmax(0,1fr) auto;gap:11px;align-items:center;padding:13px 45px 13px 12px;border-bottom:1px solid rgba(138,155,171,.14);cursor:pointer;transition:background .18s}
+.moe-watchlist-row:last-child{border-bottom:0}.moe-watchlist-row:active,.moe-watchlist-row[data-open="true"]{background:rgba(61,214,208,.075)}
+.moe-watchlist-v2-logo{width:42px;height:42px;border-radius:50%;display:grid;place-items:center;background:linear-gradient(145deg,var(--accent-dim),rgba(11,15,20,.7));border:1px solid var(--accent);color:var(--accent);font:900 12px 'Archivo',sans-serif;box-shadow:inset 0 1px 0 rgba(255,255,255,.08),0 8px 18px rgba(0,0,0,.18)}
+.moe-watchlist-v2-copy{min-width:0}.moe-watchlist-v2-symbol{display:flex;align-items:center;gap:7px;font:900 18px 'Archivo',sans-serif}.moe-watchlist-v2-feed{padding:2px 5px;border-radius:6px;background:var(--accent-dim);color:var(--accent);font:700 8px 'IBM Plex Mono',monospace}.moe-watchlist-v2-company{margin-top:2px;color:var(--muted);font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.moe-watchlist-v2-price{text-align:right;font-family:'IBM Plex Mono',monospace;font-variant-numeric:tabular-nums}.moe-watchlist-v2-last{font-size:17px;font-weight:700}.moe-watchlist-v2-change{margin-top:3px;font-size:11px;font-weight:700}.moe-watchlist-v2-change.up{color:var(--green)}.moe-watchlist-v2-change.down{color:var(--red)}.moe-watchlist-v2-change.flat{color:var(--muted)}.moe-watchlist-v2-extended{display:block;margin-top:3px;color:var(--muted);font-size:9px}
+.moe-watchlist-v2-remove{position:absolute;right:8px;top:50%;transform:translateY(-50%);appearance:none;width:30px;height:30px;border:0;border-radius:50%;background:transparent;color:var(--muted);font-size:20px;cursor:pointer}.moe-watchlist-v2-remove:active{background:rgba(229,72,77,.15);color:var(--red)}.moe-watchlist-v2-remove[data-locked="true"]{font-size:13px;color:var(--amber)}
+.moe-watchlist-v2-detail{grid-column:2/4;display:none;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin-top:7px;padding-top:11px;border-top:1px solid rgba(138,155,171,.15)}.moe-watchlist-row[data-open="true"] .moe-watchlist-v2-detail{display:grid}.moe-watchlist-v2-stat span{display:block;color:var(--muted);font:600 8px 'IBM Plex Mono',monospace;text-transform:uppercase;letter-spacing:.07em}.moe-watchlist-v2-stat b{display:block;margin-top:3px;color:var(--text);font:700 10px 'IBM Plex Mono',monospace;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.moe-watchlist-v2-empty{display:grid;gap:6px;padding:28px 18px;text-align:center}.moe-watchlist-v2-empty:before{content:'⌁';font-size:34px;color:var(--accent)}.moe-watchlist-v2-empty b{font-size:15px}.moe-watchlist-v2-empty span{color:var(--muted);font-size:12px}
+.moe-watchlist-v2-foot{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:10px 12px;border-top:1px solid rgba(138,155,171,.15);color:var(--muted);font:600 9px 'IBM Plex Mono',monospace}
+.moe-watchlist-v2-tick-up .moe-watchlist-v2-last{animation:moeTickUp .7s}.moe-watchlist-v2-tick-down .moe-watchlist-v2-last{animation:moeTickDown .7s}@keyframes moeTickUp{0%{background:rgba(74,222,128,.3)}100%{background:transparent}}@keyframes moeTickDown{0%{background:rgba(229,72,77,.3)}100%{background:transparent}}
+.moe-symbol-edit-lock-note{display:flex;align-items:center;gap:8px;margin-top:10px;padding:10px 12px;border:1px solid rgba(255,176,32,.4);border-radius:12px;background:rgba(255,176,32,.08);color:var(--amber);font:700 11px 'IBM Plex Mono',monospace}.moe-symbol-edit-lock-note[hidden]{display:none}
+#symInput:disabled,#symInput2:disabled{opacity:.55;border-color:rgba(255,176,32,.5);cursor:not-allowed}
+.moe-watchlist-toast{position:fixed;left:50%;bottom:calc(112px + env(safe-area-inset-bottom));z-index:999;transform:translate(-50%,20px);width:min(92vw,470px);padding:14px 16px;border:1px solid rgba(255,176,32,.55);border-radius:15px;background:#20190c;color:#ffe6ae;box-shadow:0 18px 55px rgba(0,0,0,.45);font:700 13px/1.45 'Archivo',sans-serif;opacity:0;pointer-events:none;transition:.22s}.moe-watchlist-toast[data-show="true"]{opacity:1;transform:translate(-50%,0)}
+@media(max-width:390px){.moe-watchlist-row{grid-template-columns:39px minmax(0,1fr) auto;padding-left:9px}.moe-watchlist-v2-logo{width:38px;height:38px}.moe-watchlist-v2-detail{grid-template-columns:repeat(2,minmax(0,1fr))}.moe-watchlist-v2-session{font-size:9px}.moe-watchlist-v2-foot{align-items:flex-start;flex-direction:column;gap:3px}}
 </style>`;
 
 const WATCHLIST_SCRIPT = String.raw`
@@ -235,95 +320,46 @@ const WATCHLIST_SCRIPT = String.raw`
 (function(){
   if(window.__moeLiveWatchlistInstalled)return;
   window.__moeLiveWatchlistInstalled=true;
-  var chips=document.getElementById('chips');
-  if(!chips)return;
-
   var COMPANY={PATH:'UiPath, Inc.',AAPL:'Apple Inc.',MSFT:'Microsoft Corp.',NVDA:'NVIDIA Corp.',AMZN:'Amazon.com, Inc.',GOOGL:'Alphabet Inc.',GOOG:'Alphabet Inc.',FDX:'FedEx Corp.',UPS:'United Parcel Service',HMC:'Honda Motor Co.',GD:'General Dynamics',NVO:'Novo Nordisk',UBER:'Uber Technologies',QS:'QuantumScape Corp.',RIVN:'Rivian Automotive, Inc.',LYFT:'Lyft, Inc.',SOFI:'SoFi Technologies, Inc.',BTU:'Peabody Energy',CHWY:'Chewy, Inc.',KGC:'Kinross Gold',CELH:'Celsius Holdings, Inc.',SMCI:'Super Micro Computer, Inc.',U:'Unity Software Inc.',ASTS:'AST SpaceMobile, Inc.',HIMS:'Hims & Hers Health, Inc.',TSLA:'Tesla, Inc.',META:'Meta Platforms, Inc.',AMD:'Advanced Micro Devices',SPY:'SPDR S&P 500 ETF',QQQ:'Invesco QQQ Trust'};
-  var quotes={};
-  var oldPrices={};
-  var busy=false;
-  var sortMode='LIST';
-  var openSymbol='';
-  var refreshTimer=null;
-
-  var root=document.createElement('div');
-  root.id='moeLiveWatchlist';
-  root.className='moe-watchlist';
-  root.dataset.state='loading';
-  root.innerHTML='<div class="moe-watchlist-head"><div class="moe-watchlist-live"><span class="moe-watchlist-dot"></span><span id="moeWatchStatus">Live prices · IEX</span></div><div class="moe-watchlist-actions"><span class="moe-watchlist-time" id="moeWatchTime">Connecting…</span><button type="button" class="moe-watchlist-sort" id="moeWatchSort">List order</button></div></div><div class="moe-watchlist-list" id="moeWatchList"></div><div class="moe-watch-foot"><span>Tap a symbol for bid, ask, range and volume.</span><button type="button" class="moe-watch-refresh" id="moeWatchRefresh">Refresh</button></div>';
-  chips.insertAdjacentElement('afterend',root);
-
+  var quotes={},previousPrices={},openSymbol='',sortMode='GAIN',busy=false,locked=false,lastUpdated=null,session='CLOSED',refreshTimer=null,toastTimer=null;
+  var chips=document.getElementById('chips');
   function esc(value){return String(value==null?'':value).replace(/[&<>"']/g,function(ch){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch];});}
-  function symbols(){
-    try{if(typeof state!=='undefined'&&Array.isArray(state.symbols))return state.symbols.slice();}catch(_){}
-    return Array.from(chips.querySelectorAll('[data-rm]')).map(function(node){return String(node.dataset.rm||'').toUpperCase();}).filter(Boolean);
-  }
+  function roots(){return Array.from(document.querySelectorAll('[data-moe-watchlist-root]'));}
+  function symbols(){try{if(typeof state!=='undefined'&&Array.isArray(state.symbols))return state.symbols.map(function(s){return String(s).toUpperCase();}).filter(Boolean).slice(0,30);}catch(_){}return chips?Array.from(chips.querySelectorAll('[data-rm]')).map(function(n){return String(n.dataset.rm||'').toUpperCase();}).filter(Boolean).slice(0,30):[];}
   function price(value){var n=Number(value);return Number.isFinite(n)?n.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:n<10?3:2}):'—';}
   function signed(value,digits){var n=Number(value);if(!Number.isFinite(n))return '—';return (n>0?'+':'')+n.toFixed(digits==null?2:digits);}
-  function volume(value){var n=Number(value);if(!Number.isFinite(n))return '—';if(n>=1e9)return (n/1e9).toFixed(1)+'B';if(n>=1e6)return (n/1e6).toFixed(1)+'M';if(n>=1e3)return (n/1e3).toFixed(1)+'K';return String(Math.round(n));}
+  function compact(value){var n=Number(value);if(!Number.isFinite(n))return '—';if(n>=1e9)return (n/1e9).toFixed(1)+'B';if(n>=1e6)return (n/1e6).toFixed(1)+'M';if(n>=1e3)return (n/1e3).toFixed(1)+'K';return String(Math.round(n));}
   function tone(value){var n=Number(value);return !Number.isFinite(n)||n===0?'flat':n>0?'up':'down';}
   function company(symbol){return COMPANY[symbol]||symbol+' stock';}
   function initials(symbol){return symbol.length<=3?symbol:symbol.slice(0,3);}
-  function ordered(list){
-    if(sortMode==='GAIN')return list.slice().sort(function(a,b){return Number(quotes[b]?.changePercent??-Infinity)-Number(quotes[a]?.changePercent??-Infinity);});
-    if(sortMode==='PRICE')return list.slice().sort(function(a,b){return Number(quotes[a]?.price??Infinity)-Number(quotes[b]?.price??Infinity);});
-    if(sortMode==='SYMBOL')return list.slice().sort();
-    return list;
-  }
-  function detail(q){return '<div class="moe-watch-detail"><div class="moe-watch-stat"><span>Bid</span><b>$'+price(q.bid)+'</b></div><div class="moe-watch-stat"><span>Ask</span><b>$'+price(q.ask)+'</b></div><div class="moe-watch-stat"><span>Day range</span><b>'+price(q.low)+'–'+price(q.high)+'</b></div><div class="moe-watch-stat"><span>Volume</span><b>'+volume(q.volume)+'</b></div></div>';}
-  function row(symbol){
-    var q=quotes[symbol]||{symbol:symbol,available:false};
-    var changeTone=tone(q.changePercent);
-    var old=Number(oldPrices[symbol]);
-    var current=Number(q.price);
-    var tick=Number.isFinite(old)&&Number.isFinite(current)&&current!==old?(current>old?' moe-watch-tick-up':' moe-watch-tick-down'):'';
-    var after=q.extended&&Number.isFinite(Number(q.extendedChangePercent))?'<span class="moe-watch-after">'+(q.session==='PREMARKET'?'Pre':'After')+': $'+price(q.price)+' '+signed(q.extendedChangePercent,2)+'%</span>':'';
-    var mainPrice=q.available?'$'+price(q.price):'—';
-    var change=q.available?signed(q.change,2)+' · '+signed(q.changePercent,2)+'%':'Waiting for quote';
-    return '<div class="moe-watch-row'+tick+'" data-symbol="'+esc(symbol)+'" data-open="'+String(openSymbol===symbol)+'"><div class="moe-watch-logo">'+esc(initials(symbol))+'</div><div class="moe-watch-name"><div class="moe-watch-symbol">'+esc(symbol)+'<span class="moe-watch-feed">IEX</span></div><div class="moe-watch-company">'+esc(company(symbol))+'</div></div><div class="moe-watch-price"><div class="moe-watch-last">'+mainPrice+'</div><div class="moe-watch-change '+changeTone+'">'+change+'</div>'+after+'</div><button type="button" class="moe-watch-remove" data-watch-remove="'+esc(symbol)+'" aria-label="Remove '+esc(symbol)+'">×</button>'+detail(q)+'</div>';
-  }
-  function render(){
-    var list=ordered(symbols());
-    var container=document.getElementById('moeWatchList');
-    if(!container)return;
-    container.innerHTML=list.length?list.map(row).join(''):'<div class="moe-watch-empty">Add a ticker above to build your live watchlist.</div>';
-    list.forEach(function(symbol){var n=Number(quotes[symbol]?.price);if(Number.isFinite(n))oldPrices[symbol]=n;});
-    container.querySelectorAll('.moe-watch-row').forEach(function(node){node.addEventListener('click',function(event){if(event.target.closest('[data-watch-remove]'))return;openSymbol=openSymbol===node.dataset.symbol?'':node.dataset.symbol;render();});});
-    container.querySelectorAll('[data-watch-remove]').forEach(function(button){button.addEventListener('click',function(event){event.preventDefault();event.stopPropagation();var target=chips.querySelector('[data-rm="'+CSS.escape(button.dataset.watchRemove)+'"]');if(target)target.click();});});
-  }
-  function setStatus(text,stateName){var node=document.getElementById('moeWatchStatus');if(node)node.textContent=text;root.dataset.state=stateName||'ready';}
-  function setTime(value){var node=document.getElementById('moeWatchTime');if(node)node.textContent=value;}
-  async function refresh(force){
-    if(busy)return;
-    var list=symbols();
-    render();
-    if(!list.length){setStatus('Live prices · IEX','ready');setTime('No symbols');return;}
-    busy=true;
-    if(force||!Object.keys(quotes).length)setStatus('Updating prices…','loading');
-    try{
-      var response=await fetch('/api/mobile/watchlist/quotes?symbols='+encodeURIComponent(list.join(','))+'&t='+(force?Date.now():''),{cache:'no-store',credentials:'same-origin',headers:{accept:'application/json','x-moe-mobile-client':'1'}});
-      var data=await response.json().catch(function(){return {};});
-      if(!response.ok||data.ok!==true)throw new Error(data.error||('HTTP '+response.status));
-      (data.quotes||[]).forEach(function(q){if(q&&q.symbol)quotes[q.symbol]=q;});
-      setStatus((data.session==='PREMARKET'?'Premarket':data.session==='AFTER_HOURS'?'After hours':data.session==='REGULAR'?'Market live':'Latest prices')+' · IEX','ready');
-      var stamp=data.updatedAt?new Date(data.updatedAt):new Date();
-      setTime('Updated '+stamp.toLocaleTimeString([],{hour:'numeric',minute:'2-digit',second:'2-digit'}));
-      render();
-    }catch(error){setStatus('Prices unavailable · retrying','error');setTime(error&&error.message?error.message:'Connection error');}
-    finally{busy=false;}
-  }
-  function cycleSort(){var order=['LIST','GAIN','PRICE','SYMBOL'];var labels={LIST:'List order',GAIN:'Top movers',PRICE:'Lowest price',SYMBOL:'A–Z'};sortMode=order[(order.indexOf(sortMode)+1)%order.length];document.getElementById('moeWatchSort').textContent=labels[sortMode];render();}
-  function scheduleRefresh(){clearTimeout(refreshTimer);refreshTimer=setTimeout(function(){refresh(true);},180);}
-
-  document.getElementById('moeWatchSort').addEventListener('click',cycleSort);
-  document.getElementById('moeWatchRefresh').addEventListener('click',function(){refresh(true);});
-  new MutationObserver(scheduleRefresh).observe(chips,{childList:true,subtree:true});
-  document.addEventListener('visibilitychange',function(){if(!document.hidden)refresh(true);});
-  setTimeout(function(){refresh(true);},250);
-  clearInterval(window.__moeLiveWatchlistTick);
-  window.__moeLiveWatchlistTick=setInterval(function(){if(!document.hidden)refresh(false);},3000);
+  function sessionLabel(value){return value==='REGULAR'?'Market live':value==='PREMARKET'?'Premarket':value==='AFTER_HOURS'?'After hours':'Market closed';}
+  function ordered(list){if(sortMode==='GAIN')return list.slice().sort(function(a,b){return Number(quotes[b]&&quotes[b].changePercent||-999999)-Number(quotes[a]&&quotes[a].changePercent||-999999);});if(sortMode==='PRICE')return list.slice().sort(function(a,b){return Number(quotes[a]&&quotes[a].price||999999999)-Number(quotes[b]&&quotes[b].price||999999999);});if(sortMode==='SYMBOL')return list.slice().sort();return list.slice();}
+  function spread(q){var bid=Number(q&&q.bid),ask=Number(q&&q.ask);return Number.isFinite(bid)&&Number.isFinite(ask)?'$'+price(ask-bid):'—';}
+  function quoteAge(q){var stamp=Date.parse(q&&q.tradeTimestamp||'');if(!Number.isFinite(stamp))return '—';var seconds=Math.max(0,Math.floor((Date.now()-stamp)/1000));return seconds<60?seconds+'s':Math.floor(seconds/60)+'m';}
+  function detail(q){return '<div class="moe-watchlist-v2-detail"><div class="moe-watchlist-v2-stat"><span>Bid</span><b>$'+price(q.bid)+'</b></div><div class="moe-watchlist-v2-stat"><span>Ask</span><b>$'+price(q.ask)+'</b></div><div class="moe-watchlist-v2-stat"><span>Spread</span><b>'+spread(q)+'</b></div><div class="moe-watchlist-v2-stat"><span>Day range</span><b>'+price(q.low)+'–'+price(q.high)+'</b></div><div class="moe-watchlist-v2-stat"><span>Volume</span><b>'+compact(q.volume)+'</b></div><div class="moe-watchlist-v2-stat"><span>Quote age</span><b>'+quoteAge(q)+'</b></div></div>';}
+  function row(symbol){var q=quotes[symbol]||{symbol:symbol,available:false};var current=Number(q.price),old=Number(previousPrices[symbol]);var tick=Number.isFinite(current)&&Number.isFinite(old)&&current!==old?(current>old?' moe-watchlist-v2-tick-up':' moe-watchlist-v2-tick-down'):'';var extended=q.extended&&Number.isFinite(Number(q.extendedChangePercent))?'<span class="moe-watchlist-v2-extended">'+(q.session==='PREMARKET'?'Pre':'After')+': $'+price(q.price)+' '+signed(q.extendedChangePercent,2)+'%</span>':'';var change=q.available?signed(q.change,2)+' · '+signed(q.changePercent,2)+'%':'Waiting for quote';var action=locked?'<button type="button" class="moe-watchlist-v2-remove" data-locked="true" data-watch-locked-action aria-label="List locked">🔒</button>':'<button type="button" class="moe-watchlist-v2-remove" data-watch-remove="'+esc(symbol)+'" aria-label="Remove '+esc(symbol)+'">×</button>';return '<div class="moe-watchlist-row'+tick+'" data-symbol="'+esc(symbol)+'" data-open="'+String(openSymbol===symbol)+'"><div class="moe-watchlist-v2-logo">'+esc(initials(symbol))+'</div><div class="moe-watchlist-v2-copy"><div class="moe-watchlist-v2-symbol">'+esc(symbol)+'<span class="moe-watchlist-v2-feed">IEX</span></div><div class="moe-watchlist-v2-company">'+esc(company(symbol))+'</div></div><div class="moe-watchlist-v2-price"><div class="moe-watchlist-v2-last">'+(q.available?'$'+price(q.price):'—')+'</div><div class="moe-watchlist-v2-change '+tone(q.changePercent)+'">'+change+'</div>'+extended+'</div>'+action+detail(q)+'</div>';}
+  function render(){var list=ordered(symbols());roots().forEach(function(root){var container=root.querySelector('[data-watch-list]');if(container)container.innerHTML=list.length?list.map(row).join(''):'<div class="moe-watchlist-v2-empty"><b>No symbols selected</b><span>Add stocks before pressing Start trading. The list will freeze while the scanner runs.</span></div>';var count=root.querySelector('[data-watch-count]');if(count)count.textContent=list.length+' / 30';var lock=root.querySelector('[data-watch-lock]');if(lock)lock.hidden=!locked;var badge=root.querySelector('[data-watch-session]');if(badge)badge.textContent=sessionLabel(session);var updated=root.querySelector('[data-watch-updated]');if(updated)updated.textContent=lastUpdated?'Updated '+lastUpdated.toLocaleTimeString([],{hour:'numeric',minute:'2-digit',second:'2-digit'}):list.length?'Connecting to live prices':'Waiting for symbols';root.dataset.state=list.length&&!lastUpdated?'loading':'ready';});list.forEach(function(symbol){var n=Number(quotes[symbol]&&quotes[symbol].price);if(Number.isFinite(n))previousPrices[symbol]=n;});}
+  function toast(message){var node=document.getElementById('moeWatchlistToast');if(!node){node=document.createElement('div');node.id='moeWatchlistToast';node.className='moe-watchlist-toast';node.setAttribute('role','alert');document.body.appendChild(node);}node.textContent=message;node.dataset.show='true';clearTimeout(toastTimer);toastTimer=setTimeout(function(){node.dataset.show='false';},3200);}
+  function lockMessage(){toast('Watchlist locked while the scanner is running. Stop trading before adding or removing symbols.');}
+  function applyEditLock(){['symInput','symInput2'].forEach(function(id){var input=document.getElementById(id);if(!input)return;input.disabled=locked;input.setAttribute('aria-disabled',String(locked));input.placeholder=locked?'Stop trading to edit':id==='symInput'?'NVDA':'AAPL';if(locked)input.value='';if(!document.getElementById(id+'LockNote')){var note=document.createElement('div');note.id=id+'LockNote';note.className='moe-symbol-edit-lock-note';note.hidden=!locked;note.innerHTML='<span>🔒</span><span>Scanner active — selected symbols are frozen.</span>';var suggestions=input.nextElementSibling&&input.nextElementSibling.classList.contains('symbol-suggestions')?input.nextElementSibling:null;(suggestions||input).insertAdjacentElement('afterend',note);}});['symInputLockNote','symInput2LockNote'].forEach(function(id){var note=document.getElementById(id);if(note)note.hidden=!locked;});document.querySelectorAll('.symbol-suggestions').forEach(function(node){if(locked)node.hidden=true;});render();}
+  function browserRunning(){try{return typeof state!=='undefined'&&state.running===true;}catch(_){return false;}}
+  async function refreshLock(){var next=browserRunning();try{var response=await fetch('/api/mobile/watchlist/state?t='+Date.now(),{cache:'no-store',credentials:'same-origin',headers:{accept:'application/json','x-moe-mobile-client':'1'}});var data=await response.json().catch(function(){return {};});if(response.ok&&data.ok===true)next=data.locked===true;}catch(_){}locked=next;applyEditLock();}
+  async function refresh(force){if(busy)return;var list=symbols();render();if(!list.length){lastUpdated=null;session='CLOSED';render();return;}busy=true;roots().forEach(function(root){root.dataset.state='loading';});try{var response=await fetch('/api/mobile/watchlist/quotes?symbols='+encodeURIComponent(list.join(','))+'&t='+(force?Date.now():''),{cache:'no-store',credentials:'same-origin',headers:{accept:'application/json','x-moe-mobile-client':'1'}});var data=await response.json().catch(function(){return {};});if(!response.ok||data.ok!==true)throw new Error(data.error||('HTTP '+response.status));(data.quotes||[]).forEach(function(q){if(q&&q.symbol)quotes[q.symbol]=q;});session=data.session||session;lastUpdated=data.updatedAt?new Date(data.updatedAt):new Date();render();}catch(error){roots().forEach(function(root){root.dataset.state='error';var updated=root.querySelector('[data-watch-updated]');if(updated)updated.textContent=error&&error.message?error.message:'Prices unavailable';});}finally{busy=false;}}
+  function cycleSort(button){var order=['GAIN','PRICE','SYMBOL','LIST'];var labels={GAIN:'Top movers',PRICE:'Lowest price',SYMBOL:'A–Z',LIST:'List order'};sortMode=order[(order.indexOf(sortMode)+1)%order.length];document.querySelectorAll('[data-watch-sort]').forEach(function(node){node.textContent=labels[sortMode];});render();if(button)button.blur();}
+  function removeSymbol(symbol){if(locked){lockMessage();return;}var target=chips&&chips.querySelector('[data-rm="'+String(symbol).replace(/"/g,'')+'"]');if(target){target.click();return;}try{if(typeof state!=='undefined'&&Array.isArray(state.symbols)){state.symbols=state.symbols.filter(function(item){return item!==symbol;});if(typeof renderChips==='function')renderChips();if(typeof saveSymbols==='function')saveSymbols();}}catch(_){}}
+  function onClick(event){var refreshButton=event.target.closest('[data-watch-refresh]');if(refreshButton){refresh(true);return;}var sortButton=event.target.closest('[data-watch-sort]');if(sortButton){cycleSort(sortButton);return;}if(event.target.closest('[data-watch-locked-action]')){lockMessage();return;}var remove=event.target.closest('[data-watch-remove]');if(remove){event.preventDefault();event.stopPropagation();removeSymbol(remove.dataset.watchRemove);return;}var rowNode=event.target.closest('.moe-watchlist-row');if(rowNode){openSymbol=openSymbol===rowNode.dataset.symbol?'':rowNode.dataset.symbol;render();}}
+  function blockEditEvent(event){if(!locked)return;var target=event.target;if(target&&((target.id==='symInput'||target.id==='symInput2')||target.closest&&target.closest('[data-symbol],[data-rm]'))){event.preventDefault();event.stopPropagation();event.stopImmediatePropagation();lockMessage();}}
+  document.addEventListener('click',onClick);['keydown','beforeinput','input','change','blur','mousedown','touchstart'].forEach(function(type){document.addEventListener(type,blockEditEvent,true);});
+  if(!roots().length&&chips){var root=document.createElement('div');root.setAttribute('data-moe-watchlist-root','');root.innerHTML='<div data-watch-list></div>';chips.insertAdjacentElement('afterend',root);}
+  if(chips)new MutationObserver(function(){clearTimeout(refreshTimer);refreshTimer=setTimeout(function(){render();refresh(true);},100);}).observe(chips,{childList:true,subtree:true});
+  var start=document.getElementById('startBtn');if(start){start.addEventListener('click',function(){setTimeout(refreshLock,80);setTimeout(refreshLock,700);},true);new MutationObserver(refreshLock).observe(start,{attributes:true,attributeFilter:['data-running','disabled','class']});}
+  document.addEventListener('visibilitychange',function(){if(!document.hidden){refreshLock();refresh(true);}});applyEditLock();render();setTimeout(function(){refreshLock();refresh(true);},120);clearInterval(window.__moeLiveWatchlistTick);window.__moeLiveWatchlistTick=setInterval(function(){if(!document.hidden)refresh(false);},3000);clearInterval(window.__moeWatchlistLockTick);window.__moeWatchlistLockTick=setInterval(function(){if(!document.hidden)refreshLock();},3000);
 })();
 </script>`;
+
+function insertAfter(output, marker, addition) {
+  return output.includes(marker) ? output.replace(marker, `${marker}\n${addition}`) : output;
+}
 
 async function enhanceMobileWatchlist(response, request) {
   if (request.method === 'HEAD') return response;
@@ -334,13 +370,16 @@ async function enhanceMobileWatchlist(response, request) {
   let output = html.includes('</head>')
     ? html.replace('</head>', `${WATCHLIST_STYLE}\n</head>`)
     : `${WATCHLIST_STYLE}\n${html}`;
+  output = insertAfter(output, '<div class="chips" id="chips"></div>', WATCHLIST_MAIN_HTML);
+  output = insertAfter(output, '<div class="chips" id="chips2" style="margin-top:16px"></div>', WATCHLIST_SHEET_HTML);
   output = output.includes('</body>')
     ? output.replace('</body>', `${WATCHLIST_SCRIPT}\n</body>`)
     : `${output}\n${WATCHLIST_SCRIPT}`;
   const headers = new Headers(response.headers);
   headers.delete('content-length');
   headers.set('cache-control', 'no-store, no-cache, must-revalidate');
-  headers.set('x-moe-mobile-watchlist-ui', 'modern-live-v1');
+  headers.set('x-moe-mobile-watchlist-ui', 'modern-live-v2');
+  headers.set('x-moe-symbol-edit-policy', 'LOCKED_WHILE_SCANNER_RUNNING');
   return new Response(output, {
     status: response.status,
     statusText: response.statusText,
@@ -353,6 +392,11 @@ export default {
   async fetch(request, env, ctx) {
     const pathname = new URL(request.url).pathname;
     if (pathname === WATCHLIST_QUOTES_PATH) return handleWatchlistQuotes(request, env, ctx);
+    if (pathname === WATCHLIST_STATE_PATH) return handleWatchlistState(request, env);
+    if (pathname === SCAN_SOURCE_MODE_PATH) {
+      const blocked = await blockSymbolMutationWhileRunning(request, env);
+      if (blocked) return blocked;
+    }
     const response = await baseWorker.fetch(request, env, ctx);
     return MOBILE_PATHS.has(pathname)
       ? enhanceMobileWatchlist(response, request)
