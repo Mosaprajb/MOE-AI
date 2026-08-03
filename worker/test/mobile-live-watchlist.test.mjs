@@ -105,7 +105,25 @@ test('scanner activation freezes the original symbol list in both browser and se
   assert.match(source, /if \(pathname === SCAN_SOURCE_MODE_PATH\)/);
   assert.match(source, /return json\([\s\S]*SCANNER_RUNNING_SYMBOLS_LOCKED[\s\S]*409/);
   assert.match(source, /event\.stopImmediatePropagation\(\)/);
-  assert.match(source, /runtime = await coordinator\(env\)\.mobileDashboardRuntime\(\)/);
+  assert.match(source, /stub\.mobileDashboardRuntime\(\)/);
+  assert.match(source, /stub\.scanSourceMode\(\)/);
+});
+
+test('saved scanner symbols become the authoritative stopped watchlist and trigger live quotes', () => {
+  for (const token of [
+    'Promise.allSettled',
+    "mode === 'CURATED_UNIVERSE'",
+    'scanMode?.curatedSymbols',
+    "symbolSource: useRuntime ? 'RUNTIME_LOCKED' : configuredSymbols.length ? 'SCAN_MODE' : 'RUNTIME'",
+    'selectedSymbols=[]',
+    'setSelectedSymbols(data.symbols||[])',
+    'window.__moeRefreshSelectedWatchlist',
+    'authoritative-scan-mode',
+  ]) {
+    assert.equal(source.includes(token), true, `missing authoritative watchlist sync token: ${token}`);
+  }
+  assert.match(source, /if\(changed\)await refresh\(true\)/);
+  assert.match(source, /setInterval\(function\(\)\{if\(!document\.hidden\)refreshState\(\);\},1200\)/);
 });
 
 test('embedded live watchlist browser script parses successfully', () => {
