@@ -5,12 +5,14 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
+const marketScreenerSource = readFileSync(join(root, 'worker/src/sandbox-mobile-market-screener-entry.js'), 'utf8');
 const source = readFileSync(join(root, 'worker/src/sandbox-mobile-live-watchlist-entry.js'), 'utf8');
 const scanModeSource = readFileSync(join(root, 'worker/src/sandbox-scan-mode-entry.js'), 'utf8');
 const config = JSON.parse(readFileSync(join(root, 'wrangler.sandbox.jsonc'), 'utf8'));
 
-test('modern mobile watchlist is the deployed wrapper and preserves the Clean entry chain', () => {
-  assert.equal(config.main, 'worker/src/sandbox-mobile-live-watchlist-entry.js');
+test('modern mobile watchlist remains in the deployed market screener chain', () => {
+  assert.equal(config.main, 'worker/src/sandbox-mobile-market-screener-entry.js');
+  assert.match(marketScreenerSource, /from '\.\/sandbox-mobile-live-watchlist-entry\.js'/);
   assert.match(source, /from '\.\/sandbox-moerand-clean-utbot-entry\.js'/);
   assert.match(source, /export \{ AlertCoordinator, SimulationDriver \}/);
   assert.match(source, /MOBILE_PATHS\.has\(pathname\)/);
