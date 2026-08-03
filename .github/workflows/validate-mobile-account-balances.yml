@@ -1,0 +1,112 @@
+name: Validate Mobile Account Balances
+
+on:
+  push:
+    branches:
+      - feature/moe-core-domain-v2
+    paths:
+      - 'worker/src/sandbox-mobile-account-balances-entry.js'
+      - 'worker/src/sandbox-mobile-phone-fix-entry.js'
+      - 'worker/test/sandbox-runtime-pilot-observability.test.mjs'
+      - 'worker/test/sandbox-simulation-mode.test.mjs'
+      - 'wrangler.sandbox.jsonc'
+      - '.github/workflows/validate-mobile-account-balances.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: validate-mobile-account-balances
+  cancel-in-progress: true
+
+jobs:
+  test-deploy-verify:
+    name: Test, deploy, and verify both account balances
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout feature branch
+        uses: actions/checkout@v4
+        with:
+          ref: feature/moe-core-domain-v2
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      - name: Install locked dependencies
+        run: npm ci
+
+      - name: Test Sandbox wrapper and observability
+        run: node --test --test-concurrency=1 worker/test/sandbox-runtime-pilot-observability.test.mjs
+
+      - name: Test Simulation wrapper and safety locks
+        run: node --test --test-concurrency=1 worker/test/sandbox-simulation-mode.test.mjs
+
+      - name: Run complete Worker safety suite
+        run: npm run test:worker
+
+      - name: Confirm Sandbox and Live safety configuration
+        shell: bash
+        run: |
+          grep -F '"main": "worker/src/sandbox-mobile-account-balances-entry.js"' wrangler.sandbox.jsonc
+          grep -F '"MOE_SANDBOX_PILOT_ENABLED": "false"' wrangler.sandbox.jsonc
+          grep -F '"MOE_LIVE_EXECUTION_IMPLEMENTED": "false"' wrangler.sandbox.jsonc
+          grep -F '"WEBULL_LIVE_TRADING": "false"' wrangler.sandbox.jsonc
+          grep -F '"WEBULL_LIVE_ORDER_SUBMISSION": "false"' wrangler.sandbox.jsonc
+          grep -F '"WEBULL_LIVE_AUTOMATION_ARMED": "false"' wrangler.sandbox.jsonc
+          grep -F '"WEBULL_LIVE_KILL_SWITCH": "true"' wrangler.sandbox.jsonc
+
+      - name: Build Cloudflare Worker
+        run: npx wrangler deploy --dry-run --config wrangler.sandbox.jsonc
+
+      - name: Deploy Cloudflare Sandbox Worker
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: npx wrangler deploy --config wrangler.sandbox.jsonc
+
+      - name: Verify deployed Paper and Live balance UI
+        env:
+          MOBILE_URL: https://moerand-alerts-sandbox.mosaprajb.workers.dev/m
+        run: |
+          node <<'NODE'
+          const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+          let html = '';
+          let lastError;
+          for (let attempt = 1; attempt <= 12; attempt += 1) {
+            try {
+              const response = await fetch(`${process.env.MOBILE_URL}?account-balances=${Date.now()}`, { cache: 'no-store' });
+              if (!response.ok) throw new Error(`HTTP ${response.status}`);
+              html = await response.text();
+              break;
+            } catch (error) {
+              lastError = error;
+              await wait(5000);
+            }
+          }
+          if (!html) throw lastError || new Error('Mobile dashboard unavailable');
+
+          for (const token of [
+            'id="moe-mobile-two-account-balances"',
+            "ensureAccountNodes('btnPaper','moePaper')",
+            "ensureAccountNodes('btnLive','moeLive')",
+            'Connected · trading locked',
+            'Webull Paper account',
+            'Webull Live account (read only; trading remains locked)',
+          ]) {
+            if (!html.includes(token)) throw new Error(`Mobile dashboard missing ${token}`);
+          }
+
+          console.log(JSON.stringify({
+            deployed: true,
+            paperBalanceVisible: true,
+            liveBalanceVisible: true,
+            connectionStateVisible: true,
+            liveReadOnly: true,
+            liveTradingLocked: true,
+          }, null, 2));
+          NODE
