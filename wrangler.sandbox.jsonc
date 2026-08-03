@@ -1,7 +1,7 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "moerand-alerts-sandbox",
-  "main": "worker/src/sandbox-mobile-ui-fix-entry.js",
+  "main": "worker/src/sandbox-mobile-settings-entry.js",
   "compatibility_date": "2026-07-22",
   "observability": {
     "enabled": true,
