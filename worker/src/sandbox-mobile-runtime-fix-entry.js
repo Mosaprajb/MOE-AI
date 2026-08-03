@@ -1,7 +1,7 @@
 import baseWorker, {
   AlertCoordinator,
   SimulationDriver,
-} from './sandbox-mobile-final-entry.js';
+} from './sandbox-mobile-settings-entry.js';
 
 export { AlertCoordinator, SimulationDriver };
 
