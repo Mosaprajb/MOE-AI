@@ -21,17 +21,12 @@ test('mobile scanner monitor is wired into the deployed Sandbox entry', () => {
 test('visible mobile scanner UI exposes live quote, protected prices, readiness, refresh, and clear controls', () => {
   for (const token of [
     'moe-mobile-scanner-visible-ui',
-    'data-moe-monitor-location="main"',
-    'data-moe-monitor-location="scanner"',
+    'data-moe-monitor-location',
+    "monitorMarkup('main')",
+    "monitorMarkup('scanner')",
     'Selected symbol live monitor',
     'data-moe-monitor-refresh',
-    'data-moe-monitor-field="price"',
-    'data-moe-monitor-field="entry"',
-    'data-moe-monitor-field="exit"',
-    'data-moe-monitor-field="stop"',
-    'data-moe-monitor-field="stage"',
-    'data-moe-monitor-field="percent"',
-    'data-moe-monitor-field="fill"',
+    'data-moe-monitor-field',
     'Target / exit',
     'Stop loss',
     'moeActivityRefreshVisible',
@@ -41,6 +36,10 @@ test('visible mobile scanner UI exposes live quote, protected prices, readiness,
     'No executable setup yet',
   ]) {
     assert.equal(visibleUiSource.includes(token), true, `missing visible mobile scanner UI token: ${token}`);
+  }
+
+  for (const field of ['price', 'entry', 'exit', 'stop', 'stage', 'percent', 'fill']) {
+    assert.equal(visibleUiSource.includes(`data-moe-monitor-field=\\"${field}\\"`), true, `missing monitor field: ${field}`);
   }
 
   assert.match(visibleUiSource, /setInterval\(function\(\)\{if\(!document\.hidden\)refreshMonitor\(false\);\},3000\)/);
