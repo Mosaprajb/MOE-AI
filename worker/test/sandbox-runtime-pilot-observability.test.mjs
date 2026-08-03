@@ -216,6 +216,7 @@ test('order status enforces the one-submission Sandbox pilot ceiling', async () 
 test('Sandbox pilot wrapper, simulation isolation, endpoints, and secret hygiene stay locked', () => {
   const configText = readFileSync(join(root, 'wrangler.sandbox.jsonc'), 'utf8');
   const config = JSON.parse(configText);
+  const marketScreenerEntry = readFileSync(join(root, 'worker/src/sandbox-mobile-market-screener-entry.js'), 'utf8');
   const liveWatchlistEntry = readFileSync(join(root, 'worker/src/sandbox-mobile-live-watchlist-entry.js'), 'utf8');
   const cleanEntry = readFileSync(join(root, 'worker/src/sandbox-moerand-clean-utbot-entry.js'), 'utf8');
   const mobileAccountEntry = readFileSync(join(root, 'worker/src/sandbox-mobile-account-balances-entry.js'), 'utf8');
@@ -237,7 +238,12 @@ test('Sandbox pilot wrapper, simulation isolation, endpoints, and secret hygiene
   const gitignore = readFileSync(join(root, '.gitignore'), 'utf8');
 
   assert.equal(config.name, 'moerand-alerts-sandbox');
-  assert.equal(config.main, 'worker/src/sandbox-mobile-live-watchlist-entry.js');
+  assert.equal(config.main, 'worker/src/sandbox-mobile-market-screener-entry.js');
+  assert.match(marketScreenerEntry, /from '\.\/sandbox-mobile-live-watchlist-entry\.js'/);
+  assert.match(marketScreenerEntry, /\/api\/mobile\/market-screener/);
+  assert.match(marketScreenerEntry, /liveTradingLocked: true/);
+  assert.match(marketScreenerEntry, /liveFundsUsed: false/);
+  assert.equal(marketScreenerEntry.includes('placeWebullSandboxOrder'), false);
   assert.match(liveWatchlistEntry, /from '\.\/sandbox-moerand-clean-utbot-entry\.js'/);
   assert.match(liveWatchlistEntry, /\/api\/mobile\/watchlist\/quotes/);
   assert.match(liveWatchlistEntry, /liveTradingLocked: true/);
