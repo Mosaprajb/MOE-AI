@@ -33,7 +33,7 @@ test('watchlist reads multi-symbol Alpaca IEX snapshots without exposing credent
 test('watchlist UI exposes modern rows, live prices, movers, extended hours, and detail metrics', () => {
   for (const token of [
     'moe-live-watchlist-script',
-    'moe-watchlist-row',
+    'moe-watch-row',
     'Live prices · IEX',
     'Top movers',
     'Lowest price',
