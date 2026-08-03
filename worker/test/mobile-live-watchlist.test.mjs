@@ -30,26 +30,50 @@ test('watchlist reads multi-symbol Alpaca IEX snapshots without exposing credent
   assert.equal(source.includes("WEBULL_LIVE_TRADING: 'true'"), false);
 });
 
-test('watchlist UI exposes modern rows, live prices, movers, extended hours, and detail metrics', () => {
+test('watchlist UI is inserted server-side and exposes modern live rows and quote details', () => {
   for (const token of [
     'moe-live-watchlist-script',
-    'moe-watch-row',
-    'Live prices · IEX',
+    'data-moe-watchlist-root',
+    'moe-watchlist-row',
+    'Direct IEX market prices',
     'Top movers',
     'Lowest price',
     'Premarket',
     'After hours',
     'Bid',
     'Ask',
+    'Spread',
     'Day range',
     'Volume',
+    'Quote age',
     'MutationObserver',
     'data-watch-remove',
   ]) {
     assert.equal(source.includes(token), true, `missing live watchlist token: ${token}`);
   }
+  assert.match(source, /insertAfter\(output, '<div class="chips" id="chips"><\/div>', WATCHLIST_MAIN_HTML\)/);
+  assert.match(source, /insertAfter\(output, '<div class="chips" id="chips2" style="margin-top:16px"><\/div>', WATCHLIST_SHEET_HTML\)/);
   assert.match(source, /setInterval\(function\(\)\{if\(!document\.hidden\)refresh\(false\);\},3000\)/);
   assert.match(source, /insertAdjacentElement\('afterend',root\)/);
+});
+
+test('scanner activation freezes the original symbol list in both browser and server', () => {
+  for (const token of [
+    '/api/mobile/watchlist/state',
+    'SCANNER_RUNNING_SYMBOLS_LOCKED',
+    'LOCKED_WHILE_SCANNER_RUNNING',
+    'Stop trading before adding or removing symbols',
+    'symInput:disabled',
+    'symInput2:disabled',
+    'data-watch-locked-action',
+    'blockSymbolMutationWhileRunning',
+    'x-moe-symbol-lock',
+  ]) {
+    assert.equal(source.includes(token), true, `missing symbol-lock token: ${token}`);
+  }
+  assert.match(source, /if \(pathname === SCAN_SOURCE_MODE_PATH\)/);
+  assert.match(source, /return json\([\s\S]*SCANNER_RUNNING_SYMBOLS_LOCKED[\s\S]*409/);
+  assert.match(source, /event\.stopImmediatePropagation\(\)/);
 });
 
 test('embedded live watchlist browser script parses successfully', () => {
@@ -63,6 +87,9 @@ test('live watchlist remains market-data-only and keeps Live funds locked', () =
   assert.match(source, /liveFundsUsed: false/);
   assert.match(source, /sameOrigin\(request\)/);
   assert.match(source, /Mobile watchlist access denied/);
-  assert.equal(source.includes('WEBULL_LIVE_ORDER_SUBMISSION'), false);
-  assert.equal(source.includes('WEBULL_LIVE_AUTOMATION_ARMED'), false);
+  assert.equal(source.includes('placeWebullSandboxOrder'), false);
+  assert.equal(source.includes('placeWebullLiveOrder'), false);
+  assert.equal(source.includes("WEBULL_LIVE_TRADING: 'true'"), false);
+  assert.equal(source.includes("WEBULL_LIVE_ORDER_SUBMISSION: 'true'"), false);
+  assert.equal(source.includes("WEBULL_LIVE_AUTOMATION_ARMED: 'true'"), false);
 });
