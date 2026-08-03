@@ -11,6 +11,7 @@ const v2Source = readFileSync(join(root, 'worker/src/sandbox-operations-v2-entry
 const scanModeEntry = readFileSync(join(root, 'worker/src/sandbox-scan-mode-entry.js'), 'utf8');
 const mobilePhoneEntry = readFileSync(join(root, 'worker/src/sandbox-mobile-phone-fix-entry.js'), 'utf8');
 const mobileAccountBalancesEntry = readFileSync(join(root, 'worker/src/sandbox-mobile-account-balances-entry.js'), 'utf8');
+const mobileAccountBalancesImplementation = readFileSync(join(root, 'worker/src/sandbox-mobile-account-balances-implementation.js'), 'utf8');
 const rpcEntry = readFileSync(join(root, 'worker/src/sandbox-simulation-rpc-entry.js'), 'utf8');
 const simulationSource = readFileSync(join(root, 'worker/src/sandbox-simulation-entry.js'), 'utf8');
 const simulationDashboard = readFileSync(join(root, 'worker/src/simulation/simulation-dashboard.js'), 'utf8');
@@ -19,7 +20,10 @@ const config = readFileSync(join(root, 'wrangler.sandbox.jsonc'), 'utf8');
 
 test('sandbox Worker is wired through the isolated simulation entry', () => {
   assert.match(config, /"main": "worker\/src\/sandbox-mobile-account-balances-entry\.js"/);
-  assert.match(mobileAccountBalancesEntry, /from '\.\/sandbox-mobile-phone-fix-entry\.js'/);
+  assert.match(mobileAccountBalancesEntry, /from '\.\/sandbox-mobile-account-balances-implementation\.js'/);
+  assert.match(mobileAccountBalancesEntry, /repairMobileAccountBalanceHtml/);
+  assert.match(mobileAccountBalancesEntry, /moe-mobile-two-account-balances/);
+  assert.match(mobileAccountBalancesImplementation, /from '\.\/sandbox-mobile-phone-fix-entry\.js'/);
   assert.match(mobilePhoneEntry, /from '\.\/sandbox-mobile-final-entry\.js'/);
   assert.match(scanModeEntry, /from '\.\/sandbox-simulation-rpc-entry\.js'/);
   assert.match(rpcEntry, /from '\.\/sandbox-simulation-entry\.js'/);

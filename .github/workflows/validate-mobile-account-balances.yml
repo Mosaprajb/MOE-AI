@@ -6,6 +6,7 @@ on:
       - feature/moe-core-domain-v2
     paths:
       - 'worker/src/sandbox-mobile-account-balances-entry.js'
+      - 'worker/src/sandbox-mobile-account-balances-implementation.js'
       - 'worker/src/sandbox-mobile-phone-fix-entry.js'
       - 'worker/test/sandbox-operations-dashboard.test.mjs'
       - 'worker/test/sandbox-runtime-pilot-observability.test.mjs'
@@ -79,30 +80,39 @@ jobs:
         run: |
           node <<'NODE'
           const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-          let html = '';
-          let lastError;
-          for (let attempt = 1; attempt <= 12; attempt += 1) {
-            try {
-              const response = await fetch(`${process.env.MOBILE_URL}?account-balances=${Date.now()}`, { cache: 'no-store' });
-              if (!response.ok) throw new Error(`HTTP ${response.status}`);
-              html = await response.text();
-              break;
-            } catch (error) {
-              lastError = error;
-              await wait(5000);
-            }
-          }
-          if (!html) throw lastError || new Error('Mobile dashboard unavailable');
-
-          for (const token of [
+          const tokens = [
             'id="moe-mobile-two-account-balances"',
             "ensureAccountNodes('btnPaper','moePaper')",
             "ensureAccountNodes('btnLive','moeLive')",
             'Connected · trading locked',
             'Webull Paper account',
             'Webull Live account (read only; trading remains locked)',
-          ]) {
-            if (!html.includes(token)) throw new Error(`Mobile dashboard missing ${token}`);
+          ];
+
+          let html = '';
+          let missing = [...tokens];
+          let lastError;
+
+          for (let attempt = 1; attempt <= 12; attempt += 1) {
+            try {
+              const response = await fetch(`${process.env.MOBILE_URL}?account-balances=${Date.now()}-${attempt}`, {
+                cache: 'no-store',
+                headers: { 'cache-control': 'no-cache' },
+              });
+              if (!response.ok) throw new Error(`HTTP ${response.status}`);
+              html = await response.text();
+              missing = tokens.filter((token) => !html.includes(token));
+              if (!missing.length) break;
+              throw new Error(`Mobile dashboard still missing ${missing.join(', ')}`);
+            } catch (error) {
+              lastError = error;
+              console.log(`Verification attempt ${attempt}/12 failed: ${error.message}`);
+              if (attempt < 12) await wait(5000);
+            }
+          }
+
+          if (!html || missing.length) {
+            throw lastError || new Error(`Mobile dashboard missing ${missing.join(', ')}`);
           }
 
           console.log(JSON.stringify({
