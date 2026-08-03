@@ -1,0 +1,73 @@
+name: Sandbox Night Pilot
+
+on:
+  workflow_dispatch:
+    inputs:
+      pilot_seconds:
+        description: Observation window in seconds (180-900)
+        required: false
+        default: '300'
+        type: string
+  push:
+    branches:
+      - feature/moe-core-domain-v2
+    paths:
+      - .github/workflows/sandbox-night-pilot.yml
+      - scripts/run-moe-sandbox-night-pilot-ci.sh
+
+permissions:
+  contents: read
+
+concurrency:
+  group: moe-sandbox-night-pilot
+  cancel-in-progress: false
+
+jobs:
+  sandbox-night-pilot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      CI: 'true'
+      WORKER_URL: https://moerand-alerts-sandbox.mosaprajb.workers.dev
+      PILOT_SECONDS: ${{ inputs.pilot_seconds || '300' }}
+      PROPAGATION_SECONDS: '75'
+
+    steps:
+      - name: Check out project
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+
+      - name: Install locked dependencies
+        run: npm ci
+
+      - name: Validate non-interactive script syntax
+        run: bash -n scripts/run-moe-sandbox-night-pilot-ci.sh
+
+      - name: Run Sandbox Night Pilot
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          MOE_WEBHOOK_SECRET: ${{ secrets.MOE_WEBHOOK_SECRET }}
+        run: bash scripts/run-moe-sandbox-night-pilot-ci.sh
+
+      - name: Force Sandbox back to DISARMED
+        if: always()
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          MOE_WEBHOOK_SECRET: ${{ secrets.MOE_WEBHOOK_SECRET }}
+        run: bash scripts/run-moe-sandbox-night-pilot-ci.sh --disarm-only
+
+      - name: Upload Night Pilot report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: moe-sandbox-night-pilot-${{ github.run_id }}
+          path: reports/sandbox-night-pilot-*
+          if-no-files-found: warn
+          retention-days: 14
