@@ -17,6 +17,12 @@ import {
 
 const directory = dirname(fileURLToPath(import.meta.url));
 const root = join(directory, '..', '..');
+const mobilePhoneEntrySource = readFileSync(join(root, 'worker/src/sandbox-mobile-phone-fix-entry.js'), 'utf8');
+const mobileFinalEntrySource = readFileSync(join(root, 'worker/src/sandbox-mobile-final-entry.js'), 'utf8');
+const mobileRuntimeEntrySource = readFileSync(join(root, 'worker/src/sandbox-mobile-runtime-fix-entry.js'), 'utf8');
+const mobileSettingsEntrySource = readFileSync(join(root, 'worker/src/sandbox-mobile-settings-entry.js'), 'utf8');
+const mobileUiFixEntrySource = readFileSync(join(root, 'worker/src/sandbox-mobile-ui-fix-entry.js'), 'utf8');
+const scanModeEntrySource = readFileSync(join(root, 'worker/src/sandbox-scan-mode-entry.js'), 'utf8');
 const entrySource = readFileSync(join(root, 'worker/src/sandbox-simulation-entry.js'), 'utf8');
 const rpcEntrySource = readFileSync(join(root, 'worker/src/sandbox-simulation-rpc-entry.js'), 'utf8');
 const engineSource = readFileSync(join(root, 'worker/src/simulation/simulation-engine.js'), 'utf8');
@@ -177,7 +183,13 @@ test('SimulationDriver RPC export inherits from the Cloudflare DurableObject bas
 });
 
 test('Sandbox configuration keeps Pilot disarmed and every Live gate locked', () => {
-  assert.equal(config.main, 'worker/src/sandbox-scan-mode-entry.js');
+  assert.equal(config.main, 'worker/src/sandbox-mobile-phone-fix-entry.js');
+  assert.match(mobilePhoneEntrySource, /from '\.\/sandbox-mobile-final-entry\.js'/);
+  assert.match(mobileFinalEntrySource, /from '\.\/sandbox-mobile-runtime-fix-entry\.js'/);
+  assert.match(mobileRuntimeEntrySource, /from '\.\/sandbox-mobile-settings-entry\.js'/);
+  assert.match(mobileSettingsEntrySource, /from '\.\/sandbox-mobile-ui-fix-entry\.js'/);
+  assert.match(mobileUiFixEntrySource, /from '\.\/sandbox-scan-mode-entry\.js'/);
+  assert.match(scanModeEntrySource, /from '\.\/sandbox-simulation-rpc-entry\.js'/);
   assert.equal(config.vars.MOE_SIMULATION_ENABLED, 'true');
   assert.equal(config.vars.MOE_SANDBOX_PILOT_ENABLED, 'false');
   assert.equal(config.vars.MOE_LIVE_MODE_UNLOCKED, 'false');
