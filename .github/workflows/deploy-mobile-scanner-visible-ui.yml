@@ -148,8 +148,8 @@ jobs:
           for (const token of [
             'id="moe-mobile-scanner-visible-ui"',
             'data-moe-monitor-location',
-            "monitorMarkup('main')",
-            "monitorMarkup('scanner')",
+            "makeMonitor('main')",
+            "makeMonitor('scanner')",
             'Selected symbol live monitor',
             'data-moe-monitor-refresh',
             'data-moe-monitor-field="price"',
