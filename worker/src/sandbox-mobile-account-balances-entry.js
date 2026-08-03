@@ -2,6 +2,11 @@ import baseWorker, {
   AlertCoordinator,
   SimulationDriver,
 } from './sandbox-mobile-account-balances-implementation.js';
+import {
+  MOBILE_SCANNER_MONITOR_PATH,
+  enhanceMobileScannerMonitor,
+  handleMobileScannerMonitor,
+} from './mobile-scanner-monitor.js';
 
 export { AlertCoordinator, SimulationDriver };
 
@@ -34,11 +39,16 @@ async function repairMobileAccountBalanceHtml(response, request) {
 export default {
   ...baseWorker,
   async fetch(request, env, ctx) {
-    const response = await baseWorker.fetch(request, env, ctx);
     const pathname = new URL(request.url).pathname;
-    return MOBILE_PATHS.has(pathname)
-      ? repairMobileAccountBalanceHtml(response, request)
-      : response;
+    if (pathname === MOBILE_SCANNER_MONITOR_PATH) {
+      return handleMobileScannerMonitor(request, env);
+    }
+
+    const response = await baseWorker.fetch(request, env, ctx);
+    if (!MOBILE_PATHS.has(pathname)) return response;
+
+    const repaired = await repairMobileAccountBalanceHtml(response, request);
+    return enhanceMobileScannerMonitor(repaired, request);
   },
   scheduled(controller, env, ctx) {
     return baseWorker.scheduled(controller, env, ctx);
