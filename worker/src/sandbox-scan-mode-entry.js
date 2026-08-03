@@ -33,6 +33,7 @@ import {
 export { SimulationDriver };
 
 const DASHBOARD_PATHS = new Set(['/', '/dashboard', '/dashboard/', '/moe-ai', '/moe-ai/']);
+const MOBILE_RUNTIME_STATE_PATHS = new Set(['/api/health', '/api/trading/mode']);
 
 function json(payload, status = 200) {
   return Response.json(payload, {
@@ -72,6 +73,13 @@ const MOBILE_CONNECTION_STYLE = `
 .trading-connection-name{font-size:12px;font-weight:900;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .trading-connection-state{font-family:'IBM Plex Mono',ui-monospace,monospace;font-size:10px;font-weight:700;color:var(--red);text-transform:uppercase;letter-spacing:.05em}
 .trading-connection[data-connected="true"] .trading-connection-state{color:var(--green)}
+.symbol-suggestions{margin-top:8px;max-height:260px;overflow-y:auto;border:1px solid var(--line);border-radius:14px;background:var(--panel);box-shadow:0 16px 34px rgba(0,0,0,.38)}
+.symbol-suggestions[hidden]{display:none}
+.symbol-suggestion{width:100%;display:flex;align-items:center;justify-content:space-between;gap:12px;padding:13px 15px;border:0;border-bottom:1px solid var(--line);background:transparent;color:var(--text);font-family:'IBM Plex Mono',ui-monospace,monospace;font-size:16px;font-weight:700;text-align:left;cursor:pointer}
+.symbol-suggestion:last-child{border-bottom:0}
+.symbol-suggestion:hover,.symbol-suggestion[data-active="true"]{background:var(--accent-dim);color:var(--accent)}
+.symbol-suggestion small{font-family:'Archivo',system-ui,sans-serif;font-size:11px;font-weight:700;color:var(--muted);letter-spacing:.05em;text-transform:uppercase}
+.symbol-suggestions-empty{padding:14px 15px;color:var(--muted);font-size:14px}
 </style>`;
 
 const MOBILE_CONNECTION_HTML = `
@@ -93,6 +101,7 @@ const MOBILE_CONNECTION_HTML = `
 </section>`;
 
 const MOBILE_CONNECTION_SCRIPT = `
+const MOE_SYMBOL_UNIVERSE=${JSON.stringify(AUTO_SCANNER_SYMBOLS)};
 function setTradingConnection(id,stateId,connected){
   const card=$(id), label=$(stateId);
   if(card) card.dataset.connected=String(connected===true);
@@ -127,6 +136,76 @@ async function refreshTradingConnections(){
   setTradingConnection('paperConnection','paperConnectionState',paperConnected);
   setTradingConnection('liveConnection','liveConnectionState',liveConnected);
 }
+function setupSymbolSuggestions(inputId){
+  const input=$(inputId);
+  if(!input||input.dataset.symbolSuggestions==='ready') return;
+  input.dataset.symbolSuggestions='ready';
+  input.setAttribute('autocomplete','off');
+  const list=document.createElement('div');
+  list.className='symbol-suggestions';
+  list.hidden=true;
+  list.setAttribute('role','listbox');
+  input.insertAdjacentElement('afterend',list);
+  let activeIndex=-1;
+  let matches=[];
+  function selected(){ return new Set((state.symbols||[]).map(value=>String(value).toUpperCase())); }
+  function draw(){
+    const query=String(input.value||'').trim().toUpperCase().replace(/[^A-Z0-9.-]/g,'');
+    const used=selected();
+    const starts=[];
+    const contains=[];
+    for(const raw of MOE_SYMBOL_UNIVERSE){
+      const symbol=String(raw||'').toUpperCase();
+      if(!symbol||used.has(symbol)) continue;
+      if(!query||symbol.startsWith(query)) starts.push(symbol);
+      else if(symbol.includes(query)) contains.push(symbol);
+    }
+    matches=[...starts,...contains].slice(0,12);
+    activeIndex=-1;
+    if(!matches.length){
+      list.innerHTML=query?'<div class="symbol-suggestions-empty">No supported symbol found.</div>':'';
+      list.hidden=!query;
+      return;
+    }
+    list.innerHTML=matches.map((symbol,index)=>'<button type="button" class="symbol-suggestion" data-symbol="'+symbol+'" data-index="'+index+'"><span>'+symbol+'</span><small>Scanner universe</small></button>').join('');
+    list.hidden=false;
+  }
+  function choose(symbol){
+    if(!symbol) return;
+    input.value=symbol;
+    addSymbol(input);
+    list.hidden=true;
+    activeIndex=-1;
+  }
+  input.addEventListener('focus',draw);
+  input.addEventListener('input',draw);
+  input.addEventListener('keydown',event=>{
+    if(list.hidden||!matches.length) return;
+    if(event.key==='ArrowDown'||event.key==='ArrowUp'){
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      activeIndex=event.key==='ArrowDown'
+        ? (activeIndex+1)%matches.length
+        : (activeIndex-1+matches.length)%matches.length;
+      list.querySelectorAll('.symbol-suggestion').forEach((node,index)=>node.dataset.active=String(index===activeIndex));
+      list.querySelector('[data-active="true"]')?.scrollIntoView({block:'nearest'});
+    }else if(event.key==='Enter'&&activeIndex>=0){
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      choose(matches[activeIndex]);
+    }else if(event.key==='Escape'){
+      event.preventDefault();
+      list.hidden=true;
+    }
+  },true);
+  list.addEventListener('mousedown',event=>{
+    const button=event.target.closest('[data-symbol]');
+    if(!button) return;
+    event.preventDefault();
+    choose(button.dataset.symbol);
+  });
+  input.addEventListener('blur',()=>setTimeout(()=>{list.hidden=true;},140));
+}
 `;
 
 async function serveMobileDashboard(request) {
@@ -147,6 +226,8 @@ async function serveMobileDashboard(request) {
   document.body.style.overflow='';
 };
 if($('lockNow')) $('lockNow').hidden=true;
+setupSymbolSuggestions('symInput');
+setupSymbolSuggestions('symInput2');
 lock();
 boot();
 refreshTradingConnections();
@@ -155,10 +236,41 @@ window.__moeConnectionTick=setInterval(refreshTradingConnections,8000);
 </script>`,
     );
 
+  const headers = new Headers(response.headers);
+  headers.delete('content-length');
+  headers.set('cache-control', 'no-store, no-cache, must-revalidate');
   return new Response(unlockedHtml, {
     status: response.status,
     statusText: response.statusText,
-    headers: response.headers,
+    headers,
+  });
+}
+
+async function normalizeMobileRuntimeState(request, response, stub) {
+  const pathname = new URL(request.url).pathname;
+  if (!response || !MOBILE_RUNTIME_STATE_PATHS.has(pathname)) return response;
+  const payload = await response.clone().json().catch(() => null);
+  if (!payload || typeof payload !== 'object') return response;
+
+  const runtime = await stub.mobileDashboardRuntime();
+  const armed = runtime?.armed === true;
+  const headers = new Headers(response.headers);
+  headers.delete('content-length');
+  headers.set('cache-control', 'no-store, no-cache, must-revalidate');
+  headers.set('content-type', 'application/json; charset=utf-8');
+  headers.set('x-moe-mobile-runtime-authoritative', '1');
+  return new Response(JSON.stringify({
+    ...payload,
+    armed,
+    runtime: {
+      ...(payload.runtime && typeof payload.runtime === 'object' ? payload.runtime : {}),
+      ...runtime,
+      armed,
+    },
+  }), {
+    status: response.status,
+    statusText: response.statusText,
+    headers,
   });
 }
 
@@ -196,6 +308,28 @@ export class AlertCoordinator extends BaseAlertCoordinator {
 
   async scanSourceModeAudit(options = {}) {
     return listScanSourceModeAudit(this.ctx.storage, options);
+  }
+
+  async getTradingSessionPolicy() {
+    const runtime = await this.mobileDashboardRuntime();
+    return {
+      sessions: [...runtime.sessions],
+      mode: runtime.sessions.length === 3 ? 'ALL_SESSIONS' : 'CUSTOM',
+      updatedAt: runtime.updatedAt || null,
+      updatedBy: runtime.updatedBy || null,
+      storage: 'DURABLE_OBJECT',
+    };
+  }
+
+  async updateTradingSessionPolicyFromMobile(sessions = [], actor = 'MOBILE_DASHBOARD') {
+    const runtime = await this.updateMobileDashboardRuntime({ sessions }, actor);
+    return {
+      sessions: [...runtime.sessions],
+      mode: runtime.sessions.length === 3 ? 'ALL_SESSIONS' : 'CUSTOM',
+      updatedAt: runtime.updatedAt,
+      updatedBy: runtime.updatedBy,
+      storage: 'DURABLE_OBJECT',
+    };
   }
 }
 
@@ -309,7 +443,7 @@ export default {
       const mobileResponse = await handleAuthenticatedMobileApi(request, env, stub, {
         baseFetch: (nextRequest) => baseWorker.fetch(nextRequest, env, ctx),
       });
-      if (mobileResponse) return mobileResponse;
+      if (mobileResponse) return normalizeMobileRuntimeState(request, mobileResponse, stub);
     }
 
     if (pathname === SCAN_SOURCE_MODE_API_PATH) return handleScanModeApi(request, env);
