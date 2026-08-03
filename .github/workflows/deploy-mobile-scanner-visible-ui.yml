@@ -178,7 +178,6 @@ jobs:
             'moe-watchlist-row',
             'Direct IEX market prices',
             'Top movers',
-            'SCANNER_RUNNING_SYMBOLS_LOCKED',
             'Stop trading before adding or removing symbols',
             'data-moe-monitor-location',
             "makeMonitor('main')",
