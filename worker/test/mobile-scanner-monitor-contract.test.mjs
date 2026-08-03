@@ -19,21 +19,25 @@ test('mobile scanner monitor is wired into the deployed Sandbox entry', () => {
   assert.match(entrySource, /repairVisibleScannerDomInsertion\(enhanced, request\)/);
 });
 
-test('visible scanner runtime repairs nested DOM insertion before the page is returned', () => {
-  assert.match(entrySource, /stack\?card\.insertBefore\(panel,stack\):chips\.insertAdjacentElement\('afterend',panel\);/);
-  assert.match(entrySource, /chips\.insertAdjacentElement\('afterend',panel\);/);
-  assert.match(entrySource, /body\.insertAdjacentElement\('afterbegin',holder\.firstElementChild\);/);
-  assert.match(entrySource, /list\.insertAdjacentElement\('beforebegin',tools\);/);
-  assert.match(entrySource, /x-moe-mobile-scanner-dom-fix/);
-  assert.match(entrySource, /moe-mobile-scanner-dom-insertion-fixed/);
+test('visible scanner UI uses valid direct DOM insertion', () => {
+  assert.match(visibleUiSource, /chips\.insertAdjacentElement\('afterend',makeMonitor\('main'\)\)/);
+  assert.match(visibleUiSource, /body\.insertAdjacentElement\('afterbegin',makeMonitor\('scanner'\)\)/);
+  assert.match(visibleUiSource, /list\.insertAdjacentElement\('beforebegin',tools\)/);
+  assert.equal(visibleUiSource.includes('card.insertBefore(panel,stack)'), false);
+});
+
+test('embedded visible scanner browser script parses successfully', () => {
+  const match = visibleUiSource.match(/const VISIBLE_UI_SCRIPT = String\.raw`[\s\S]*?<script[^>]*>\n([\s\S]*?)\n<\/script>`;/);
+  assert.ok(match, 'embedded visible scanner script was not found');
+  assert.doesNotThrow(() => new Function(match[1]));
 });
 
 test('visible mobile scanner UI exposes live quote, protected prices, readiness, refresh, and clear controls', () => {
   for (const token of [
     'moe-mobile-scanner-visible-ui',
     'data-moe-monitor-location',
-    "monitorMarkup('main')",
-    "monitorMarkup('scanner')",
+    "makeMonitor('main')",
+    "makeMonitor('scanner')",
     'Selected symbol live monitor',
     'data-moe-monitor-refresh',
     'data-moe-monitor-field',
@@ -44,6 +48,7 @@ test('visible mobile scanner UI exposes live quote, protected prices, readiness,
     'Clear old',
     'Old activity cleared from this screen',
     'No executable setup yet',
+    'Scanner stopped. Press Start trading',
   ]) {
     assert.equal(visibleUiSource.includes(token), true, `missing visible mobile scanner UI token: ${token}`);
   }
@@ -57,6 +62,17 @@ test('visible mobile scanner UI exposes live quote, protected prices, readiness,
   assert.equal(visibleUiSource.includes("percent>=90?'var(--green)':percent>=60?'var(--amber)':'var(--red)'"), true);
   assert.match(visibleUiSource, /#chips \[data-rm\]/);
   assert.match(visibleUiSource, /MutationObserver/);
+});
+
+test('stopped scanner hides executable plan and old activity', () => {
+  assert.match(entrySource, /normalizeMonitorReadiness\(response, env\)/);
+  assert.match(entrySource, /normalizeActivityWhenStopped\(response, env\)/);
+  assert.match(entrySource, /plan: null/);
+  assert.match(entrySource, /Scanner stopped — press Start trading/);
+  assert.match(entrySource, /events: \[waiting\]/);
+  assert.match(entrySource, /scannerArmed: false/);
+  assert.match(entrySource, /x-moe-mobile-scanner-gate/);
+  assert.match(entrySource, /x-moe-mobile-activity-gate/);
 });
 
 test('mobile scanner monitor reads Alpaca market data and returns an estimated protected plan', () => {
