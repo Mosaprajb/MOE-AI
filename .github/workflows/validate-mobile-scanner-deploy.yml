@@ -1,6 +1,10 @@
 name: Validate and Deploy Mobile Scanner Monitor
 
 on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    branches:
+      - ci/strategy-capacity-base-20260801
   push:
     branches:
       - feature/moe-core-domain-v2
@@ -17,14 +21,18 @@ concurrency:
 jobs:
   test-deploy-verify:
     name: Test, deploy, and verify mobile scanner monitor
-    if: github.event.head_commit.message == 'ci: validate and deploy mobile scanner monitor'
+    if: >-
+      (github.event_name == 'push' && github.event.head_commit.message == 'ci: validate and deploy mobile scanner monitor') ||
+      (github.event_name == 'pull_request' &&
+       github.event.pull_request.head.repo.full_name == github.repository &&
+       github.event.pull_request.head.ref == 'feature/moe-core-domain-v2')
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
       - name: Checkout exact commit
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.sha }}
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
 
       - name: Set up Node.js
         uses: actions/setup-node@v4
