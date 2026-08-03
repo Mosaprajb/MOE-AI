@@ -50,7 +50,8 @@ jobs:
         run: npm run test:worker
 
       - name: Confirm Sandbox deployment safety
-        run: node <<'NODE'
+        run: |
+          node <<'NODE'
           const { readFileSync } = require('node:fs');
           const config = JSON.parse(readFileSync('wrangler.sandbox.jsonc', 'utf8'));
           const expected = {
@@ -84,7 +85,8 @@ jobs:
         env:
           MOBILE_URL: https://moerand-alerts-sandbox.mosaprajb.workers.dev/m
           MONITOR_URL: https://moerand-alerts-sandbox.mosaprajb.workers.dev/api/scanner/monitor?symbol=SPY
-        run: node <<'NODE'
+        run: |
+          node <<'NODE'
           const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
           async function retry(label, operation) {
