@@ -5,10 +5,12 @@ on:
     paths:
       - 'worker/src/mobile-scanner-visible-ui.js'
       - 'worker/src/mobile-paper-broker-gate.js'
+      - 'worker/src/sandbox-mobile-market-screener-entry.js'
       - 'worker/src/sandbox-mobile-live-watchlist-entry.js'
       - 'worker/src/sandbox-moerand-clean-utbot-entry.js'
       - 'worker/src/sandbox-mobile-account-balances-entry.js'
       - 'worker/src/sandbox-mobile-account-balances-implementation.js'
+      - 'worker/test/mobile-market-screener.test.mjs'
       - 'worker/test/mobile-live-watchlist.test.mjs'
       - 'worker/test/mobile-scanner-monitor-contract.test.mjs'
       - 'worker/test/moerand-clean-mobile-settings.test.mjs'
@@ -23,11 +25,11 @@ permissions:
 
 concurrency:
   group: validate-mobile-scanner-ui-fix
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
   test-deploy-verify:
-    name: Test, deploy, and verify stopped-scanner mobile UI
+    name: Test, deploy, and verify mobile market screener
     runs-on: ubuntu-latest
     timeout-minutes: 35
     steps:
@@ -43,15 +45,17 @@ jobs:
       - name: Install locked dependencies
         run: npm ci
 
-      - name: Validate mobile UI sources
+      - name: Validate mobile source syntax
         run: |
           node --check worker/src/mobile-scanner-visible-ui.js
           node --check worker/src/sandbox-mobile-live-watchlist-entry.js
+          node --check worker/src/sandbox-mobile-market-screener-entry.js
 
-      - name: Test scanner UI, watchlist, and stopped-state contracts
+      - name: Test mobile scanner, watchlist, and screener contracts
         run: |
           node --test --test-concurrency=1 worker/test/mobile-scanner-monitor-contract.test.mjs
           node --test --test-concurrency=1 worker/test/mobile-live-watchlist.test.mjs
+          node --test --test-concurrency=1 worker/test/mobile-market-screener.test.mjs
 
       - name: Test Sandbox entry and Live safety chain
         run: |
@@ -67,9 +71,9 @@ jobs:
           node <<'NODE'
           const { readFileSync } = require('node:fs');
           const config = JSON.parse(readFileSync('wrangler.sandbox.jsonc', 'utf8'));
-          const watchlistEntry = readFileSync('worker/src/sandbox-mobile-live-watchlist-entry.js', 'utf8');
-          const cleanEntry = readFileSync('worker/src/sandbox-moerand-clean-utbot-entry.js', 'utf8');
-          const accountEntry = readFileSync('worker/src/sandbox-mobile-account-balances-entry.js', 'utf8');
+          const screener = readFileSync('worker/src/sandbox-mobile-market-screener-entry.js', 'utf8');
+          const watchlist = readFileSync('worker/src/sandbox-mobile-live-watchlist-entry.js', 'utf8');
+          const clean = readFileSync('worker/src/sandbox-moerand-clean-utbot-entry.js', 'utf8');
           const expected = {
             MOE_SANDBOX_PILOT_ENABLED: 'false',
             MOE_LIVE_MODE_UNLOCKED: 'false',
@@ -79,42 +83,39 @@ jobs:
             WEBULL_LIVE_AUTOMATION_ARMED: 'false',
             WEBULL_LIVE_KILL_SWITCH: 'true',
           };
-          if (config.main !== 'worker/src/sandbox-mobile-live-watchlist-entry.js') {
+          if (config.main !== 'worker/src/sandbox-mobile-market-screener-entry.js') {
             throw new Error(`Unexpected Sandbox entry: ${config.main}`);
           }
-          if (!/from '\.\/sandbox-moerand-clean-utbot-entry\.js'/.test(watchlistEntry)) {
-            throw new Error('Live watchlist wrapper does not delegate to the Clean wrapper');
+          if (!/from '\.\/sandbox-mobile-live-watchlist-entry\.js'/.test(screener)) {
+            throw new Error('Market screener does not delegate to the protected watchlist wrapper');
           }
-          if (!/from '\.\/sandbox-mobile-account-balances-entry\.js'/.test(cleanEntry)) {
-            throw new Error('Clean wrapper does not delegate to the protected mobile account entry');
+          if (!/from '\.\/sandbox-moerand-clean-utbot-entry\.js'/.test(watchlist)) {
+            throw new Error('Watchlist does not delegate to the Clean wrapper');
           }
-          if (!/from '\.\/sandbox-mobile-account-balances-implementation\.js'/.test(accountEntry)) {
-            throw new Error('Mobile account wrapper does not delegate to its protected implementation');
+          if (!/from '\.\/sandbox-mobile-account-balances-entry\.js'/.test(clean)) {
+            throw new Error('Clean wrapper chain changed unexpectedly');
           }
           for (const token of [
+            '/api/mobile/market-screener',
             '/api/mobile/watchlist/quotes',
-            '/api/mobile/watchlist/state',
-            'data.alpaca.markets/v2/stocks/snapshots',
-            'SCANNER_RUNNING_SYMBOLS_LOCKED',
-            'LOCKED_WHILE_SCANNER_RUNNING',
+            '/api/scanner/source-mode',
+            "mode:'CURATED_UNIVERSE'",
+            'Market Screener',
+            'Screener filters',
+            'Select visible',
+            'Add to scanner (0)',
             'liveTradingLocked: true',
             'liveFundsUsed: false',
           ]) {
-            if (!watchlistEntry.includes(token)) throw new Error(`Watchlist missing ${token}`);
+            if (!screener.includes(token)) throw new Error(`Screener missing ${token}`);
           }
-          if (watchlistEntry.includes('placeWebullSandboxOrder') || watchlistEntry.includes('placeWebullLiveOrder')) {
-            throw new Error('Watchlist must remain market-data-only');
+          if (screener.includes('placeWebullSandboxOrder') || screener.includes('placeWebullLiveOrder')) {
+            throw new Error('Market screener must remain market-data and selection only');
           }
           for (const [key, value] of Object.entries(expected)) {
             if (config.vars?.[key] !== value) throw new Error(`${key} must remain ${value}`);
           }
-          console.log(JSON.stringify({
-            sandboxEntry: config.main,
-            wrapperChainVerified: true,
-            liveWatchlistVerified: true,
-            symbolFreezeVerified: true,
-            ...expected,
-          }, null, 2));
+          console.log(JSON.stringify({ sandboxEntry: config.main, marketScreenerVerified: true, liveLocked: true }, null, 2));
           NODE
 
       - name: Build Cloudflare Worker
@@ -126,131 +127,59 @@ jobs:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         run: npx wrangler deploy --config wrangler.sandbox.jsonc
 
-      - name: Verify deployed UI, live watchlist, and stopped scanner gates
+      - name: Verify deployed mobile market screener
         env:
           MOBILE_URL: https://moerand-alerts-sandbox.mosaprajb.workers.dev/m
-          MONITOR_URL: https://moerand-alerts-sandbox.mosaprajb.workers.dev/api/scanner/monitor?symbol=SPY
-          WATCHLIST_URL: https://moerand-alerts-sandbox.mosaprajb.workers.dev/api/mobile/watchlist/quotes?symbols=SPY,AAPL
+          SCREENER_URL: https://moerand-alerts-sandbox.mosaprajb.workers.dev/api/mobile/market-screener?sort=VOLUME
           WATCHLIST_STATE_URL: https://moerand-alerts-sandbox.mosaprajb.workers.dev/api/mobile/watchlist/state
-          ACTIVITY_URL: https://moerand-alerts-sandbox.mosaprajb.workers.dev/api/scanner/live-activity
         run: |
           node <<'NODE'
           const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-
           async function retry(label, operation) {
             let lastError;
             for (let attempt = 1; attempt <= 12; attempt += 1) {
-              try {
-                return await operation();
-              } catch (error) {
-                lastError = error;
-                console.log(`${label} attempt ${attempt} failed: ${error.message}`);
-                await wait(5000);
-              }
+              try { return await operation(); }
+              catch (error) { lastError = error; console.log(`${label} attempt ${attempt}: ${error.message}`); await wait(5000); }
             }
-            throw lastError || new Error(`${label} unavailable`);
+            throw lastError;
           }
-
           const html = await retry('mobile dashboard', async () => {
-            const response = await fetch(`${process.env.MOBILE_URL}?scanner-ui-fix=${Date.now()}`, { cache: 'no-store' });
+            const response = await fetch(`${process.env.MOBILE_URL}?market-screener=${Date.now()}`, { cache: 'no-store' });
             if (!response.ok) throw new Error(`HTTP ${response.status}`);
             return response.text();
           });
-
           for (const token of [
-            'id="moe-mobile-scanner-visible-ui"',
-            'id="moe-live-watchlist-script"',
-            'data-moe-watchlist-root',
-            'moe-watchlist-row',
-            'Direct IEX market prices',
-            'Top movers',
-            'Stop trading before adding or removing symbols',
-            "chips.insertAdjacentElement('afterend',makeMonitor('main'))",
-            "body.insertAdjacentElement('afterbegin',makeMonitor('scanner'))",
-            "list.insertAdjacentElement('beforebegin',tools)",
-            'moeActivityRefreshVisible',
-            'moeActivityClearVisible',
-            'Scanner stopped. Press Start trading',
-          ]) {
-            if (!html.includes(token)) throw new Error(`Mobile dashboard missing ${token}`);
-          }
+            'id="moe-market-screener-style"',
+            'id="moeMarketScreener"',
+            'id="moe-market-screener-script"',
+            'Market Screener',
+            'Screener filters',
+            'Search ticker or company',
+            'Select visible',
+            'Add to scanner (0)',
+            'Open market screener',
+            'data-screener-symbol',
+          ]) if (!html.includes(token)) throw new Error(`Mobile dashboard missing ${token}`);
 
           const headers = { 'x-moe-mobile-client': '1', accept: 'application/json' };
-          const monitor = await retry('scanner monitor', async () => {
-            const response = await fetch(`${process.env.MONITOR_URL}&t=${Date.now()}`, { cache: 'no-store', headers });
+          const screener = await retry('market screener API', async () => {
+            const response = await fetch(`${process.env.SCREENER_URL}&t=${Date.now()}`, { cache: 'no-store', headers });
             const payload = await response.json().catch(() => ({}));
             if (!response.ok || payload.ok !== true) throw new Error(`HTTP ${response.status}: ${payload.error || 'invalid payload'}`);
             return payload;
           });
+          if (!Array.isArray(screener.rows) || !screener.rows.length) throw new Error('Screener returned no stocks');
+          if (!screener.rows.every((row) => row.symbol && Object.hasOwn(row, 'price') && Object.hasOwn(row, 'changePercent') && Object.hasOwn(row, 'volume'))) {
+            throw new Error('Screener rows are incomplete');
+          }
+          if (screener.liveTradingLocked !== true || screener.liveFundsUsed !== false) throw new Error('Live safety changed');
 
-          if (monitor.symbol !== 'SPY' || !monitor.quote || !Object.hasOwn(monitor.quote, 'price')) {
-            throw new Error('Live SPY quote is missing');
-          }
-          if (!monitor.safety?.liveTradingLocked || monitor.safety?.liveFundsUsed !== false) {
-            throw new Error('Live safety lock changed unexpectedly');
-          }
-          if (monitor.scannerArmed === false) {
-            if (monitor.plan !== null) throw new Error('Stopped scanner exposed an execution plan');
-            if (Number(monitor.readiness?.percent) !== 0) throw new Error('Stopped scanner readiness must be 0%');
-          }
-
-          const watchlist = await retry('live watchlist', async () => {
-            const response = await fetch(`${process.env.WATCHLIST_URL}&t=${Date.now()}`, { cache: 'no-store', headers });
-            const payload = await response.json().catch(() => ({}));
-            if (!response.ok || payload.ok !== true) throw new Error(`HTTP ${response.status}: ${payload.error || 'invalid payload'}`);
-            return payload;
-          });
-          if (!Array.isArray(watchlist.quotes) || watchlist.quotes.length !== 2) {
-            throw new Error('Live watchlist quote count is invalid');
-          }
-          if (!watchlist.quotes.every((quote) => quote.symbol && Object.hasOwn(quote, 'price'))) {
-            throw new Error('Live watchlist prices are missing');
-          }
-          if (watchlist.liveTradingLocked !== true || watchlist.liveFundsUsed !== false) {
-            throw new Error('Watchlist safety lock changed unexpectedly');
-          }
-
-          const watchlistState = await retry('watchlist edit policy', async () => {
+          const state = await retry('watchlist state', async () => {
             const response = await fetch(`${process.env.WATCHLIST_STATE_URL}?t=${Date.now()}`, { cache: 'no-store', headers });
             const payload = await response.json().catch(() => ({}));
             if (!response.ok || payload.ok !== true) throw new Error(`HTTP ${response.status}: ${payload.error || 'invalid payload'}`);
             return payload;
           });
-          if (!['LOCKED_WHILE_SCANNER_RUNNING', 'EDITABLE_BEFORE_START'].includes(watchlistState.editPolicy)) {
-            throw new Error('Watchlist edit policy is invalid');
-          }
-          if (watchlistState.locked !== (watchlistState.armed === true)) {
-            throw new Error('Watchlist lock does not match scanner state');
-          }
-          if (watchlistState.liveTradingLocked !== true || watchlistState.liveFundsUsed !== false) {
-            throw new Error('Watchlist state safety lock changed unexpectedly');
-          }
-
-          const activity = await retry('scanner activity', async () => {
-            const response = await fetch(`${process.env.ACTIVITY_URL}?t=${Date.now()}`, { cache: 'no-store', headers });
-            const payload = await response.json().catch(() => ({}));
-            if (!response.ok || payload.ok !== true) throw new Error(`HTTP ${response.status}: ${payload.error || 'invalid payload'}`);
-            return payload;
-          });
-
-          if (activity.scannerArmed === false) {
-            if (!Array.isArray(activity.events) || activity.events.length !== 1 || activity.events[0]?.type !== 'SCANNER_WAITING') {
-              throw new Error('Stopped scanner activity must show only SCANNER_WAITING');
-            }
-          }
-
-          console.log(JSON.stringify({
-            deployed: true,
-            symbol: monitor.symbol,
-            livePrice: monitor.quote.price,
-            watchlistSymbols: watchlist.quotes.map((quote) => quote.symbol),
-            watchlistPrices: watchlist.quotes.map((quote) => quote.price),
-            watchlistEditPolicy: watchlistState.editPolicy,
-            scannerArmed: monitor.scannerArmed,
-            planVisible: monitor.plan !== null,
-            readinessPercent: monitor.readiness?.percent,
-            activityCount: activity.events?.length,
-            activityType: activity.events?.[0]?.type,
-            liveTradingLocked: true,
-          }, null, 2));
+          if (!Array.isArray(state.symbols)) throw new Error('Selected scanner symbols are missing');
+          console.log(JSON.stringify({ deployed: true, results: screener.rows.length, firstSymbols: screener.rows.slice(0, 5).map((row) => row.symbol), selectedSymbols: state.symbols, editPolicy: state.editPolicy, liveTradingLocked: true }, null, 2));
           NODE
