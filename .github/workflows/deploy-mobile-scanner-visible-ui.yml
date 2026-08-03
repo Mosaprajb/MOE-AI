@@ -109,7 +109,11 @@ jobs:
           }
           for (const token of [
             '/api/mobile/watchlist/quotes',
+            '/api/mobile/watchlist/state',
             'data.alpaca.markets/v2/stocks/snapshots',
+            'data-moe-watchlist-root',
+            'SCANNER_RUNNING_SYMBOLS_LOCKED',
+            'LOCKED_WHILE_SCANNER_RUNNING',
             'liveTradingLocked: true',
             'liveFundsUsed: false',
           ]) {
@@ -123,6 +127,7 @@ jobs:
             wrapperChainVerified: true,
             implementationSafetyVerified: true,
             liveWatchlistVerified: true,
+            symbolLockVerified: true,
             ...expected,
           }, null, 2));
           NODE
@@ -141,6 +146,7 @@ jobs:
           MOBILE_URL: https://moerand-alerts-sandbox.mosaprajb.workers.dev/m
           MONITOR_URL: https://moerand-alerts-sandbox.mosaprajb.workers.dev/api/scanner/monitor?symbol=SPY
           WATCHLIST_URL: https://moerand-alerts-sandbox.mosaprajb.workers.dev/api/mobile/watchlist/quotes?symbols=SPY,AAPL
+          WATCHLIST_STATE_URL: https://moerand-alerts-sandbox.mosaprajb.workers.dev/api/mobile/watchlist/state
         run: |
           node <<'NODE'
           const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -168,9 +174,12 @@ jobs:
           for (const token of [
             'id="moe-mobile-scanner-visible-ui"',
             'id="moe-live-watchlist-script"',
-            'moe-watch-row',
-            'Live prices · IEX',
+            'data-moe-watchlist-root',
+            'moe-watchlist-row',
+            'Direct IEX market prices',
             'Top movers',
+            'SCANNER_RUNNING_SYMBOLS_LOCKED',
+            'Stop trading before adding or removing symbols',
             'data-moe-monitor-location',
             "makeMonitor('main')",
             "makeMonitor('scanner')",
@@ -216,10 +225,25 @@ jobs:
             throw new Error('Watchlist safety lock changed unexpectedly');
           }
 
+          const watchlistState = await retry('watchlist edit policy', async () => {
+            const response = await fetch(`${process.env.WATCHLIST_STATE_URL}?t=${Date.now()}`, { cache: 'no-store', headers });
+            const payload = await response.json().catch(() => ({}));
+            if (!response.ok || payload.ok !== true) throw new Error(`HTTP ${response.status}: ${payload.error || 'invalid payload'}`);
+            return payload;
+          });
+          if (!['LOCKED_WHILE_SCANNER_RUNNING', 'EDITABLE_BEFORE_START'].includes(watchlistState.editPolicy)) {
+            throw new Error('Watchlist edit policy is missing');
+          }
+          if (watchlistState.liveTradingLocked !== true || watchlistState.liveFundsUsed !== false) {
+            throw new Error('Watchlist state safety lock changed unexpectedly');
+          }
+
           console.log(JSON.stringify({
             deployed: true,
             visibleOnMainSymbolsCard: true,
             modernLiveWatchlist: true,
+            serverRenderedWatchlist: true,
+            symbolEditPolicy: watchlistState.editPolicy,
             watchlistSymbols: watchlist.quotes.map((quote) => quote.symbol),
             watchlistPrices: watchlist.quotes.map((quote) => quote.price),
             visibleInScannerHistory: true,
