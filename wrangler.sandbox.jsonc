@@ -1,7 +1,7 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "moerand-alerts-sandbox",
-  "main": "worker/src/sandbox-mobile-account-balances-entry.js",
+  "main": "worker/src/sandbox-moerand-clean-utbot-entry.js",
   "compatibility_date": "2026-07-22",
   "observability": {
     "enabled": true,
@@ -70,8 +70,10 @@
     "MOERAND_CLEAN_BREAKOUT_LEN": "20",
     "MOERAND_CLEAN_MIN_RVOL": "1.2",
     "MOERAND_CLEAN_RVOL_PERIOD": "20",
+    "MOERAND_CLEAN_KEY_VALUE": "1",
     "MOERAND_CLEAN_ATR_PERIOD": "2",
     "MOERAND_CLEAN_ATR_MULT": "1.0",
+    "MOERAND_CLEAN_USE_HEIKIN_ASHI": "false",
     "MOERAND_CLEAN_ENABLE_BREAKEVEN": "true",
     "MOERAND_CLEAN_SESSION_WINDOW": "0930-1600",
     "MOERAND_CLEAN_SESSION_TIMEZONE": "America/New_York",
