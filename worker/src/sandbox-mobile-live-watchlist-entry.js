@@ -20,7 +20,7 @@ function json(payload, status = 200, extraHeaders = {}) {
       'cache-control': 'no-store, no-cache, must-revalidate',
       'content-type': 'application/json; charset=utf-8',
       'x-content-type-options': 'nosniff',
-      'x-moe-mobile-watchlist': 'live-iex-v3',
+      'x-moe-mobile-watchlist': 'live-iex-v4',
       ...extraHeaders,
     },
   });
@@ -157,7 +157,7 @@ async function handleWatchlistQuotes(request, env, ctx) {
   }
 
   const cache = globalThis.caches?.default;
-  const cacheKey = new Request(`https://moerand.internal/mobile-watchlist-quotes-v3?symbols=${encodeURIComponent([...symbols].sort().join(','))}`);
+  const cacheKey = new Request(`https://moerand.internal/mobile-watchlist-quotes-v4?symbols=${encodeURIComponent([...symbols].sort().join(','))}`);
   if (cache) {
     const cached = await cache.match(cacheKey);
     if (cached) return json({ ...(await cached.json()), cached: true }, 200, { 'x-moe-watchlist-cache': 'HIT' });
@@ -202,19 +202,44 @@ async function handleWatchlistQuotes(request, env, ctx) {
 }
 
 async function readWatchlistState(env) {
-  let runtime = {};
-  try {
-    runtime = await coordinator(env).mobileDashboardRuntime();
-  } catch {
-    runtime = {};
-  }
+  const stub = coordinator(env);
+  const [runtimeResult, scanModeResult] = await Promise.allSettled([
+    stub.mobileDashboardRuntime(),
+    stub.scanSourceMode(),
+  ]);
+  const runtime = runtimeResult.status === 'fulfilled' && runtimeResult.value
+    ? runtimeResult.value
+    : {};
+  const rawScanMode = scanModeResult.status === 'fulfilled' && scanModeResult.value
+    ? scanModeResult.value
+    : {};
+  const scanMode = rawScanMode?.scanMode && typeof rawScanMode.scanMode === 'object'
+    ? rawScanMode.scanMode
+    : rawScanMode;
   const armed = runtime?.armed === true;
+  const runtimeSymbols = normalizeSymbols(runtime?.symbols || []);
+  const mode = String(scanMode?.mode || '').trim().toUpperCase();
+  const configuredSymbols = mode === 'FOCUSED_SCAN'
+    ? normalizeSymbols(scanMode?.focusedSymbols || [])
+    : mode === 'CURATED_UNIVERSE'
+      ? normalizeSymbols(scanMode?.curatedSymbols || [])
+      : [];
+  const useRuntime = armed && runtimeSymbols.length > 0;
+  const symbols = useRuntime
+    ? runtimeSymbols
+    : configuredSymbols.length
+      ? configuredSymbols
+      : runtimeSymbols;
   return {
     armed,
     locked: armed,
-    symbols: normalizeSymbols(runtime?.symbols || []),
+    symbols,
+    symbolSource: useRuntime ? 'RUNTIME_LOCKED' : configuredSymbols.length ? 'SCAN_MODE' : 'RUNTIME',
+    scanMode: mode || null,
     strategy: runtime?.strategy || null,
-    updatedAt: runtime?.updatedAt || null,
+    updatedAt: useRuntime
+      ? runtime?.updatedAt || null
+      : scanMode?.updatedAt || runtime?.updatedAt || null,
   };
 }
 
@@ -289,13 +314,16 @@ const WATCHLIST_STYLE = String.raw`
 const WATCHLIST_SCRIPT = String.raw`
 <script id="moe-live-watchlist-script">
 (function(){
-  if(window.__moeLiveWatchlistV3)return;
-  window.__moeLiveWatchlistV3=true;
+  if(window.__moeLiveWatchlistV4)return;
+  window.__moeLiveWatchlistV4=true;
   var COMPANY={AAPL:'Apple Inc.',MSFT:'Microsoft Corp.',NVDA:'NVIDIA Corp.',AMZN:'Amazon.com, Inc.',GOOGL:'Alphabet Inc.',GOOG:'Alphabet Inc.',META:'Meta Platforms, Inc.',AMD:'Advanced Micro Devices',TSLA:'Tesla, Inc.',PATH:'UiPath, Inc.',SPY:'SPDR S&P 500 ETF',QQQ:'Invesco QQQ Trust',RIVN:'Rivian Automotive, Inc.',LYFT:'Lyft, Inc.',SOFI:'SoFi Technologies, Inc.',HIMS:'Hims & Hers Health, Inc.',SMCI:'Super Micro Computer, Inc.',CELH:'Celsius Holdings, Inc.',UBER:'Uber Technologies, Inc.'};
-  var quotes={},oldPrices={},openSymbol='',sortMode='GAIN',locked=false,busy=false,lastUpdated=null,session='CLOSED',toastTimer=null;
+  var quotes={},oldPrices={},selectedSymbols=[],openSymbol='',sortMode='GAIN',locked=false,busy=false,lastUpdated=null,session='CLOSED',toastTimer=null;
   function esc(v){return String(v==null?'':v).replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];});}
+  function normalizeList(values){var seen={};return (Array.isArray(values)?values:[]).map(function(s){return String(s||'').trim().toUpperCase();}).filter(function(s){if(!/^[A-Z][A-Z0-9.-]{0,9}$/.test(s)||seen[s])return false;seen[s]=true;return true;}).slice(0,30);}
   function roots(){return Array.from(document.querySelectorAll('[data-moe-watchlist-root]'));}
-  function list(){try{if(typeof state!=='undefined'&&Array.isArray(state.symbols))return state.symbols.map(function(s){return String(s).toUpperCase();}).filter(Boolean).slice(0,30);}catch(_){}var chips=document.getElementById('chips');return chips?Array.from(chips.querySelectorAll('[data-rm]')).map(function(n){return String(n.dataset.rm||'').toUpperCase();}).filter(Boolean).slice(0,30):[];}
+  function browserSelection(){try{if(typeof state!=='undefined'&&Array.isArray(state.symbols))return {known:true,symbols:normalizeList(state.symbols)};}catch(_){}var chips=document.getElementById('chips');if(chips)return {known:true,symbols:normalizeList(Array.from(chips.querySelectorAll('[data-rm]')).map(function(n){return n.dataset.rm;}))};return {known:false,symbols:[]};}
+  function list(){var browser=browserSelection();if(browser.known)selectedSymbols=browser.symbols;return selectedSymbols.slice();}
+  function setSelectedSymbols(values){var next=normalizeList(values);var changed=next.join(',')!==selectedSymbols.join(',');selectedSymbols=next;try{if(typeof state!=='undefined'&&Array.isArray(state.symbols)&&normalizeList(state.symbols).join(',')!==next.join(',')){state.symbols=next.slice();if(typeof renderChips==='function')renderChips();}}catch(_){}return changed;}
   function fmt(v){var n=Number(v);return Number.isFinite(n)?n.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:n<10?3:2}):'—';}
   function signed(v,d){var n=Number(v);return Number.isFinite(n)?(n>0?'+':'')+n.toFixed(d==null?2:d):'—';}
   function compact(v){var n=Number(v);if(!Number.isFinite(n))return '—';if(n>=1e9)return(n/1e9).toFixed(1)+'B';if(n>=1e6)return(n/1e6).toFixed(1)+'M';if(n>=1e3)return(n/1e3).toFixed(1)+'K';return String(Math.round(n));}
@@ -312,17 +340,18 @@ const WATCHLIST_SCRIPT = String.raw`
   function lockAlert(){toast('Scanner active: the original symbol list is frozen. Stop trading before adding or removing a stock.');}
   function applyLock(){['symInput','symInput2'].forEach(function(id){var input=document.getElementById(id);if(!input)return;input.disabled=locked;input.setAttribute('aria-disabled',String(locked));input.placeholder=locked?'Stop trading to edit':id==='symInput'?'NVDA':'AAPL';if(locked)input.value='';var note=document.getElementById(id+'MoeLock');if(!note){note=document.createElement('div');note.id=id+'MoeLock';note.className='moe-symbol-lock-note';note.innerHTML='<span>🔒</span><span>Scanner active — selected symbols are frozen.</span>';input.insertAdjacentElement('afterend',note);}note.hidden=!locked;});document.querySelectorAll('.symbol-suggestions').forEach(function(node){if(locked)node.hidden=true;});render();}
   function browserRunning(){try{return typeof state!=='undefined'&&state.running===true;}catch(_){return false;}}
-  async function refreshState(){var next=browserRunning();try{var response=await fetch('/api/mobile/watchlist/state?t='+Date.now(),{cache:'no-store',credentials:'same-origin',headers:{accept:'application/json','x-moe-mobile-client':'1'}});var data=await response.json().catch(function(){return {};});if(response.ok&&data.ok===true)next=data.locked===true;}catch(_){}locked=next;applyLock();}
+  async function refreshState(){var next=browserRunning(),changed=false;try{var response=await fetch('/api/mobile/watchlist/state?t='+Date.now(),{cache:'no-store',credentials:'same-origin',headers:{accept:'application/json','x-moe-mobile-client':'1'}});var data=await response.json().catch(function(){return {};});if(response.ok&&data.ok===true){next=data.locked===true;changed=setSelectedSymbols(data.symbols||[]);}}catch(_){}locked=next;applyLock();if(changed)await refresh(true);}
   async function refresh(force){if(busy)return;var symbols=list();render();if(!symbols.length){lastUpdated=null;session='CLOSED';render();return;}busy=true;roots().forEach(function(root){root.dataset.state='loading';});try{var response=await fetch('/api/mobile/watchlist/quotes?symbols='+encodeURIComponent(symbols.join(','))+'&t='+(force?Date.now():''),{cache:'no-store',credentials:'same-origin',headers:{accept:'application/json','x-moe-mobile-client':'1'}});var data=await response.json().catch(function(){return {};});if(!response.ok||data.ok!==true)throw new Error(data.error||('HTTP '+response.status));(data.quotes||[]).forEach(function(q){if(q&&q.symbol)quotes[q.symbol]=q;});session=data.session||session;lastUpdated=data.updatedAt?new Date(data.updatedAt):new Date();render();}catch(error){roots().forEach(function(root){root.dataset.state='error';var label=root.querySelector('[data-watch-updated]');if(label)label.textContent=error&&error.message?error.message:'Prices unavailable';});}finally{busy=false;}}
-  function remove(symbol){if(locked){lockAlert();return;}var chips=document.getElementById('chips');var button=chips&&chips.querySelector('[data-rm="'+String(symbol).replace(/"/g,'')+'"]');if(button){button.click();return;}try{if(typeof state!=='undefined'&&Array.isArray(state.symbols)){state.symbols=state.symbols.filter(function(s){return s!==symbol;});if(typeof renderChips==='function')renderChips();if(typeof saveSymbols==='function')saveSymbols();}}catch(_){}}
+  function remove(symbol){if(locked){lockAlert();return;}var chips=document.getElementById('chips');var button=chips&&chips.querySelector('[data-rm="'+String(symbol).replace(/"/g,'')+'"]');if(button){button.click();setTimeout(refreshState,100);return;}try{if(typeof state!=='undefined'&&Array.isArray(state.symbols)){state.symbols=state.symbols.filter(function(s){return s!==symbol;});if(typeof renderChips==='function')renderChips();if(typeof saveSymbols==='function')saveSymbols();setTimeout(refreshState,100);}}catch(_){}}
   function cycleSort(){var modes=['GAIN','PRICE','SYMBOL','LIST'],labels={GAIN:'Top movers',PRICE:'Lowest price',SYMBOL:'A–Z',LIST:'List order'};sortMode=modes[(modes.indexOf(sortMode)+1)%modes.length];document.querySelectorAll('[data-watch-sort]').forEach(function(node){node.textContent=labels[sortMode];});render();}
-  document.addEventListener('click',function(event){var refreshButton=event.target.closest('[data-watch-refresh]');if(refreshButton){refresh(true);return;}if(event.target.closest('[data-watch-sort]')){cycleSort();return;}if(event.target.closest('[data-watch-locked-action]')){lockAlert();return;}var removeButton=event.target.closest('[data-watch-remove]');if(removeButton){event.preventDefault();event.stopPropagation();remove(removeButton.dataset.watchRemove);return;}var rowNode=event.target.closest('.moe-watchlist-row');if(rowNode){openSymbol=openSymbol===rowNode.dataset.symbol?'':rowNode.dataset.symbol;render();}});
+  document.addEventListener('click',function(event){var refreshButton=event.target.closest('[data-watch-refresh]');if(refreshButton){refreshState().then(function(){refresh(true);});return;}if(event.target.closest('[data-watch-sort]')){cycleSort();return;}if(event.target.closest('[data-watch-locked-action]')){lockAlert();return;}var removeButton=event.target.closest('[data-watch-remove]');if(removeButton){event.preventDefault();event.stopPropagation();remove(removeButton.dataset.watchRemove);return;}var rowNode=event.target.closest('.moe-watchlist-row');if(rowNode){openSymbol=openSymbol===rowNode.dataset.symbol?'':rowNode.dataset.symbol;render();}});
   function blockEdit(event){if(!locked)return;var target=event.target;if(target&&(target.id==='symInput'||target.id==='symInput2'||target.closest&&target.closest('[data-rm]'))){event.preventDefault();event.stopPropagation();event.stopImmediatePropagation();lockAlert();}}
   ['keydown','beforeinput','input','change','blur','mousedown','touchstart','pointerdown'].forEach(function(type){document.addEventListener(type,blockEdit,true);});
-  var chips=document.getElementById('chips');if(chips)new MutationObserver(function(){render();refresh(true);}).observe(chips,{childList:true,subtree:true});
+  ['chips','chips2'].forEach(function(id){var chips=document.getElementById(id);if(chips)new MutationObserver(function(){var browser=browserSelection();if(browser.known)selectedSymbols=browser.symbols;render();setTimeout(refreshState,80);}).observe(chips,{childList:true,subtree:true});});
   var start=document.getElementById('startBtn');if(start){start.addEventListener('click',function(){setTimeout(refreshState,80);setTimeout(refreshState,700);},true);new MutationObserver(refreshState).observe(start,{attributes:true,attributeFilter:['data-running','disabled','class']});}
-  document.addEventListener('visibilitychange',function(){if(!document.hidden){refreshState();refresh(true);}});
-  applyLock();render();setTimeout(function(){refreshState();refresh(true);},120);clearInterval(window.__moeLiveWatchlistTick);window.__moeLiveWatchlistTick=setInterval(function(){if(!document.hidden)refresh(false);},3000);clearInterval(window.__moeWatchlistLockTick);window.__moeWatchlistLockTick=setInterval(function(){if(!document.hidden)refreshState();},2500);
+  document.addEventListener('visibilitychange',function(){if(!document.hidden){refreshState().then(function(){refresh(true);});}});
+  window.__moeRefreshSelectedWatchlist=function(){return refreshState().then(function(){return refresh(true);});};
+  applyLock();render();setTimeout(function(){refreshState().then(function(){refresh(true);});},120);clearInterval(window.__moeLiveWatchlistTick);window.__moeLiveWatchlistTick=setInterval(function(){if(!document.hidden)refresh(false);},3000);clearInterval(window.__moeWatchlistLockTick);window.__moeWatchlistLockTick=setInterval(function(){if(!document.hidden)refreshState();},1200);
 })();
 </script>`;
 
@@ -368,8 +397,9 @@ async function enhanceMobileWatchlist(response, request) {
   const headers = new Headers(response.headers);
   headers.delete('content-length');
   headers.set('cache-control', 'no-store, no-cache, must-revalidate');
-  headers.set('x-moe-mobile-watchlist-ui', 'guaranteed-live-v3');
+  headers.set('x-moe-mobile-watchlist-ui', 'guaranteed-live-v4');
   headers.set('x-moe-symbol-edit-policy', 'LOCKED_WHILE_SCANNER_RUNNING');
+  headers.set('x-moe-watchlist-symbol-sync', 'authoritative-scan-mode');
   return new Response(output, {
     status: response.status,
     statusText: response.statusText,
