@@ -12,6 +12,7 @@ on:
   push:
     branches:
       - main
+      - feature/moe-core-domain-v2
     paths:
       - 'worker/src/**'
       - 'worker/test/**'
