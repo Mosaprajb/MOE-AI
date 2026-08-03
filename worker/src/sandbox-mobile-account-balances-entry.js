@@ -4,9 +4,9 @@ import baseWorker, {
 } from './sandbox-mobile-account-balances-implementation.js';
 import {
   MOBILE_SCANNER_MONITOR_PATH,
-  enhanceMobileScannerMonitor,
   handleMobileScannerMonitor,
 } from './mobile-scanner-monitor.js';
+import { enhanceMobileScannerVisibleUi } from './mobile-scanner-visible-ui.js';
 
 export { AlertCoordinator, SimulationDriver };
 
@@ -69,7 +69,7 @@ export default {
     if (!MOBILE_PATHS.has(pathname)) return response;
 
     const repaired = await repairMobileAccountBalanceHtml(response, request);
-    return enhanceMobileScannerMonitor(repaired, request);
+    return enhanceMobileScannerVisibleUi(repaired, request);
   },
   scheduled(controller, env, ctx) {
     return baseWorker.scheduled(controller, env, ctx);
