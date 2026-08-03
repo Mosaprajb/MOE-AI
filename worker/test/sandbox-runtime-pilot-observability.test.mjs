@@ -216,6 +216,11 @@ test('order status enforces the one-submission Sandbox pilot ceiling', async () 
 test('Sandbox pilot wrapper, simulation isolation, endpoints, and secret hygiene stay locked', () => {
   const configText = readFileSync(join(root, 'wrangler.sandbox.jsonc'), 'utf8');
   const config = JSON.parse(configText);
+  const mobilePhoneEntry = readFileSync(join(root, 'worker/src/sandbox-mobile-phone-fix-entry.js'), 'utf8');
+  const mobileFinalEntry = readFileSync(join(root, 'worker/src/sandbox-mobile-final-entry.js'), 'utf8');
+  const mobileRuntimeEntry = readFileSync(join(root, 'worker/src/sandbox-mobile-runtime-fix-entry.js'), 'utf8');
+  const mobileSettingsEntry = readFileSync(join(root, 'worker/src/sandbox-mobile-settings-entry.js'), 'utf8');
+  const mobileUiFixEntry = readFileSync(join(root, 'worker/src/sandbox-mobile-ui-fix-entry.js'), 'utf8');
   const entry = readFileSync(join(root, 'worker/src/sandbox-runtime-pilot-entry.js'), 'utf8');
   const operationsEntry = readFileSync(join(root, 'worker/src/sandbox-operations-entry.js'), 'utf8');
   const operationsV2Entry = readFileSync(join(root, 'worker/src/sandbox-operations-v2-entry.js'), 'utf8');
@@ -228,7 +233,12 @@ test('Sandbox pilot wrapper, simulation isolation, endpoints, and secret hygiene
   const gitignore = readFileSync(join(root, '.gitignore'), 'utf8');
 
   assert.equal(config.name, 'moerand-alerts-sandbox');
-  assert.equal(config.main, 'worker/src/sandbox-scan-mode-entry.js');
+  assert.equal(config.main, 'worker/src/sandbox-mobile-phone-fix-entry.js');
+  assert.match(mobilePhoneEntry, /from '\.\/sandbox-mobile-final-entry\.js'/);
+  assert.match(mobileFinalEntry, /from '\.\/sandbox-mobile-runtime-fix-entry\.js'/);
+  assert.match(mobileRuntimeEntry, /from '\.\/sandbox-mobile-settings-entry\.js'/);
+  assert.match(mobileSettingsEntry, /from '\.\/sandbox-mobile-ui-fix-entry\.js'/);
+  assert.match(mobileUiFixEntry, /from '\.\/sandbox-scan-mode-entry\.js'/);
   assert.match(scanModeEntry, /from '\.\/sandbox-simulation-rpc-entry\.js'/);
   assert.match(rpcEntry, /from '\.\/sandbox-simulation-entry\.js'/);
   assert.deepEqual(config.triggers.crons, ['* * * * *']);
