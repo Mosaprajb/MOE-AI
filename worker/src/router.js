@@ -40,8 +40,20 @@ export class AlertCoordinator extends BaseAlertCoordinator {
     return { count: decisions.length, decisions };
   }
 
-  async verifyMobilePasscode(passcode) {
-    return verifyMobilePasscode(this.ctx.storage, passcode, this.env);
+  async verifyMobilePasscode(passcode, security = {}) {
+    const currentEnv = {
+      ...this.env,
+      MOE_MOBILE_PASSCODE_HASH: String(
+        security.passcodeHash || this.env.MOE_MOBILE_PASSCODE_HASH || '',
+      ).trim(),
+      MOE_LIVE_PIN_MAX_ATTEMPTS: String(
+        security.maximumAttempts ?? this.env.MOE_LIVE_PIN_MAX_ATTEMPTS ?? '5',
+      ),
+      MOE_LIVE_PIN_LOCKOUT_MINUTES: String(
+        security.lockoutMinutes ?? this.env.MOE_LIVE_PIN_LOCKOUT_MINUTES ?? '15',
+      ),
+    };
+    return verifyMobilePasscode(this.ctx.storage, passcode, currentEnv);
   }
 
   async mobileDashboardConfig() {

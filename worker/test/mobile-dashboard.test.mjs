@@ -102,9 +102,21 @@ test('mobile passcode rejects wrong codes, locks out, and issues a secure sessio
     headers: { 'content-type': 'application/json', origin: 'https://example.test' },
     body: JSON.stringify({ action: 'verifyPasscode', passcode: '123456' }),
   });
+  let forwardedSecurity = null;
   const response = await handleMobilePasscode(request, env, {
-    verifyMobilePasscode: (passcode) => verifyMobilePasscode(unlockedStorage, passcode, env, now),
+    verifyMobilePasscode: (passcode, security) => {
+      forwardedSecurity = security;
+      return verifyMobilePasscode(unlockedStorage, passcode, {
+        ...env,
+        MOE_MOBILE_PASSCODE_HASH: security.passcodeHash,
+        MOE_LIVE_PIN_MAX_ATTEMPTS: String(security.maximumAttempts),
+        MOE_LIVE_PIN_LOCKOUT_MINUTES: String(security.lockoutMinutes),
+      }, now);
+    },
   });
+  assert.equal(forwardedSecurity.passcodeHash, hash);
+  assert.equal(forwardedSecurity.maximumAttempts, 3);
+  assert.equal(forwardedSecurity.lockoutMinutes, 15);
   assert.equal(response.status, 200);
   const cookie = response.headers.get('set-cookie');
   assert.match(cookie, /^moe_mobile_session=/);
@@ -112,4 +124,8 @@ test('mobile passcode rejects wrong codes, locks out, and issues a secure sessio
   assert.match(cookie, /Secure/);
   assert.match(cookie, /SameSite=Strict/);
   assert.equal(cookie.includes('123456'), false);
+
+  const router = readFileSync(join(root, 'worker/src/router.js'), 'utf8');
+  assert.match(router, /security\.passcodeHash/);
+  assert.match(router, /MOE_MOBILE_PASSCODE_HASH/);
 });

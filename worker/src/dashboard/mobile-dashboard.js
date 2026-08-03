@@ -282,7 +282,10 @@ export async function handleMobilePasscode(request, env, stub) {
   catch { return secureJson({ ok: false, error: 'Invalid JSON payload.' }, 400); }
   if (payload?.action !== 'verifyPasscode') return null;
   try {
-    await stub.verifyMobilePasscode(payload.passcode);
+    await stub.verifyMobilePasscode(payload.passcode, {
+      passcodeHash: String(env.MOE_MOBILE_PASSCODE_HASH || '').trim(),
+      ...lockoutSettings(env),
+    });
     const session = await createMobileSession(env);
     return secureJson({
       ok: true,
