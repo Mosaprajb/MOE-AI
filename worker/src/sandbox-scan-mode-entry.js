@@ -75,11 +75,16 @@ const MOBILE_CONNECTION_STYLE = `
 .trading-connection[data-connected="true"] .trading-connection-state{color:var(--green)}
 .symbol-suggestions{margin-top:8px;max-height:260px;overflow-y:auto;border:1px solid var(--line);border-radius:14px;background:var(--panel);box-shadow:0 16px 34px rgba(0,0,0,.38)}
 .symbol-suggestions[hidden]{display:none}
-.symbol-suggestion{width:100%;display:flex;align-items:center;justify-content:space-between;gap:12px;padding:13px 15px;border:0;border-bottom:1px solid var(--line);background:transparent;color:var(--text);font-family:'IBM Plex Mono',ui-monospace,monospace;font-size:16px;font-weight:700;text-align:left;cursor:pointer}
+.symbol-suggestion{width:100%;display:flex;align-items:center;justify-content:space-between;gap:12px;padding:13px 15px;border:0;border-bottom:1px solid var(--line);background:transparent;color:var(--text);font-family:'IBM Plex Mono',ui-monospace,monospace;font-size:16px;font-weight:700;text-align:left;cursor:pointer;touch-action:manipulation}
 .symbol-suggestion:last-child{border-bottom:0}
 .symbol-suggestion:hover,.symbol-suggestion[data-active="true"]{background:var(--accent-dim);color:var(--accent)}
 .symbol-suggestion small{font-family:'Archivo',system-ui,sans-serif;font-size:11px;font-weight:700;color:var(--muted);letter-spacing:.05em;text-transform:uppercase}
 .symbol-suggestions-empty{padding:14px 15px;color:var(--muted);font-size:14px}
+.symbol-add-action{width:100%;margin-top:9px;padding:14px 16px;border:1.5px solid var(--accent);border-radius:14px;background:var(--accent-dim);color:var(--accent);font-family:'Archivo',system-ui,sans-serif;font-size:15px;font-weight:900;cursor:pointer;touch-action:manipulation}
+.symbol-add-action:disabled{opacity:.42;cursor:not-allowed}
+.symbol-picker-feedback{min-height:20px;margin-top:7px;color:var(--muted);font-family:'IBM Plex Mono',ui-monospace,monospace;font-size:11px;line-height:1.4}
+.symbol-picker-feedback[data-tone="ok"]{color:var(--green)}
+.symbol-picker-feedback[data-tone="error"]{color:var(--red)}
 </style>`;
 
 const MOBILE_CONNECTION_HTML = `
@@ -146,11 +151,33 @@ function setupSymbolSuggestions(inputId){
   list.hidden=true;
   list.setAttribute('role','listbox');
   input.insertAdjacentElement('afterend',list);
+  const addButton=document.createElement('button');
+  addButton.type='button';
+  addButton.className='symbol-add-action';
+  addButton.textContent='Add symbol';
+  list.insertAdjacentElement('afterend',addButton);
+  const feedback=document.createElement('div');
+  feedback.className='symbol-picker-feedback';
+  feedback.setAttribute('role','status');
+  feedback.setAttribute('aria-live','polite');
+  addButton.insertAdjacentElement('afterend',feedback);
   let activeIndex=-1;
   let matches=[];
+  let selecting=false;
+  function normalized(value){ return String(value||'').trim().toUpperCase().replace(/[^A-Z0-9.-]/g,'').slice(0,10); }
   function selected(){ return new Set((state.symbols||[]).map(value=>String(value).toUpperCase())); }
+  function isLocked(){ return state.running===true||input.disabled===true; }
+  function announce(message,tone=''){
+    feedback.textContent=message||'';
+    feedback.dataset.tone=tone;
+  }
+  function syncAddButton(){
+    const symbol=normalized(input.value);
+    addButton.disabled=selecting||isLocked()||!symbol;
+    addButton.textContent=isLocked()?'Stop trading to edit':selecting?'Adding…':'Add symbol';
+  }
   function draw(){
-    const query=String(input.value||'').trim().toUpperCase().replace(/[^A-Z0-9.-]/g,'');
+    const query=normalized(input.value);
     const used=selected();
     const starts=[];
     const contains=[];
@@ -162,26 +189,78 @@ function setupSymbolSuggestions(inputId){
     }
     matches=[...starts,...contains].slice(0,12);
     activeIndex=-1;
+    syncAddButton();
     if(!matches.length){
       list.innerHTML=query?'<div class="symbol-suggestions-empty">No supported symbol found.</div>':'';
       list.hidden=!query;
       return;
     }
-    list.innerHTML=matches.map((symbol,index)=>'<button type="button" class="symbol-suggestion" data-symbol="'+symbol+'" data-index="'+index+'"><span>'+symbol+'</span><small>Scanner universe</small></button>').join('');
+    list.innerHTML=matches.map((symbol,index)=>'<button type="button" class="symbol-suggestion" data-symbol="'+symbol+'" data-index="'+index+'"><span>'+symbol+'</span><small>Tap to select</small></button>').join('');
     list.hidden=false;
   }
-  function choose(symbol){
-    if(!symbol) return;
-    input.value=symbol;
-    addSymbol(input);
+  async function choose(rawSymbol){
+    const symbol=normalized(rawSymbol);
+    if(selecting||!symbol) return;
+    if(isLocked()){
+      announce('Scanner active. Stop trading before changing the symbol list.','error');
+      syncAddButton();
+      return;
+    }
+    if(!MOE_SYMBOL_UNIVERSE.includes(symbol)){
+      announce('Choose a supported ticker from the list.','error');
+      draw();
+      return;
+    }
+    if(selected().has(symbol)){
+      input.value='';
+      list.hidden=true;
+      announce(symbol+' is already selected.','ok');
+      syncAddButton();
+      return;
+    }
+    const previous=[...(state.symbols||[])];
+    selecting=true;
+    input.value='';
     list.hidden=true;
     activeIndex=-1;
+    state.symbols=[...previous,symbol];
+    renderChips();
+    announce('Saving '+symbol+'…');
+    syncAddButton();
+    try{
+      await api(API.scanMode,{method:'PUT',body:JSON.stringify({mode:'CURATED_UNIVERSE',symbols:state.symbols})});
+      announce(symbol+' added to the scanner.','ok');
+    }catch(err){
+      state.symbols=previous;
+      renderChips();
+      announce('Could not add '+symbol+': '+(err?.message||'save failed'),'error');
+      if(typeof openInfoRaw==='function'){
+        openInfoRaw('Could not add symbol','<div class="danger-note">'+esc(err?.message||'The symbol list could not be saved.')+'</div>');
+      }
+    }finally{
+      selecting=false;
+      syncAddButton();
+    }
+  }
+  function chooseFromEvent(event){
+    const button=event.target.closest('[data-symbol]');
+    if(!button) return;
+    event.preventDefault();
+    event.stopPropagation();
+    event.stopImmediatePropagation();
+    choose(button.dataset.symbol);
+  }
+  function addFromEvent(event){
+    event.preventDefault();
+    event.stopPropagation();
+    event.stopImmediatePropagation();
+    choose(input.value);
   }
   input.addEventListener('focus',draw);
-  input.addEventListener('input',draw);
+  input.addEventListener('input',()=>{announce('');draw();});
   input.addEventListener('keydown',event=>{
-    if(list.hidden||!matches.length) return;
     if(event.key==='ArrowDown'||event.key==='ArrowUp'){
+      if(list.hidden||!matches.length) return;
       event.preventDefault();
       event.stopImmediatePropagation();
       activeIndex=event.key==='ArrowDown'
@@ -189,22 +268,31 @@ function setupSymbolSuggestions(inputId){
         : (activeIndex-1+matches.length)%matches.length;
       list.querySelectorAll('.symbol-suggestion').forEach((node,index)=>node.dataset.active=String(index===activeIndex));
       list.querySelector('[data-active="true"]')?.scrollIntoView({block:'nearest'});
-    }else if(event.key==='Enter'&&activeIndex>=0){
+    }else if(event.key==='Enter'){
       event.preventDefault();
       event.stopImmediatePropagation();
-      choose(matches[activeIndex]);
+      choose(activeIndex>=0?matches[activeIndex]:input.value);
     }else if(event.key==='Escape'){
       event.preventDefault();
       list.hidden=true;
     }
   },true);
-  list.addEventListener('mousedown',event=>{
-    const button=event.target.closest('[data-symbol]');
-    if(!button) return;
-    event.preventDefault();
-    choose(button.dataset.symbol);
-  });
-  input.addEventListener('blur',()=>setTimeout(()=>{list.hidden=true;},140));
+  input.addEventListener('blur',event=>{
+    const symbol=normalized(input.value);
+    if(symbol){
+      event.stopImmediatePropagation();
+      choose(symbol);
+    }
+    setTimeout(()=>{list.hidden=true;},260);
+  },true);
+  list.addEventListener('pointerdown',chooseFromEvent,true);
+  list.addEventListener('touchend',chooseFromEvent,{capture:true,passive:false});
+  list.addEventListener('click',chooseFromEvent,true);
+  addButton.addEventListener('pointerdown',addFromEvent,true);
+  addButton.addEventListener('touchend',addFromEvent,{capture:true,passive:false});
+  addButton.addEventListener('click',addFromEvent,true);
+  new MutationObserver(syncAddButton).observe(input,{attributes:true,attributeFilter:['disabled','aria-disabled']});
+  syncAddButton();
 }
 `;
 
