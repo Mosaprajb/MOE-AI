@@ -7,43 +7,47 @@ import { fileURLToPath } from 'node:url';
 const directory = dirname(fileURLToPath(import.meta.url));
 const root = join(directory, '..', '..');
 const monitorSource = readFileSync(join(root, 'worker/src/mobile-scanner-monitor.js'), 'utf8');
+const visibleUiSource = readFileSync(join(root, 'worker/src/mobile-scanner-visible-ui.js'), 'utf8');
 const entrySource = readFileSync(join(root, 'worker/src/sandbox-mobile-account-balances-entry.js'), 'utf8');
 
 test('mobile scanner monitor is wired into the deployed Sandbox entry', () => {
   assert.match(entrySource, /from '\.\/mobile-scanner-monitor\.js'/);
+  assert.match(entrySource, /from '\.\/mobile-scanner-visible-ui\.js'/);
   assert.match(entrySource, /pathname === MOBILE_SCANNER_MONITOR_PATH/);
   assert.match(entrySource, /handleMobileScannerMonitor\(request, env\)/);
-  assert.match(entrySource, /enhanceMobileScannerMonitor\(repaired, request\)/);
+  assert.match(entrySource, /enhanceMobileScannerVisibleUi\(repaired, request\)/);
 });
 
-test('mobile scanner monitor exposes refresh, clear, prices, live quote, and readiness controls', () => {
+test('visible mobile scanner UI exposes live quote, protected prices, readiness, refresh, and clear controls', () => {
   for (const token of [
-    'moeActivityRefresh',
-    'moeActivityClear',
-    'Clear old',
-    'Old activity cleared from this screen',
-    'moeScannerMonitor',
-    'moeMonitorRefresh',
-    'moeMonitorSymbol',
-    'moeMonitorPrice',
-    'moeMonitorEntry',
-    'moeMonitorExit',
-    'moeMonitorStop',
-    'moeMonitorStage',
-    'moeMonitorPercent',
-    'moeMonitorFill',
+    'moe-mobile-scanner-visible-ui',
+    'data-moe-monitor-location="main"',
+    'data-moe-monitor-location="scanner"',
     'Selected symbol live monitor',
+    'data-moe-monitor-refresh',
+    'data-moe-monitor-field="price"',
+    'data-moe-monitor-field="entry"',
+    'data-moe-monitor-field="exit"',
+    'data-moe-monitor-field="stop"',
+    'data-moe-monitor-field="stage"',
+    'data-moe-monitor-field="percent"',
+    'data-moe-monitor-field="fill"',
     'Target / exit',
     'Stop loss',
-    'Waiting for live quote',
+    'moeActivityRefreshVisible',
+    'moeActivityClearVisible',
+    'Clear old',
+    'Old activity cleared from this screen',
+    'No executable setup yet',
   ]) {
-    assert.equal(monitorSource.includes(token), true, `missing mobile scanner UI token: ${token}`);
+    assert.equal(visibleUiSource.includes(token), true, `missing visible mobile scanner UI token: ${token}`);
   }
 
-  assert.match(monitorSource, /enhancedLoadActivity\(true\)/);
-  assert.match(monitorSource, /setInterval\(function\(\)\{syncSymbolOptions\(\);refreshMonitor\(false\);\},3000\)/);
-  assert.match(monitorSource, /fill\.style\.width=percent\+'%'/);
-  assert.equal(monitorSource.includes("percent>=90?'var(--green)':percent>=60?'var(--amber)':'var(--red)'"), true);
+  assert.match(visibleUiSource, /setInterval\(function\(\)\{if\(!document\.hidden\)refreshMonitor\(false\);\},3000\)/);
+  assert.match(visibleUiSource, /fill\.style\.width=percent\+'%'/);
+  assert.equal(visibleUiSource.includes("percent>=90?'var(--green)':percent>=60?'var(--amber)':'var(--red)'"), true);
+  assert.match(visibleUiSource, /#chips \[data-rm\]/);
+  assert.match(visibleUiSource, /MutationObserver/);
 });
 
 test('mobile scanner monitor reads Alpaca market data and returns an estimated protected plan', () => {
@@ -69,4 +73,6 @@ test('mobile scanner monitor remains same-origin, read-only, and cannot unlock L
   assert.equal(monitorSource.includes("WEBULL_LIVE_TRADING: 'true'"), false);
   assert.equal(monitorSource.includes("WEBULL_LIVE_ORDER_SUBMISSION: 'true'"), false);
   assert.equal(monitorSource.includes("WEBULL_LIVE_AUTOMATION_ARMED: 'true'"), false);
+  assert.equal(visibleUiSource.includes('placeWebullSandboxOrder'), false);
+  assert.equal(visibleUiSource.includes('placeWebullLiveOrder'), false);
 });
