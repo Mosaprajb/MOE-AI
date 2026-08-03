@@ -2,19 +2,16 @@ export const MOERAND_CLEAN_STRATEGY_ID = 'MOERAND_CLEAN_INTERNAL';
 export const MOERAND_CLEAN_SOURCE_TYPE = 'INTERNAL_PIPELINE';
 
 export const MOERAND_CLEAN_DEFAULTS = Object.freeze({
-  trendLen: 50,
-  breakoutLen: 20,
-  minRvol: 1.2,
-  rvolPeriod: 20,
+  keyValue: 1,
   atrPeriod: 2,
-  atrMult: 1,
-  enableBreakeven: true,
+  useHeikinAshi: false,
   sessionWindow: '0930-1600',
   sessionTimezone: 'America/New_York',
   timeframeMinutes: 5,
 });
 
 const TICKER_RE = /^[A-Z][A-Z0-9.-]{0,9}$/;
+const MINUTE_MS = 60_000;
 
 function text(value, fallback = '') {
   const normalized = String(value ?? fallback).trim();
@@ -31,9 +28,11 @@ function integer(value, fallback, minimum = 1, maximum = 10_000) {
   return Number.isFinite(parsed) ? Math.min(maximum, Math.max(minimum, parsed)) : fallback;
 }
 
-function positive(value, fallback, minimum = Number.EPSILON) {
+function positive(value, fallback, minimum = Number.EPSILON, maximum = Number.MAX_SAFE_INTEGER) {
   const parsed = Number(value);
-  return Number.isFinite(parsed) && parsed >= minimum ? parsed : fallback;
+  return Number.isFinite(parsed)
+    ? Math.min(maximum, Math.max(minimum, parsed))
+    : fallback;
 }
 
 function bool(value, fallback = false) {
@@ -71,17 +70,27 @@ function sessionWindow(value) {
 
 export function normalizeMoerandCleanSettings(input = {}) {
   const defaults = MOERAND_CLEAN_DEFAULTS;
+  const keyValue = positive(first(input, [
+    'keyValue',
+    'sensitivity',
+    'atrMult',
+    'MOERAND_CLEAN_KEY_VALUE',
+    'MOERAND_CLEAN_ATR_MULT',
+  ], defaults.keyValue), defaults.keyValue, 0.1, 100);
+
   return Object.freeze({
-    trendLen: integer(first(input, ['trendLen', 'MOERAND_CLEAN_TREND_LEN'], defaults.trendLen), defaults.trendLen, 2, 500),
-    breakoutLen: integer(first(input, ['breakoutLen', 'MOERAND_CLEAN_BREAKOUT_LEN'], defaults.breakoutLen), defaults.breakoutLen, 2, 500),
-    minRvol: positive(first(input, ['minRvol', 'MOERAND_CLEAN_MIN_RVOL'], defaults.minRvol), defaults.minRvol, 0),
-    rvolPeriod: integer(first(input, ['rvolPeriod', 'MOERAND_CLEAN_RVOL_PERIOD'], defaults.rvolPeriod), defaults.rvolPeriod, 2, 500),
+    keyValue,
+    // Kept as an alias so older callers and stored reports remain readable.
+    atrMult: keyValue,
     atrPeriod: integer(first(input, ['atrPeriod', 'MOERAND_CLEAN_ATR_PERIOD'], defaults.atrPeriod), defaults.atrPeriod, 1, 500),
-    atrMult: positive(first(input, ['atrMult', 'MOERAND_CLEAN_ATR_MULT'], defaults.atrMult), defaults.atrMult),
-    enableBreakeven: bool(first(input, ['enableBreakeven', 'MOERAND_CLEAN_ENABLE_BREAKEVEN'], defaults.enableBreakeven), defaults.enableBreakeven),
+    useHeikinAshi: bool(first(input, [
+      'useHeikinAshi',
+      'signalsFromHeikinAshi',
+      'MOERAND_CLEAN_USE_HEIKIN_ASHI',
+    ], defaults.useHeikinAshi), defaults.useHeikinAshi),
     sessionWindow: sessionWindow(first(input, ['sessionWindow', 'MOERAND_CLEAN_SESSION_WINDOW'], defaults.sessionWindow)),
     sessionTimezone: text(first(input, ['sessionTimezone', 'MOERAND_CLEAN_SESSION_TIMEZONE'], defaults.sessionTimezone), defaults.sessionTimezone),
-    timeframeMinutes: integer(first(input, ['timeframeMinutes', 'MOERAND_CLEAN_TIMEFRAME_MINUTES'], defaults.timeframeMinutes), defaults.timeframeMinutes, 1, 240),
+    timeframeMinutes: integer(first(input, ['timeframeMinutes', 'MOERAND_CLEAN_TIMEFRAME_MINUTES'], defaults.timeframeMinutes), defaults.timeframeMinutes, 1, 15),
   });
 }
 
@@ -128,35 +137,84 @@ function zoned(timestampValue, timeZone) {
   };
 }
 
-function barSessionInfo(bar, settings) {
-  const local = zoned(bar.t, settings.sessionTimezone);
+function sessionBounds(settings) {
   const [startToken, endToken] = settings.sessionWindow.split('-');
-  const start = clockMinutes(startToken);
-  const end = clockMinutes(endToken);
-  const weekday = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri'].includes(local.weekday);
-  const inSession = weekday && local.minutes >= start && local.minutes + settings.timeframeMinutes <= end;
-  return {
-    sessionKey: local.key,
-    inSession,
-    firstBar: inSession && local.minutes === start,
-    finalBar: inSession && local.minutes + settings.timeframeMinutes >= end,
-  };
+  return { start: clockMinutes(startToken), end: clockMinutes(endToken) };
 }
 
-function average(values) {
-  return values.length && values.every(Number.isFinite)
-    ? values.reduce((sum, value) => sum + value, 0) / values.length
-    : null;
-}
-
-function ema(values, length) {
-  if (values.length < length) return null;
-  let current = average(values.slice(0, length));
-  const alpha = 2 / (length + 1);
-  for (let index = length; index < values.length; index += 1) {
-    current = values[index] * alpha + current * (1 - alpha);
+function inferResolutionMinutes(bars = []) {
+  const differences = [];
+  for (let index = 1; index < bars.length; index += 1) {
+    const difference = bars[index].t - bars[index - 1].t;
+    if (difference > 0) differences.push(difference / MINUTE_MS);
   }
-  return current;
+  return differences.length ? Math.min(...differences) : null;
+}
+
+function aggregateClosedBars(input, settings, cutoff, allCandlesClosed) {
+  const raw = (Array.isArray(input) ? input : [])
+    .map(candle)
+    .filter(Boolean)
+    .filter((bar) => bar.closed)
+    .sort((left, right) => left.t - right.t)
+    .filter((bar, index, all) => index === all.length - 1 || bar.t !== all[index + 1].t);
+
+  const sourceResolutionMinutes = inferResolutionMinutes(raw);
+  if (Number.isFinite(sourceResolutionMinutes) && sourceResolutionMinutes > settings.timeframeMinutes) {
+    return {
+      bars: [],
+      sourceResolutionMinutes,
+      resolutionTooCoarse: true,
+    };
+  }
+
+  const { start, end } = sessionBounds(settings);
+  const groups = new Map();
+  for (const bar of raw) {
+    const local = zoned(bar.t, settings.sessionTimezone);
+    if (!['Mon', 'Tue', 'Wed', 'Thu', 'Fri'].includes(local.weekday)) continue;
+    if (local.minutes < start || local.minutes >= end) continue;
+
+    const bucketIndex = Math.floor((local.minutes - start) / settings.timeframeMinutes);
+    const bucketMinute = start + bucketIndex * settings.timeframeMinutes;
+    const durationMinutes = Math.min(settings.timeframeMinutes, end - bucketMinute);
+    const bucketStart = bar.t - (local.minutes - bucketMinute) * MINUTE_MS;
+    const key = `${local.key}:${bucketStart}`;
+    const previous = groups.get(key);
+    if (!previous) {
+      groups.set(key, {
+        t: bucketStart,
+        o: bar.o,
+        h: bar.h,
+        l: bar.l,
+        c: bar.c,
+        v: bar.v,
+        sessionKey: local.key,
+        bucketMinute,
+        durationMinutes,
+      });
+    } else {
+      previous.h = Math.max(previous.h, bar.h);
+      previous.l = Math.min(previous.l, bar.l);
+      previous.c = bar.c;
+      previous.v += bar.v;
+    }
+  }
+
+  const bars = [...groups.values()]
+    .filter((bar) => allCandlesClosed === true || bar.t + bar.durationMinutes * MINUTE_MS <= cutoff)
+    .sort((left, right) => left.t - right.t)
+    .map((bar) => ({
+      ...bar,
+      firstBar: bar.bucketMinute === start,
+      finalBar: bar.bucketMinute + bar.durationMinutes >= end,
+    }));
+
+  return {
+    bars,
+    sourceResolutionMinutes,
+    resolutionTooCoarse: false,
+  };
 }
 
 function trueRange(current, previous) {
@@ -164,26 +222,94 @@ function trueRange(current, previous) {
   return Math.max(current.h - current.l, Math.abs(current.h - previous.c), Math.abs(current.l - previous.c));
 }
 
-function atr(bars, period) {
-  if (bars.length < period) return null;
+function atrSeries(bars, period) {
   const ranges = bars.map((bar, index) => trueRange(bar, bars[index - 1]));
-  let current = average(ranges.slice(0, period));
+  const output = Array(bars.length).fill(null);
+  if (ranges.length < period) return output;
+  let current = ranges.slice(0, period).reduce((sum, value) => sum + value, 0) / period;
+  output[period - 1] = current;
   for (let index = period; index < ranges.length; index += 1) {
     current = ((current * (period - 1)) + ranges[index]) / period;
+    output[index] = current;
   }
-  return current;
+  return output;
 }
 
-function priorHigh(bars, length) {
-  if (bars.length <= length) return null;
-  return Math.max(...bars.slice(-(length + 1), -1).map((bar) => bar.h));
+function heikinAshiSources(bars) {
+  const output = [];
+  let sessionKey = null;
+  let previousOpen = null;
+  let previousClose = null;
+  for (const bar of bars) {
+    if (bar.sessionKey !== sessionKey) {
+      sessionKey = bar.sessionKey;
+      previousOpen = null;
+      previousClose = null;
+    }
+    const close = (bar.o + bar.h + bar.l + bar.c) / 4;
+    const open = previousOpen == null ? (bar.o + bar.c) / 2 : (previousOpen + previousClose) / 2;
+    output.push({ open, close });
+    previousOpen = open;
+    previousClose = close;
+  }
+  return output;
 }
 
-function rvol(bars, period) {
-  if (bars.length < period) return null;
-  const sample = bars.slice(-period);
-  const mean = average(sample.map((bar) => bar.v));
-  return Number.isFinite(mean) && mean > 0 ? sample.at(-1).v / mean : null;
+function utBotSeries(bars, settings) {
+  const atrValues = atrSeries(bars, settings.atrPeriod);
+  const heikin = heikinAshiSources(bars);
+  const rows = [];
+  let previousSession = null;
+  let previousStop = 0;
+  let previousSource = null;
+
+  for (let index = 0; index < bars.length; index += 1) {
+    const bar = bars[index];
+    if (bar.sessionKey !== previousSession) {
+      previousSession = bar.sessionKey;
+      previousStop = 0;
+      previousSource = null;
+    }
+
+    const source = settings.useHeikinAshi ? heikin[index].close : bar.c;
+    const atr = atrValues[index];
+    let trailingStop = null;
+    let crossedAbove = false;
+    let crossedBelow = false;
+
+    if (Number.isFinite(atr)) {
+      const lossDistance = settings.keyValue * atr;
+      if (source > previousStop && previousSource != null && previousSource > previousStop) {
+        trailingStop = Math.max(previousStop, source - lossDistance);
+      } else if (source < previousStop && previousSource != null && previousSource < previousStop) {
+        trailingStop = Math.min(previousStop, source + lossDistance);
+      } else {
+        trailingStop = source > previousStop
+          ? source - lossDistance
+          : source + lossDistance;
+      }
+
+      if (previousSource != null && Number.isFinite(previousStop)) {
+        crossedAbove = previousSource <= previousStop && source > trailingStop;
+        crossedBelow = previousSource >= previousStop && source < trailingStop;
+      }
+      previousStop = trailingStop;
+    }
+
+    rows.push({
+      ...bar,
+      source,
+      signalOpen: settings.useHeikinAshi ? heikin[index].open : bar.o,
+      atr,
+      trailingStop,
+      crossedAbove,
+      crossedBelow,
+      buyCondition: Number.isFinite(trailingStop) && source > trailingStop && crossedAbove,
+      sellCondition: Number.isFinite(trailingStop) && source < trailingStop && crossedBelow,
+    });
+    previousSource = source;
+  }
+  return rows;
 }
 
 function emptyState() {
@@ -209,7 +335,7 @@ function stateFrom(value = {}) {
     entryPrice: inPosition && Number.isFinite(Number(value.entryPrice)) ? Number(value.entryPrice) : null,
     stopLevel: inPosition && Number.isFinite(Number(value.stopLevel)) ? Number(value.stopLevel) : null,
     initialRisk: inPosition && Number.isFinite(Number(value.initialRisk)) ? Number(value.initialRisk) : null,
-    breakevenLocked: inPosition && value.breakevenLocked === true,
+    breakevenLocked: false,
     sessionKey: text(value.sessionKey) || null,
     sessionBarsCompleted: Math.max(0, Math.trunc(finite(value.sessionBarsCompleted))),
     lastEvaluatedBarTime: Number.isFinite(Number(value.lastEvaluatedBarTime)) ? Number(value.lastEvaluatedBarTime) : null,
@@ -243,7 +369,7 @@ function response(state, diagnostics, event = {}) {
     stopLevel: price(state.stopLevel),
     entryPrice: price(state.entryPrice),
     initialRisk: price(state.initialRisk),
-    breakevenLocked: state.breakevenLocked,
+    breakevenLocked: false,
     exitReason: event.exitReason || null,
     exitPrice: price(event.exitPrice),
     signalBarTime: event.signalBarTime ?? null,
@@ -254,29 +380,50 @@ function response(state, diagnostics, event = {}) {
 
 export function evaluateMoerandClean(candles = [], settingsInput = {}, sessionContext = {}) {
   const settings = normalizeMoerandCleanSettings(settingsInput);
-  const frameMs = settings.timeframeMinutes * 60_000;
   const cutoff = timestamp(sessionContext.now ?? sessionContext.evaluatedAt ?? Date.now());
-  const closed = (Array.isArray(candles) ? candles : [])
-    .map(candle)
-    .filter(Boolean)
-    .filter((bar) => bar.closed)
-    .filter((bar) => sessionContext.allCandlesClosed === true || bar.t + frameMs <= cutoff)
-    .sort((left, right) => left.t - right.t)
-    .filter((bar, index, all) => index === all.length - 1 || bar.t !== all[index + 1].t)
-    .filter((bar) => barSessionInfo(bar, settings).inSession);
-
+  const aggregated = aggregateClosedBars(
+    candles,
+    settings,
+    cutoff,
+    sessionContext.allCandlesClosed === true,
+  );
   const state = stateFrom(sessionContext.previousState || sessionContext.state || {});
-  if (!closed.length) return response(state, { status: 'NO_CLOSED_REGULAR_SESSION_BARS', settings, evaluatedBars: 0 });
+
+  if (aggregated.resolutionTooCoarse) {
+    return response(state, {
+      status: 'SOURCE_RESOLUTION_TOO_COARSE',
+      settings,
+      evaluatedBars: 0,
+      sourceResolutionMinutes: aggregated.sourceResolutionMinutes,
+      fullyClosedOnly: true,
+      signalTiming: 'CANDLE_CLOSE_ONLY',
+    });
+  }
+
+  const rows = utBotSeries(aggregated.bars, settings);
+  if (!rows.length) {
+    return response(state, {
+      status: 'NO_CLOSED_REGULAR_SESSION_BARS',
+      settings,
+      evaluatedBars: 0,
+      sourceResolutionMinutes: aggregated.sourceResolutionMinutes,
+      fullyClosedOnly: true,
+      signalTiming: 'CANDLE_CLOSE_ONLY',
+    });
+  }
 
   const pending = state.lastEvaluatedBarTime == null
-    ? [closed.at(-1)]
-    : closed.filter((bar) => bar.t > state.lastEvaluatedBarTime);
+    ? [rows.at(-1)]
+    : rows.filter((bar) => bar.t > state.lastEvaluatedBarTime);
   if (!pending.length) {
     return response(state, {
       status: 'NO_NEW_CLOSED_BAR',
       settings,
       evaluatedBars: 0,
-      latestClosedBarTime: closed.at(-1).t,
+      latestClosedBarTime: rows.at(-1).t,
+      sourceResolutionMinutes: aggregated.sourceResolutionMinutes,
+      fullyClosedOnly: true,
+      signalTiming: 'CANDLE_CLOSE_ONLY',
     });
   }
 
@@ -284,86 +431,84 @@ export function evaluateMoerandClean(candles = [], settingsInput = {}, sessionCo
   let diagnostics = {};
 
   for (const bar of pending) {
-    const info = barSessionInfo(bar, settings);
-    if (state.sessionKey !== info.sessionKey) reset(state, info.sessionKey);
-
-    // Critical isolation rule: every indicator uses only bars from this regular session.
-    const sessionBars = closed.filter((candidate) => {
-      const candidateInfo = barSessionInfo(candidate, settings);
-      return candidateInfo.sessionKey === info.sessionKey && candidate.t <= bar.t;
-    });
-    const firstSessionBar = sessionBars.length === 1 || info.firstBar;
-    const trendEma = ema(sessionBars.map((candidate) => candidate.c), settings.trendLen);
-    const breakoutHigh = priorHigh(sessionBars, settings.breakoutLen);
-    const relativeVolume = rvol(sessionBars, settings.rvolPeriod);
-    const currentAtr = atr(sessionBars, settings.atrPeriod);
-    const trendPassed = Number.isFinite(trendEma) && bar.c > trendEma;
-    const breakoutPassed = Number.isFinite(breakoutHigh) && bar.c > breakoutHigh;
-    const rvolPassed = Number.isFinite(relativeVolume) && relativeVolume >= settings.minRvol;
-    const ready = [trendEma, breakoutHigh, relativeVolume, currentAtr].every(Number.isFinite);
+    if (state.sessionKey !== bar.sessionKey) reset(state, bar.sessionKey);
     event = { signal: 'NONE', exitReason: null, exitPrice: null, signalBarTime: null };
+    if (Number.isFinite(bar.trailingStop)) state.stopLevel = bar.trailingStop;
 
     if (state.inPosition) {
-      const candidateStop = Number.isFinite(currentAtr) ? bar.c - currentAtr * settings.atrMult : state.stopLevel;
-      if (Number.isFinite(candidateStop)) {
-        state.stopLevel = Number.isFinite(state.stopLevel) ? Math.max(state.stopLevel, candidateStop) : candidateStop;
-      }
-      if (
-        settings.enableBreakeven
-        && !state.breakevenLocked
-        && Number.isFinite(state.initialRisk)
-        && bar.c - state.entryPrice >= state.initialRisk
-      ) state.breakevenLocked = true;
-      if (state.breakevenLocked) state.stopLevel = Math.max(state.stopLevel, state.entryPrice);
-
-      if (info.finalBar) {
-        event = { signal: 'SELL', exitReason: 'SESSION_END_FORCED_CLOSE', exitPrice: bar.c, signalBarTime: bar.t };
-      } else if (Number.isFinite(state.stopLevel) && bar.c < state.stopLevel) {
-        event = { signal: 'SELL', exitReason: 'TRAILING_STOP_CLOSE', exitPrice: bar.c, signalBarTime: bar.t };
+      if (bar.finalBar) {
+        event = {
+          signal: 'SELL',
+          exitReason: 'SESSION_END_FORCED_CLOSE',
+          exitPrice: bar.c,
+          signalBarTime: bar.t,
+        };
+      } else if (bar.sellCondition) {
+        event = {
+          signal: 'SELL',
+          exitReason: 'UT_BOT_CLOSED_BAR_SELL',
+          exitPrice: bar.c,
+          signalBarTime: bar.t,
+        };
       }
       if (event.signal === 'SELL') {
         state.inPosition = false;
         state.entryPrice = null;
         state.stopLevel = null;
         state.initialRisk = null;
-        state.breakevenLocked = false;
       }
-    } else if (!firstSessionBar && !info.finalBar && ready && trendPassed && breakoutPassed && rvolPassed) {
-      state.initialRisk = currentAtr * settings.atrMult;
-      state.entryPrice = bar.c;
-      state.stopLevel = bar.c - state.initialRisk;
-      state.breakevenLocked = false;
+    } else if (!bar.finalBar && bar.buyCondition) {
       state.inPosition = true;
-      event = { signal: 'BUY', exitReason: null, exitPrice: null, signalBarTime: bar.t };
+      state.entryPrice = bar.c;
+      state.stopLevel = bar.trailingStop;
+      state.initialRisk = Math.max(
+        bar.c - bar.trailingStop,
+        Math.abs(bar.source - bar.trailingStop),
+        0.01,
+      );
+      event = {
+        signal: 'BUY',
+        exitReason: null,
+        exitPrice: null,
+        signalBarTime: bar.t,
+      };
     }
 
-    state.sessionBarsCompleted = sessionBars.length;
+    state.sessionBarsCompleted = rows.filter((candidate) => (
+      candidate.sessionKey === bar.sessionKey && candidate.t <= bar.t
+    )).length;
     state.lastEvaluatedBarTime = bar.t;
     state.lastSignal = event.signal;
     state.lastExitReason = event.exitReason;
+
     diagnostics = {
-      status: event.signal === 'NONE' ? (ready ? 'NO_SIGNAL' : 'WARMING_UP') : event.signal,
+      status: event.signal === 'NONE'
+        ? (Number.isFinite(bar.atr) ? 'NO_SIGNAL' : 'WARMING_UP')
+        : event.signal,
       settings,
-      sessionKey: info.sessionKey,
-      sessionBarsCompleted: sessionBars.length,
-      firstSessionBar,
-      finalSessionBar: info.finalBar,
+      sessionKey: bar.sessionKey,
+      sessionBarsCompleted: state.sessionBarsCompleted,
+      firstSessionBar: bar.firstBar,
+      finalSessionBar: bar.finalBar,
       closedBarTime: bar.t,
       close: price(bar.c),
-      trendEma: price(trendEma),
-      priorBreakoutHigh: price(breakoutHigh),
-      relativeVolume: price(relativeVolume),
-      atr: price(currentAtr),
-      trendPassed,
-      breakoutPassed,
-      rvolPassed,
-      indicatorsReady: ready,
-      entryGate: trendPassed && breakoutPassed && rvolPassed,
+      sourcePrice: price(bar.source),
+      signalOpen: price(bar.signalOpen),
+      atr: price(bar.atr),
+      trailingStop: price(bar.trailingStop),
+      crossedAbove: bar.crossedAbove,
+      crossedBelow: bar.crossedBelow,
+      buyCondition: bar.buyCondition,
+      sellCondition: bar.sellCondition,
+      candleSource: settings.useHeikinAshi ? 'HEIKIN_ASHI_CLOSE' : 'REGULAR_CLOSE',
+      timeframeMinutes: settings.timeframeMinutes,
+      sourceResolutionMinutes: aggregated.sourceResolutionMinutes,
       fullyClosedOnly: true,
-      regularSessionIndicatorsOnly: true,
-      sessionIsolated: true,
+      signalTiming: 'CANDLE_CLOSE_ONLY',
+      utBotCompatible: true,
       longOnly: true,
       spotEquitiesOnly: true,
+      sessionIsolated: true,
     };
   }
 
