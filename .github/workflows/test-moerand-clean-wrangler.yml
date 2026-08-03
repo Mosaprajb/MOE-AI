@@ -1,0 +1,52 @@
+name: Test MOERAND Clean with Wrangler
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - feature/moe-core-domain-v2
+    paths:
+      - 'package.json'
+      - 'package-lock.json'
+      - 'wrangler.sandbox.jsonc'
+      - 'worker/src/sandbox-moerand-clean-utbot-entry.js'
+      - 'worker/src/strategies/moerand-clean-core.js'
+      - 'worker/src/scanner/moerand-clean-candidate.js'
+      - 'worker/src/auto-scanner.js'
+      - 'worker/test/moerand-clean-mobile-settings.test.mjs'
+      - '.github/workflows/test-moerand-clean-wrangler.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: test-moerand-clean-wrangler-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test-wrangler:
+    name: Install, test, and dry-run Wrangler
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout exact commit
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      - name: Install locked dependencies including Wrangler
+        run: npm ci --include=dev
+
+      - name: Verify local Wrangler package
+        run: npx --no-install wrangler --version
+
+      - name: Run complete Worker test suite
+        run: npm run test:worker
+
+      - name: Build Sandbox Worker with Wrangler
+        run: npm run test:wrangler
