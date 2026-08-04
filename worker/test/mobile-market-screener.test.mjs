@@ -5,34 +5,38 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
+const compatibilitySource = readFileSync(join(root, 'worker/src/sandbox-mobile-market-screener-resilient-entry.js'), 'utf8');
 const platformSource = readFileSync(join(root, 'worker/src/sandbox-market-platform-entry.js'), 'utf8');
-const resilientSource = readFileSync(join(root, 'worker/src/sandbox-mobile-market-screener-resilient-entry.js'), 'utf8');
+const resilientCoreSource = readFileSync(join(root, 'worker/src/sandbox-mobile-market-screener-resilient-core.js'), 'utf8');
 const source = readFileSync(join(root, 'worker/src/sandbox-mobile-market-screener-entry.js'), 'utf8');
 const watchlistSource = readFileSync(join(root, 'worker/src/sandbox-mobile-live-watchlist-entry.js'), 'utf8');
 const config = JSON.parse(readFileSync(join(root, 'wrangler.sandbox.jsonc'), 'utf8'));
 
-test('mobile market platform is deployed and preserves the protected screener chain', () => {
-  assert.equal(config.main, 'worker/src/sandbox-market-platform-entry.js');
-  assert.match(platformSource, /from '\.\/sandbox-mobile-market-screener-resilient-entry\.js'/);
-  assert.match(resilientSource, /from '\.\/sandbox-mobile-market-screener-entry\.js'/);
+test('mobile market platform preserves the compatible protected screener chain', () => {
+  assert.equal(config.main, 'worker/src/sandbox-mobile-market-screener-resilient-entry.js');
+  assert.match(compatibilitySource, /from '\.\/sandbox-market-platform-entry\.js'/);
+  assert.match(platformSource, /from '\.\/sandbox-mobile-market-screener-resilient-core\.js'/);
+  assert.match(resilientCoreSource, /from '\.\/sandbox-mobile-market-screener-entry\.js'/);
   assert.match(source, /from '\.\/sandbox-mobile-live-watchlist-entry\.js'/);
   assert.match(source, /export \{ AlertCoordinator, SimulationDriver \}/);
   assert.match(watchlistSource, /from '\.\/sandbox-moerand-clean-utbot-entry\.js'/);
 });
 
-test('screener reads live IEX quotes through the protected watchlist endpoint', () => {
+test('screener reads live IEX quotes through resilient independent batches', () => {
   for (const token of [
     '/api/mobile/market-screener',
     '/api/mobile/watchlist/quotes',
-    'SCREENER_BATCH_SIZE = 30',
+    'PRIMARY_BATCH_SIZE = 20',
+    'RETRY_BATCH_SIZE = 5',
+    'Promise.allSettled',
     'AUTO_SCANNER_SYMBOLS',
     "'x-moe-mobile-client': '1'",
     "feed: 'IEX'",
     'liveTradingLocked: true',
     'liveFundsUsed: false',
-  ]) assert.equal(source.includes(token), true, `missing screener data token: ${token}`);
-  assert.equal(source.includes('placeWebullSandboxOrder'), false);
-  assert.equal(source.includes('placeWebullLiveOrder'), false);
+  ]) assert.equal(resilientCoreSource.includes(token), true, `missing resilient data token: ${token}`);
+  assert.equal(resilientCoreSource.includes('placeWebullSandboxOrder'), false);
+  assert.equal(resilientCoreSource.includes('placeWebullLiveOrder'), false);
 });
 
 test('Yahoo and Webull style mobile screener exposes filters, sorting, live columns, and multi-select', () => {
