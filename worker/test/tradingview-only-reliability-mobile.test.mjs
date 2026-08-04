@@ -60,7 +60,7 @@ test('mobile dashboard script compiles and includes stable mobile controls', () 
   scripts.forEach((script) => assert.doesNotThrow(() => new Function(script)));
 });
 
-test('Cloudflare entry uses the reliable runtime, mobile overlay, and Safari-safe login', () => {
+test('Cloudflare entry uses the reliable runtime, mobile overlay, and non-blocking Safari login', () => {
   const durable = readFileSync(join(root, 'worker/src/tradingview-only-durable-object.js'), 'utf8');
   const cloudflare = readFileSync(join(root, 'worker/src/tradingview-only-cloudflare-entry.js'), 'utf8');
   const mobileEntry = readFileSync(join(root, 'worker/src/tradingview-only-mobile-entry.js'), 'utf8');
@@ -72,8 +72,11 @@ test('Cloudflare entry uses the reliable runtime, mobile overlay, and Safari-saf
   assert.match(mobileEntry, /\/api\/tradingview\/repair/);
   assert.match(mobileEntry, /moe-safari-login-patch/);
   assert.match(mobileEntry, /credentials: 'include'/);
-  assert.match(mobileEntry, /SameSite=Strict/);
+  assert.match(mobileEntry, /AbortController/);
+  assert.match(mobileEntry, /Login timed out/);
+  assert.match(mobileEntry, /ctx\.waitUntil\(task\)/);
   assert.match(mobileEntry, /SameSite=Lax/);
+  assert.doesNotMatch(mobileEntry, /SameSite=Strict/);
   assert.match(mobileEntry, /PIN accepted\. Opening dashboard/);
   assert.match(reliable, /fetchHighSince/);
   assert.match(reliable, /TRAILING_STOP_CATCHUP_EXIT_REQUIRED/);
