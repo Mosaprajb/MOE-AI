@@ -25,6 +25,12 @@ const LOGIN_PATH = '/mobile/login-v2';
 const SETUP_PATH = '/mobile/face-id/setup';
 const LOGIN_POST_PATHS = new Set(['/mobile/unlock', LOGIN_PATH]);
 const DASHBOARD_PATHS = new Set(['/', '/dashboard', '/dashboard/', '/m', '/m/', '/mobile', '/mobile/', '/alerts', '/alerts/']);
+const LEGACY_LOGIN_PATTERN = /<div class="login" id="login">[\s\S]*?<div class="app">/;
+const AUTHENTICATED_LOGIN_COMPATIBILITY = `<div class="login" id="login" hidden aria-hidden="true" style="display:none!important;visibility:hidden!important;pointer-events:none!important">
+  <input id="pin" type="hidden" value="" aria-hidden="true">
+  <button id="loginButton" type="button" hidden aria-hidden="true" tabindex="-1" style="display:none!important"></button>
+  <div id="loginMessage" hidden aria-hidden="true"></div>
+</div>`;
 
 function responseHeaders(contentType, cookies = []) {
   const headers = new Headers({
@@ -57,7 +63,7 @@ function json(payload, status = 200, cookies = []) {
 function redirect(request, path, status = 303, cookies = []) {
   const headers = responseHeaders('text/plain; charset=utf-8', cookies);
   headers.set('location', new URL(path, request.url).toString());
-  headers.set('x-moe-auth-handoff', 'direct-redirect-v2');
+  headers.set('x-moe-auth-handoff', 'direct-redirect-v3');
   return new Response(null, { status, headers });
 }
 
@@ -91,6 +97,37 @@ function recordAudit(env, ctx, type) {
   } catch (error) {
     console.warn(JSON.stringify({ event: 'FACE_ID_AUDIT_SKIPPED', type, error: String(error || '') }));
   }
+}
+
+async function authenticatedDashboardResponse(request, env, ctx) {
+  const response = await safariAuthWorker.fetch(request, env, ctx);
+  const contentType = String(response.headers.get('content-type') || '').toLowerCase();
+  if (request.method !== 'GET' || !contentType.includes('text/html')) return response;
+
+  let source = await response.text();
+  const compatibilityShell = `${AUTHENTICATED_LOGIN_COMPATIBILITY}<div class="app">`;
+  if (LEGACY_LOGIN_PATTERN.test(source)) {
+    source = source.replace(LEGACY_LOGIN_PATTERN, compatibilityShell);
+  }
+
+  const authenticatedStyle = '<style id="moe-authenticated-dashboard-v1">#login[aria-hidden="true"]{display:none!important;visibility:hidden!important;pointer-events:none!important}</style>';
+  if (!source.includes('moe-authenticated-dashboard-v1')) {
+    source = source.includes('</head>')
+      ? source.replace('</head>', `${authenticatedStyle}</head>`)
+      : `${authenticatedStyle}${source}`;
+  }
+
+  const headers = new Headers(response.headers);
+  headers.delete('content-length');
+  headers.set('cache-control', 'no-store, no-cache, must-revalidate');
+  headers.set('pragma', 'no-cache');
+  headers.set('expires', '0');
+  headers.set('x-moe-authenticated-dashboard', 'face-id-v3');
+  return new Response(source, {
+    status: response.status,
+    statusText: response.statusText,
+    headers,
+  });
 }
 
 async function handleLoginPage(request, env) {
@@ -154,8 +191,17 @@ async function registerComplete(request, env, ctx) {
   if (!challenge) return json({ ok: false, error: 'Face ID setup request expired' }, 400);
   try {
     const record = await createPasskeyRecord(body, challenge);
+    const session = await createDashboardSession(env);
     recordAudit(env, ctx, 'TRADINGVIEW_FACE_ID_REGISTERED');
-    return json({ ok: true, faceIdEnabled: true }, 200, [await passkeyRecordCookie(record, env)]);
+    return json({
+      ok: true,
+      faceIdEnabled: true,
+      sessionRefreshed: true,
+      expiresAt: new Date(session.payload.expiresAt).toISOString(),
+    }, 200, [
+      dashboardSessionCookie(session),
+      await passkeyRecordCookie(record, env),
+    ]);
   } catch (error) {
     return json({ ok: false, error: error instanceof Error ? error.message : 'Face ID setup failed' }, 400);
   }
@@ -218,6 +264,7 @@ export default {
 
     if (DASHBOARD_PATHS.has(path) && ['GET', 'HEAD'].includes(request.method)) {
       if (!(await dashboardSessionActive(request, env))) return redirect(request, `${LOGIN_PATH}?v=${MOBILE_ASSET_VERSION}`, 302);
+      return authenticatedDashboardResponse(request, env, ctx);
     }
     return safariAuthWorker.fetch(request, env, ctx);
   },
