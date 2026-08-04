@@ -84,7 +84,7 @@ jobs:
           for (const token of [
             'tradingview-only-safari-auth-entry.js',
             'tradingview-only-pnl-control-patch.js',
-            'patchTradingViewDashboardWithPnlControl',
+            'tradingViewPnlControlPatch',
           ]) {
             if (!entry.includes(token)) throw new Error(`Deployment entry missing ${token}`);
           }
