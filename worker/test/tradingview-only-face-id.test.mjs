@@ -27,7 +27,7 @@ test('dashboard uses one guarded login page instead of the old overlay', () => {
 test('PIN handoff redirects directly and preserves the new session cookie', () => {
   const entry = source('tradingview-only-face-id-entry.js');
   assert.match(entry, /function redirect\(request, path, status = 303, cookies = \[\]\)/);
-  assert.match(entry, /x-moe-auth-handoff', 'direct-redirect-v2'/);
+  assert.match(entry, /x-moe-auth-handoff', 'direct-redirect-v3'/);
   assert.match(entry, /sessionCookies = cookies\.filter/);
   assert.match(entry, /if \(record\) return redirect\(request, destination, 303, sessionCookies\)/);
   assert.doesNotMatch(entry, /if \(record\) return response/);
@@ -40,6 +40,26 @@ test('dashboard session is validated directly from its signed cookie', () => {
   assert.match(entry, /readSignedToken\(token, env\)/);
   assert.match(entry, /payload\.scope === 'MOE_TRADINGVIEW_DASHBOARD'/);
   assert.doesNotMatch(entry, /statusUrl = new URL\('\/api\/tradingview\/status'/);
+});
+
+test('Face ID setup refreshes both the dashboard session and passkey cookies', () => {
+  const entry = source('tradingview-only-face-id-entry.js');
+  assert.match(entry, /const session = await createDashboardSession\(env\)/);
+  assert.match(entry, /sessionRefreshed: true/);
+  assert.match(entry, /dashboardSessionCookie\(session\)/);
+  assert.match(entry, /await passkeyRecordCookie\(record, env\)/);
+});
+
+test('authenticated dashboard suppresses the legacy PIN overlay without breaking old client bindings', () => {
+  const entry = source('tradingview-only-face-id-entry.js');
+  assert.match(entry, /LEGACY_LOGIN_PATTERN/);
+  assert.match(entry, /AUTHENTICATED_LOGIN_COMPATIBILITY/);
+  assert.match(entry, /id="login" hidden aria-hidden="true"/);
+  assert.match(entry, /id="pin" type="hidden"/);
+  assert.match(entry, /id="loginButton" type="button" hidden/);
+  assert.match(entry, /moe-authenticated-dashboard-v1/);
+  assert.match(entry, /x-moe-authenticated-dashboard', 'face-id-v3'/);
+  assert.match(entry, /return authenticatedDashboardResponse\(request, env, ctx\)/);
 });
 
 test('passkey requires platform user verification and server signature verification', () => {
@@ -57,6 +77,7 @@ test('passkey requires platform user verification and server signature verificat
 
 test('passkey and dashboard records are protected by signed secure cookies', () => {
   const token = source('tradingview-only-passkey-token.js');
+  assert.match(token, /MOBILE_ASSET_VERSION = '20260804-9'/);
   assert.match(token, /MOE_TRADINGVIEW_PASSKEY/);
   assert.match(token, /createSignedToken/);
   assert.match(token, /HttpOnly; Secure; SameSite=Lax/);
