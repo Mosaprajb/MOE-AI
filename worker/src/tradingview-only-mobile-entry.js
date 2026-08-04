@@ -8,6 +8,7 @@ export { AlertCoordinator, SimulationDriver };
 
 const DASHBOARD_PATHS = new Set(['/', '/dashboard', '/dashboard/', '/m', '/m/', '/mobile', '/mobile/', '/alerts', '/alerts/']);
 const SESSION_COOKIE = 'moe_tv_session';
+const NATIVE_LOGIN_PATH = '/mobile/unlock';
 const encoder = new TextEncoder();
 
 const SAFARI_LOGIN_PATCH = `
@@ -25,106 +26,75 @@ const SAFARI_LOGIN_PATCH = `
     message.style.marginTop = '10px';
   }
 
-  function setBusy(button, busy) {
-    if (!button) return;
-    button.disabled = busy;
-    button.style.opacity = busy ? '0.72' : '1';
-    button.textContent = busy ? 'Verifying PIN…' : 'Unlock dashboard';
+  function queryValue(name) {
+    try { return new URL(window.location.href).searchParams.get(name); }
+    catch (_) { return null; }
   }
 
-  function parsePayload(response) {
-    return response.text().then(function (text) {
-      var payload = {};
-      try { payload = text ? JSON.parse(text) : {}; } catch (_) {}
-      return { response: response, payload: payload };
+  function prepareNativeLogin() {
+    var login = byId('login');
+    var originalPin = byId('pin');
+    var originalButton = byId('loginButton');
+    var message = byId('loginMessage');
+    if (!login || !originalPin || !originalButton || !originalPin.parentNode || !originalButton.parentNode) return;
+    if (byId('moeNativeLoginForm')) return;
+
+    var pin = originalPin.cloneNode(true);
+    pin.id = 'pin';
+    pin.name = 'pin';
+    pin.required = true;
+    pin.autocomplete = 'current-password';
+    pin.value = originalPin.value || '';
+    originalPin.parentNode.replaceChild(pin, originalPin);
+
+    var button = originalButton.cloneNode(true);
+    button.id = 'loginButton';
+    button.type = 'submit';
+    button.disabled = false;
+    button.textContent = 'Unlock dashboard';
+    originalButton.parentNode.replaceChild(button, originalButton);
+
+    var form = document.createElement('form');
+    form.id = 'moeNativeLoginForm';
+    form.method = 'post';
+    form.action = '/mobile/unlock';
+    form.acceptCharset = 'UTF-8';
+    form.autocomplete = 'off';
+
+    pin.parentNode.insertBefore(form, pin);
+    form.appendChild(pin);
+    form.appendChild(button);
+    if (message) form.appendChild(message);
+
+    form.addEventListener('submit', function (event) {
+      var value = String(pin.value || '').trim();
+      if (!value) {
+        event.preventDefault();
+        setMessage('Enter the control PIN first.', true);
+        pin.focus();
+        return;
+      }
+      button.disabled = true;
+      button.style.opacity = '0.72';
+      button.textContent = 'Opening dashboard…';
+      setMessage('Sending the PIN directly to the secure server…', false);
     });
-  }
 
-  function requestSession(value) {
-    var controller = typeof AbortController === 'function' ? new AbortController() : null;
-    var timeoutId = window.setTimeout(function () {
-      if (controller) controller.abort();
-    }, 10000);
-    var options = {
-      method: 'POST',
-      cache: 'no-store',
-      credentials: 'include',
-      headers: {
-        'content-type': 'application/json',
-        'x-moe-mobile-client': '1'
-      },
-      body: JSON.stringify({ pin: value })
-    };
-    if (controller) options.signal = controller.signal;
+    var error = queryValue('login_error');
+    if (error === 'wrong') setMessage('Wrong control PIN. Try again.', true);
+    else if (error === 'session') setMessage('The secure session could not be created. Try again.', true);
+    else if (error === 'request') setMessage('The login request was rejected. Reload and try again.', true);
 
-    return fetch('/api/tradingview/session', options)
-      .then(function (response) {
-        window.clearTimeout(timeoutId);
-        return parsePayload(response);
-      })
-      .catch(function (error) {
-        window.clearTimeout(timeoutId);
-        if (error && error.name === 'AbortError') {
-          throw new Error('Login timed out. Reload the page and try again.');
-        }
-        throw error;
-      });
-  }
-
-  function submitLogin(button) {
-    if (window.__moeLoginSubmitting) return;
-    var pin = byId('pin');
-    var value = pin ? String(pin.value || '').trim() : '';
-    if (!value) {
-      setMessage('Enter the control PIN first.', true);
-      if (pin) pin.focus();
-      return;
+    if (queryValue('unlocked') === '1') {
+      login.hidden = true;
     }
-
-    window.__moeLoginSubmitting = true;
-    setBusy(button, true);
-    setMessage('Verifying secure session…', false);
-
-    requestSession(value)
-      .then(function (result) {
-        if (!result.response.ok || result.payload.ok === false) {
-          throw new Error(result.payload.error || ('Login failed · HTTP ' + result.response.status));
-        }
-        if (pin) pin.value = '';
-        setMessage('PIN accepted. Opening dashboard…', false);
-        setBusy(button, true);
-        window.setTimeout(function () {
-          window.location.href = '/mobile?session=' + Date.now();
-        }, 50);
-      })
-      .catch(function (error) {
-        window.__moeLoginSubmitting = false;
-        setBusy(button, false);
-        setMessage(error && error.message ? error.message : 'Unable to open the dashboard.', true);
-      });
   }
 
-  function captureLoginClick(event) {
-    var button = byId('loginButton');
-    if (!button) return;
-    var target = event.target;
-    if (target !== button && !button.contains(target)) return;
-    event.preventDefault();
-    event.stopPropagation();
-    if (typeof event.stopImmediatePropagation === 'function') event.stopImmediatePropagation();
-    submitLogin(button);
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', prepareNativeLogin, { once: true });
+  } else {
+    prepareNativeLogin();
   }
-
-  function captureLoginEnter(event) {
-    if (event.key !== 'Enter' || event.target !== byId('pin')) return;
-    event.preventDefault();
-    event.stopPropagation();
-    if (typeof event.stopImmediatePropagation === 'function') event.stopImmediatePropagation();
-    submitLogin(byId('loginButton'));
-  }
-
-  document.addEventListener('click', captureLoginClick, true);
-  document.addEventListener('keydown', captureLoginEnter, true);
 })();
 </script>`;
 
@@ -153,6 +123,18 @@ function json(payload, status = 200, headers = {}) {
       'cache-control': 'no-store, no-cache, must-revalidate',
       'content-type': 'application/json; charset=utf-8',
       'x-content-type-options': 'nosniff',
+      ...headers,
+    },
+  });
+}
+
+function redirect(location, headers = {}) {
+  return new Response(null, {
+    status: 303,
+    headers: {
+      location,
+      'cache-control': 'no-store, no-cache, must-revalidate',
+      pragma: 'no-cache',
       ...headers,
     },
   });
@@ -261,6 +243,16 @@ async function readPayload(request) {
   return request.json().catch(() => ({}));
 }
 
+async function readLoginPin(request) {
+  const contentType = String(request.headers.get('content-type') || '').toLowerCase();
+  if (contentType.includes('application/json')) {
+    const payload = await request.json().catch(() => null);
+    return payload && typeof payload === 'object' ? String(payload.pin || '') : '';
+  }
+  const form = await request.formData().catch(() => null);
+  return form ? String(form.get('pin') || '') : '';
+}
+
 function activeSymbols(status, requestedSymbol = '') {
   const requested = String(requestedSymbol || '').trim().toUpperCase();
   const symbols = (Array.isArray(status?.positions) ? status.positions : [])
@@ -318,16 +310,49 @@ async function handleClosePosition(request, env, ctx) {
   });
 }
 
+function expectedControlPin(env) {
+  return String(env.MOE_SIMULATION_CONTROL_PIN || env.MOE_TRADINGVIEW_CONTROL_PIN || '').trim();
+}
+
+function sessionCookie(session) {
+  return `${SESSION_COOKIE}=${session.token}; Path=/; Max-Age=${session.ttlSeconds}; HttpOnly; Secure; SameSite=Lax`;
+}
+
+async function handleNativeUnlock(request, env, ctx) {
+  if (request.method !== 'POST') return redirect('/mobile?login_error=request');
+  if (!sameOrigin(request)) return redirect('/mobile?login_error=request');
+
+  const expected = expectedControlPin(env);
+  if (!expected) return redirect('/mobile?login_error=session');
+
+  const pin = (await readLoginPin(request)).trim();
+  if (!constantTimeTextEqual(pin, expected)) {
+    recordLoginAudit(env, ctx, 'TRADINGVIEW_DASHBOARD_LOGIN_FAILED');
+    return redirect(`/mobile?login_error=wrong&v=${Date.now()}`);
+  }
+
+  let session;
+  try {
+    session = await createSession(env);
+  } catch (error) {
+    console.error(JSON.stringify({ event: 'TRADINGVIEW_NATIVE_LOGIN_SESSION_FAILED', error: String(error || '') }));
+    return redirect(`/mobile?login_error=session&v=${Date.now()}`);
+  }
+
+  recordLoginAudit(env, ctx, 'TRADINGVIEW_DASHBOARD_LOGIN_SUCCEEDED');
+  return redirect(`/mobile?unlocked=1&v=${Date.now()}`, {
+    'set-cookie': sessionCookie(session),
+  });
+}
+
 async function handleSessionCompatibility(request, env, ctx) {
   if (request.method !== 'POST') return json({ ok: false, error: 'Method not allowed' }, 405);
   if (!sameOrigin(request)) return json({ ok: false, error: 'Invalid request origin' }, 403);
 
-  const payload = await request.json().catch(() => null);
-  if (!payload || typeof payload !== 'object') return json({ ok: false, error: 'Valid JSON is required' }, 400);
-
-  const expected = String(env.MOE_SIMULATION_CONTROL_PIN || env.MOE_TRADINGVIEW_CONTROL_PIN || '').trim();
+  const pin = await readLoginPin(request);
+  const expected = expectedControlPin(env);
   if (!expected) return json({ ok: false, error: 'Control PIN is not configured' }, 503);
-  if (!constantTimeTextEqual(payload.pin, expected)) {
+  if (!constantTimeTextEqual(pin.trim(), expected)) {
     recordLoginAudit(env, ctx, 'TRADINGVIEW_DASHBOARD_LOGIN_FAILED');
     return json({ ok: false, error: 'Wrong control PIN' }, 401);
   }
@@ -347,7 +372,7 @@ async function handleSessionCompatibility(request, env, ctx) {
     ok: true,
     expiresAt: new Date(session.payload.expiresAt).toISOString(),
   }, 200, {
-    'set-cookie': `${SESSION_COOKIE}=${session.token}; Path=/; Max-Age=${session.ttlSeconds}; HttpOnly; Secure; SameSite=Lax`,
+    'set-cookie': sessionCookie(session),
   });
 }
 
@@ -357,6 +382,7 @@ export default {
     if (DASHBOARD_PATHS.has(path) && ['GET', 'HEAD'].includes(request.method)) {
       return html(tradingViewMobileDashboardHtml(), request.method);
     }
+    if (path === NATIVE_LOGIN_PATH) return handleNativeUnlock(request, env, ctx);
     if (path === '/api/tradingview/session') return handleSessionCompatibility(request, env, ctx);
     if (path === '/api/tradingview/refresh') return handleRefresh(request, env, ctx, false);
     if (path === '/api/tradingview/repair') return handleRefresh(request, env, ctx, true);
