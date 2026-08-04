@@ -34,7 +34,7 @@ test('selected Clean settings are applied to scheduled scanner cycles', () => {
 });
 
 test('Sandbox deployment points through the market screener, live watchlist, and Clean UT Bot wrapper chain', () => {
-  assert.match(config, /"main": "worker\/src\/sandbox-mobile-market-screener-entry\.js"/);
+  assert.match(config, /"main": "worker\/src\/sandbox-mobile-market-screener-resilient-entry\.js"/);
   assert.match(marketScreener, /from '\.\/sandbox-mobile-live-watchlist-entry\.js'/);
   assert.match(marketScreener, /\/api\/mobile\/market-screener/);
   assert.match(liveWatchlist, /from '\.\/sandbox-moerand-clean-utbot-entry\.js'/);
