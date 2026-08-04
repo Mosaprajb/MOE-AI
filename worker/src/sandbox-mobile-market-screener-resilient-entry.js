@@ -2,9 +2,10 @@ import tradingViewWorker, {
   AlertCoordinator,
   SimulationDriver,
   TradingViewPositionCoordinator,
-} from './tradingview-only-cloudflare-entry.js';
+} from './tradingview-only-safari-auth-entry.js';
 
-// TradingView-only Sandbox deployment v5: whole-trade targets, session clock, optional margin-long, and no-overnight auto-flatten.
+// TradingView-only Sandbox deployment v6: Safari-safe native session handoff plus whole-trade targets,
+// session clock, optional margin-long, and no-overnight auto-flatten.
 // Compatibility chain markers for existing safety validation:
 // from './sandbox-market-platform-entry.js'
 // from './sandbox-mobile-market-screener-entry.js'
