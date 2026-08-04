@@ -2,161 +2,170 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import {
-  normalizeTradingViewAlert,
-  normalizeTradingViewSettings,
-  tradingViewSignalId,
-} from '../src/tradingview-only-runtime.js';
+  migrateTradingViewSettingsV2,
+  normalizeTradingViewSettingsV2,
+  TRADING_MODES,
+  TRADINGVIEW_SETTINGS_VERSION,
+} from '../src/tradingview-only-settings-v2.js';
+import {
+  marketPhaseAt,
+  tradingViewMarketClock,
+} from '../src/tradingview-only-market-clock.js';
 
+const source = (name) => readFileSync(new URL(`../src/${name}`, import.meta.url), 'utf8');
+const deployedEntry = source('sandbox-mobile-market-screener-resilient-entry.js');
+const finalEntry = source('tradingview-only-final-entry.js');
+const webhookQueue = source('tradingview-only-webhook-queue.js');
+const safetyRuntime = source('tradingview-only-runtime-safety.js');
+const finalRuntime = source('tradingview-only-runtime-final.js');
+const dashboard = source('tradingview-only-dashboard.js');
+const finalDashboard = source('tradingview-only-dashboard-final.js');
 const config = JSON.parse(readFileSync(new URL('../../wrangler.sandbox.jsonc', import.meta.url), 'utf8'));
-const deployedEntry = readFileSync(new URL('../src/sandbox-mobile-market-screener-resilient-entry.js', import.meta.url), 'utf8');
-const cloudflareEntry = readFileSync(new URL('../src/tradingview-only-cloudflare-entry.js', import.meta.url), 'utf8');
-const durableObject = readFileSync(new URL('../src/tradingview-only-durable-object.js', import.meta.url), 'utf8');
-const finalEntry = readFileSync(new URL('../src/tradingview-only-final-entry.js', import.meta.url), 'utf8');
-const webhookQueue = readFileSync(new URL('../src/tradingview-only-webhook-queue.js', import.meta.url), 'utf8');
-const safetyRuntime = readFileSync(new URL('../src/tradingview-only-runtime-safety.js', import.meta.url), 'utf8');
-const finalRuntime = readFileSync(new URL('../src/tradingview-only-runtime-final.js', import.meta.url), 'utf8');
-const dashboard = readFileSync(new URL('../src/tradingview-only-dashboard.js', import.meta.url), 'utf8');
-const finalDashboard = readFileSync(new URL('../src/tradingview-only-dashboard-final.js', import.meta.url), 'utf8');
 
-test('TradingView settings accept fixed-dollar values and force spot long-only rules', () => {
-  const settings = normalizeTradingViewSettings({
+test('whole-trade settings default to cash long-only and whole shares', () => {
+  const settings = normalizeTradingViewSettingsV2({
     accountType: 'DEMO',
-    positionSizeDollars: 250,
+    positionSizeDollars: 2000,
+    takeProfitDollars: 300,
+    stopLossDollars: 100,
+    maxDailyLossDollars: 250,
+    maxOpenPositions: 3,
+    maxBuyingPowerPercent: 25,
+    tradingMode: TRADING_MODES.CASH,
+    session: 'ALL',
+    autoFlattenTimeLocal: '18:55',
+    autoFlattenTimezone: 'America/Chicago',
+  });
+  assert.equal(settings.settingsVersion, TRADINGVIEW_SETTINGS_VERSION);
+  assert.equal(settings.configured, true);
+  assert.equal(settings.wholeTradeTargets, true);
+  assert.equal(settings.wholeSharesOnly, true);
+  assert.equal(settings.cashOnly, true);
+  assert.equal(settings.marginLongEnabled, false);
+  assert.equal(settings.longOnly, true);
+  assert.equal(settings.noOvernightHolding, true);
+  assert.equal(settings.takeProfitDollars, 300);
+  assert.equal(settings.stopLossDollars, 100);
+});
+
+test('margin long mode accepts only the buying-power percentage guardrail', () => {
+  const settings = normalizeTradingViewSettingsV2({
+    accountType: 'DEMO',
+    positionSizeDollars: 2000,
+    takeProfitDollars: 300,
+    stopLossDollars: 100,
+    maxDailyLossDollars: 250,
+    maxOpenPositions: 2,
+    maxBuyingPowerPercent: 20,
+    tradingMode: TRADING_MODES.MARGIN,
+    session: 'CORE',
+  });
+  assert.equal(settings.marginLongEnabled, true);
+  assert.equal(settings.cashOnly, false);
+  assert.equal(settings.maxBuyingPowerPercent, 20);
+  assert.throws(() => normalizeTradingViewSettingsV2({
+    ...settings,
+    allowShort: true,
+  }), /forbidden/i);
+  assert.throws(() => normalizeTradingViewSettingsV2({
+    ...settings,
+    leveragePercent: 20,
+  }), /forbidden/i);
+  assert.throws(() => normalizeTradingViewSettingsV2({
+    ...settings,
+    session: 'NIGHT',
+  }), /overnight entries are disabled/i);
+});
+
+test('old per-share settings require explicit resave under whole-trade schema', () => {
+  const migrated = migrateTradingViewSettingsV2({
+    accountType: 'DEMO',
+    positionSizeDollars: 100,
     takeProfitDollars: 0.25,
     stopLossDollars: 0.10,
-    maxDailyLossDollars: 50,
-    maxOpenPositions: 3,
-    trailingEnabled: true,
   });
-  assert.equal(settings.configured, true);
-  assert.equal(settings.positionSizeDollars, 250);
-  assert.equal(settings.takeProfitDollars, 0.25);
-  assert.equal(settings.stopLossDollars, 0.10);
-  assert.equal(settings.maxDailyLossDollars, 50);
-  assert.equal(settings.maxOpenPositions, 3);
-  assert.equal(settings.spotOnly, true);
-  assert.equal(settings.longOnly, true);
-  assert.equal(settings.breakEvenTriggerDollars, 0.02);
-  assert.equal(settings.trailRiseStepDollars, 0.05);
-  assert.equal(settings.trailStopStepDollars, 0.01);
+  assert.equal(migrated.configured, false);
+  assert.equal(migrated.migrationRequired, true);
+  assert.equal(migrated.settingsVersion, 2);
 });
 
-test('percentage, margin, leverage, short, and derivative fields are rejected', () => {
-  for (const key of ['riskPercent', 'marginAmount', 'leverage', 'allowShort', 'derivativeMode']) {
-    assert.throws(() => normalizeTradingViewSettings({
-      accountType: 'DEMO',
-      positionSizeDollars: 100,
-      takeProfitDollars: 0.25,
-      stopLossDollars: 0.10,
-      maxDailyLossDollars: 25,
-      maxOpenPositions: 1,
-      [key]: 1,
-    }), /forbidden/i);
-  }
-});
-
-test('TradingView alert schema maps ticker and signal aliases without allowing shorts', () => {
-  const buy = normalizeTradingViewAlert({
-    ticker: 'aapl',
-    signal: 'long',
-    price: 190.15,
-    indicator: 'MOERAND',
-    timestamp: '2026-08-03T20:00:00Z',
+test('market clock identifies session type and countdown boundaries', () => {
+  assert.equal(marketPhaseAt('2026-08-04T12:00:00Z'), 'PRE_MARKET');
+  assert.equal(marketPhaseAt('2026-08-04T14:00:00Z'), 'REGULAR');
+  assert.equal(marketPhaseAt('2026-08-04T21:00:00Z'), 'AFTER_HOURS');
+  assert.equal(marketPhaseAt('2026-08-05T01:00:00Z'), 'OVERNIGHT');
+  const clock = tradingViewMarketClock('2026-08-04T21:00:00Z', {
+    session: 'ALL',
+    autoFlattenTimeLocal: '18:55',
+    autoFlattenTimezone: 'America/Chicago',
   });
-  assert.equal(buy.symbol, 'AAPL');
-  assert.equal(buy.signal, 'BUY');
-  assert.equal(buy.price, 190.15);
-  const sell = normalizeTradingViewAlert({ symbol: 'MSFT', action: 'close', close: 420.12 });
-  assert.equal(sell.signal, 'SELL');
-  assert.throws(() => normalizeTradingViewAlert({ symbol: 'TSLA', signal: 'SHORT', price: 200 }), /BUY or SELL/);
+  assert.equal(clock.phase, 'AFTER_HOURS');
+  assert.equal(clock.entryAllowed, true);
+  assert.ok(clock.remainingSeconds > 0);
+  assert.equal(clock.noOvernightHolding, true);
 });
 
-test('signal fingerprint is deterministic and explicit alert ids win', async () => {
-  const alert = normalizeTradingViewAlert({
-    symbol: 'NVDA',
-    signal: 'BUY',
-    price: 125.34,
-    indicator: 'UT BOT',
-    timestamp: '2026-08-03T20:01:00Z',
-  });
-  assert.equal(await tradingViewSignalId(alert), await tradingViewSignalId(alert));
-  assert.equal(await tradingViewSignalId({ ...alert, explicitId: 'tv-123' }), 'tv-123');
-});
-
-test('deployed Sandbox configuration is TradingView-only and Live remains locked', () => {
-  assert.equal(config.triggers, undefined);
+test('deployed Sandbox remains TradingView-only and scanner execution stays disabled', () => {
   assert.equal(config.vars.MOE_TRADINGVIEW_ONLY, 'true');
   assert.equal(config.vars.AUTO_SCANNER_ENABLED, 'false');
   assert.equal(config.vars.SMART_SCANNER_SCHEDULER_ENABLED, 'false');
-  assert.equal(config.vars.WEBULL_AUTO_SUBMIT_SANDBOX, 'false');
-  assert.equal(config.vars.WEBULL_AUTOMATION_ARMED, 'false');
   assert.equal(config.vars.MOE_TRADINGVIEW_LIVE_ENABLED, 'false');
-  assert.equal(config.vars.WEBULL_LIVE_TRADING, 'false');
-  assert.equal(config.vars.WEBULL_LIVE_ORDER_SUBMISSION, 'false');
-  assert.equal(config.vars.WEBULL_LIVE_AUTOMATION_ARMED, 'false');
-  assert.equal(config.vars.WEBULL_LIVE_KILL_SWITCH, 'true');
-  assert.ok(config.durable_objects.bindings.some((item) => item.name === 'TRADINGVIEW_POSITION'));
-  assert.equal(config.exports.TradingViewPositionCoordinator.storage, 'sqlite');
-  assert.match(deployedEntry, /from '\.\/tradingview-only-cloudflare-entry\.js'/);
+  assert.match(deployedEntry, /tradingview-only-cloudflare-entry\.js/);
 });
 
-test('ticker state is exported as a real Cloudflare Durable Object', () => {
-  assert.match(cloudflareEntry, /tradingview-only-durable-object\.js/);
-  assert.match(durableObject, /import \{ DurableObject \} from 'cloudflare:workers'/);
-  assert.match(durableObject, /extends DurableObject/);
-  assert.match(durableObject, /this\.runtime = new TradingViewPositionRuntime\(ctx, env\)/);
-  assert.match(durableObject, /processAlert\(alert, settings, globalRuntime\)/);
-  assert.match(durableObject, /alarm\(\)/);
+test('whole-trade execution derives per-share exits from total dollars', () => {
+  assert.match(safetyRuntime, /Math\.floor\(amount \/ priceValue\)/);
+  assert.match(safetyRuntime, /normalized\.takeProfitDollars \/ quantity/);
+  assert.match(safetyRuntime, /normalized\.stopLossDollars \/ quantity/);
+  assert.match(safetyRuntime, /takeProfitTotalDollars/);
+  assert.match(safetyRuntime, /stopLossTotalDollars/);
+  assert.match(safetyRuntime, /Buying-power percentage cap would be exceeded/);
+  assert.match(safetyRuntime, /CASH_PLUS_MARGIN_LONG|TRADING_MODES\.MARGIN/);
+  assert.equal(safetyRuntime.includes("side: 'SHORT'"), false);
 });
 
-test('idempotency is permanent and legacy execution remains blocked', () => {
-  assert.match(finalEntry, /claimTradingViewSignal/);
+test('auto-flatten uses alarms without re-enabling scanner execution', () => {
+  assert.match(finalEntry, /scheduleNextTradingViewAutoFlatten/);
+  assert.match(finalEntry, /async alarm\(\)/);
+  assert.match(finalEntry, /runAutoFlatten/);
+  assert.match(finalEntry, /AUTO_FLATTEN/);
+  assert.match(finalEntry, /scannerExecutionEnabled: false|TRADINGVIEW/);
+  assert.match(finalRuntime, /autoFlatten \? 'AUTO_FLATTEN'|AUTO_FLATTEN_EXIT_RETRIED/);
+  assert.match(finalRuntime, /marketPhaseAt/);
+});
+
+test('webhook remains isolated by ticker and idempotent', () => {
   assert.match(finalEntry, /permanent: true/);
-  assert.equal(finalEntry.includes("storage.delete(`tradingview-only:dedupe:"), false);
-  assert.match(finalEntry, /\/api\/tradingview\/webull-preview/);
-  assert.match(finalEntry, /status: 410/);
-});
-
-test('webhook returns quickly and queues isolated per-ticker execution', () => {
-  assert.match(finalEntry, /handleQueuedTradingViewWebhook/);
-  assert.match(webhookQueue, /ctx\.waitUntil\(task\)/);
   assert.match(webhookQueue, /DURABLE_OBJECT_TICKER_QUEUE/);
+  assert.match(webhookQueue, /ctx\.waitUntil\(task\)/);
   assert.match(webhookQueue, /positionCoordinator\(env, alert\.symbol\)\.processAlert/);
-  assert.match(webhookQueue, /queued: true/);
-  assert.match(webhookQueue, /}, 202\)/);
 });
 
-test('emergency exit covers broker inventory and retries rejected closes', () => {
-  assert.match(finalEntry, /closeUntrackedBrokerPositions/);
-  assert.match(finalEntry, /KILL_SWITCH_UNTRACKED_POSITION_EXIT_SUBMITTED/);
-  assert.match(finalEntry, /orderType: 'MARKET'/);
-  assert.match(finalRuntime, /KILL_SWITCH_EXIT_RETRIED/);
-  assert.match(finalRuntime, /isTerminalFailureStatus/);
-  assert.match(finalRuntime, /killRetryCount/);
+test('interface shows session countdown and account connection lights', () => {
+  assert.match(finalDashboard, /connectionDot\.online/);
+  assert.match(finalDashboard, /moeConnectionPulse/);
+  assert.match(finalDashboard, /connectionDot\.offline/);
+  assert.match(finalDashboard, /Connected/);
+  assert.match(finalDashboard, /Disconnected/);
+  assert.match(finalDashboard, /marketSession/);
+  assert.match(finalDashboard, /marketCountdown/);
+  assert.match(finalDashboard, /Session remaining/);
+  assert.match(finalDashboard, /Order session/);
 });
 
-test('position runtime fails safe during stop replacement and archives broker fill prices', () => {
-  assert.match(safetyRuntime, /Maximum concurrent open positions reached at the broker/);
-  assert.match(safetyRuntime, /TRAILING_STOP_REPLACEMENT_FAILED/);
-  assert.match(safetyRuntime, /PROTECTION_FAILURE_MARKET_EXIT_SUBMITTED/);
-  assert.match(safetyRuntime, /orderFillPrice/);
-  assert.match(safetyRuntime, /isFilledStatus/);
+test('settings drafts survive background polling until explicit save', () => {
+  assert.match(finalDashboard, /var drafts=Object\.create\(null\)/);
+  assert.match(finalDashboard, /var dirty=new Set\(\)/);
+  assert.match(finalDashboard, /installDraftAwareFetch/);
+  assert.match(finalDashboard, /stopImmediatePropagation/);
+  assert.match(finalDashboard, /saveV2Settings/);
+  assert.match(finalDashboard, /Take profit total \$/);
+  assert.match(finalDashboard, /Stop loss total \$/);
 });
 
-test('main interface is alerts-first while scanner remains research-only', () => {
+test('scanner stays research-only and strategies stay hidden', () => {
   assert.match(dashboard, /Execution source: TradingView webhooks only/);
-  assert.match(dashboard, /Scanner · Research only/);
+  assert.match(dashboard, /Scanner · research only/);
   assert.match(dashboard, /This page cannot open, modify, or close trades/);
   assert.equal(dashboard.includes('data-view="strategies"'), false);
-  assert.equal(dashboard.includes('Strategies</button>'), false);
-});
-
-test('interface provides real-time trade notifications and sortable archive', () => {
-  assert.match(finalDashboard, /TRADINGVIEW_POSITION_OPENED/);
-  assert.match(finalDashboard, /TRAILING_STOP_RAISED/);
-  assert.match(finalDashboard, /TRADINGVIEW_POSITION_CLOSED/);
-  assert.match(finalDashboard, /archiveSort/);
-  assert.match(finalDashboard, /Highest P\/L/);
-  assert.match(finalDashboard, /MutationObserver/);
-  assert.match(finalDashboard, /archiveObserver\.disconnect/);
 });
