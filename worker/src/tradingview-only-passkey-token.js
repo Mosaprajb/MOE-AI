@@ -3,7 +3,7 @@ const decoder = new TextDecoder();
 
 export const SESSION_COOKIE = 'moe_tv_session';
 export const PASSKEY_COOKIE = 'moe_tv_passkey';
-export const MOBILE_ASSET_VERSION = '20260804-8';
+export const MOBILE_ASSET_VERSION = '20260804-9';
 export const PASSKEY_TTL_SECONDS = 31_536_000;
 const CHALLENGE_TTL_MS = 5 * 60 * 1000;
 
