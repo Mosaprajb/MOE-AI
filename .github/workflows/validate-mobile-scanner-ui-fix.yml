@@ -91,10 +91,10 @@ jobs:
             '/api/tradingview/position/close',
           ]) if (!mobile.includes(token)) throw new Error(`Mobile entry missing ${token}`);
           for (const token of [
-            'id=\\"saveSettings\\"',
-            'id=\\"receptionToggle\\"',
-            'id=\\"killButton\\"',
-            'class=\\"bottomnav\\"',
+            'id="saveSettings"',
+            'id="receptionToggle"',
+            'id="killButton"',
+            'class="bottomnav"',
             'Open Scanner · research only',
           ]) if (!dashboard.includes(token)) throw new Error(`Dashboard control missing ${token}`);
           console.log(JSON.stringify({
