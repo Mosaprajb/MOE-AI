@@ -1,19 +1,60 @@
 import baseWorker, {
-  AlertCoordinator,
+  AlertCoordinator as BaseAlertCoordinator,
   SimulationDriver,
 } from './tradingview-only-entry.js';
-import { TradingViewPositionCoordinator } from './tradingview-only-runtime-safety.js';
+import { TradingViewPositionCoordinator } from './tradingview-only-runtime-final.js';
 import {
   brokerAccountId,
   getBrokerPositions,
   placeSimpleSpotOrder,
 } from './tradingview-only-broker.js';
+import {
+  scannerOnlyHtml,
+  tradingViewDashboardHtml,
+} from './tradingview-only-dashboard-final.js';
 
-export { AlertCoordinator, SimulationDriver, TradingViewPositionCoordinator };
-
+const DEDUPE_INDEX_KEY = 'tradingview-only:dedupe-index:v1';
+const DASHBOARD_PATHS = new Set(['/', '/dashboard', '/dashboard/', '/m', '/m/', '/mobile', '/mobile/', '/alerts', '/alerts/']);
+const SCANNER_PATHS = new Set(['/scanner', '/scanner/']);
 const OLD_EXECUTION_PATHS = new Set([
   '/api/tradingview/webull-preview',
 ]);
+
+export class AlertCoordinator extends BaseAlertCoordinator {
+  async claimTradingViewSignal(signalId, alert = {}) {
+    const key = `tradingview-only:dedupe:${signalId}`;
+    const existing = await this.ctx.storage.get(key);
+    if (existing) return { accepted: false, duplicate: true, existing };
+    const record = {
+      signalId,
+      symbol: alert.symbol || null,
+      signal: alert.signal || null,
+      receivedAt: new Date().toISOString(),
+    };
+    await this.ctx.storage.put(key, record);
+    const current = await this.ctx.storage.get(DEDUPE_INDEX_KEY);
+    const index = Array.isArray(current) ? current.filter((item) => item?.signalId !== signalId) : [];
+    index.unshift(record);
+    await this.ctx.storage.put(DEDUPE_INDEX_KEY, index.slice(0, 2000));
+    return { accepted: true, duplicate: false, record, permanent: true };
+  }
+}
+
+export { SimulationDriver, TradingViewPositionCoordinator };
+
+function html(content, method = 'GET') {
+  return new Response(method === 'HEAD' ? null : content, {
+    status: 200,
+    headers: {
+      'content-type': 'text/html; charset=utf-8',
+      'cache-control': 'no-store, no-cache, must-revalidate',
+      'content-security-policy': "default-src 'self'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'self'; img-src 'self' data:; frame-ancestors 'none'; base-uri 'none'; form-action 'self'",
+      'referrer-policy': 'same-origin',
+      'x-content-type-options': 'nosniff',
+      'x-frame-options': 'DENY',
+    },
+  });
+}
 
 function rows(value) {
   if (Array.isArray(value)) return value;
@@ -102,6 +143,12 @@ async function closeUntrackedBrokerPositions(response, env) {
 export default {
   async fetch(request, env, ctx) {
     const path = new URL(request.url).pathname;
+    if (DASHBOARD_PATHS.has(path) && ['GET', 'HEAD'].includes(request.method)) {
+      return html(tradingViewDashboardHtml(), request.method);
+    }
+    if (SCANNER_PATHS.has(path) && ['GET', 'HEAD'].includes(request.method)) {
+      return html(scannerOnlyHtml(), request.method);
+    }
     if (OLD_EXECUTION_PATHS.has(path)) {
       return Response.json({
         ok: false,
