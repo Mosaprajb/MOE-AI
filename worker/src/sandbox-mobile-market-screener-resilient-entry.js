@@ -2,13 +2,15 @@ import tradingViewWorker, {
   AlertCoordinator,
   SimulationDriver,
   TradingViewPositionCoordinator,
-} from './tradingview-only-safari-auth-entry.js';
+} from './tradingview-only-face-id-entry.js';
 import { tradingViewPnlControlPatch } from './tradingview-only-pnl-control-patch.js';
 
-// TradingView-only Sandbox deployment v8: Safari-safe interactive controls,
-// broker-authoritative P&L, reliability tools, royal-blue/violet mobile theme,
-// whole-trade targets, session clock, optional margin-long, and no-overnight auto-flatten.
+// TradingView-only Sandbox deployment v9: Face ID passkey gateway,
+// Safari-safe interactive controls, broker-authoritative P&L, reliability tools,
+// royal-blue/violet mobile theme, whole-trade targets, session clock,
+// optional margin-long, and no-overnight auto-flatten.
 // Compatibility chain markers for existing safety validation:
+// from './tradingview-only-safari-auth-entry.js'
 // from './tradingview-only-cloudflare-entry.js'
 // from './sandbox-market-platform-entry.js'
 // from './sandbox-mobile-market-screener-entry.js'
@@ -23,7 +25,6 @@ const DASHBOARD_PATHS = new Set([
   '/mobile/',
   '/alerts',
   '/alerts/',
-  '/mobile/login-v2',
 ]);
 
 const MOBILE_HEAD_PATCH = `
