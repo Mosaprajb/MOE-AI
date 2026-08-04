@@ -133,6 +133,14 @@ window.__spreadProps = __spreadProps;
 window.__name = __name;
 </script>`;
 
+const PNL_NAV_COMPATIBILITY_PATCH = `
+<script id="moe-pnl-view-navigation-compat-v1">
+document.addEventListener('DOMContentLoaded', function () {
+  var view = document.getElementById('moePnlView');
+  if (view) view.classList.add('view');
+}, { once: true });
+</script>`;
+
 function shouldPatchDashboard(request, response) {
   if (request.method !== 'GET') return false;
   if (!DASHBOARD_PATHS.has(new URL(request.url).pathname)) return false;
@@ -153,7 +161,9 @@ async function patchDashboardResponse(request, response) {
   const source = await response.text();
   const additions = [];
   if (!source.includes('moe-mobile-browser-runtime-v7')) additions.push(MOBILE_HEAD_PATCH);
-  if (!source.includes('moe-pnl-control-script-v1')) additions.push(tradingViewPnlControlPatch());
+  if (!source.includes('moe-pnl-control-script-v1')) {
+    additions.push(`${tradingViewPnlControlPatch()}\n${PNL_NAV_COMPATIBILITY_PATCH}`);
+  }
   if (!additions.length) return new Response(source, responseInit(response));
 
   const patch = additions.join('\n');
