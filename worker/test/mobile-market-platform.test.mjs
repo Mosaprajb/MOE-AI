@@ -5,12 +5,16 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
+const compatibilitySource = readFileSync(join(root, 'worker/src/sandbox-mobile-market-screener-resilient-entry.js'), 'utf8');
 const source = readFileSync(join(root, 'worker/src/sandbox-market-platform-entry.js'), 'utf8');
+const resilientCoreSource = readFileSync(join(root, 'worker/src/sandbox-mobile-market-screener-resilient-core.js'), 'utf8');
 const config = JSON.parse(readFileSync(join(root, 'wrangler.sandbox.jsonc'), 'utf8'));
 
-test('market platform is the deployed top-level wrapper', () => {
-  assert.equal(config.main, 'worker/src/sandbox-market-platform-entry.js');
-  assert.match(source, /from '\.\/sandbox-mobile-market-screener-resilient-entry\.js'/);
+test('market platform is deployed through the compatible resilient entry', () => {
+  assert.equal(config.main, 'worker/src/sandbox-mobile-market-screener-resilient-entry.js');
+  assert.match(compatibilitySource, /from '\.\/sandbox-market-platform-entry\.js'/);
+  assert.match(source, /from '\.\/sandbox-mobile-market-screener-resilient-core\.js'/);
+  assert.match(resilientCoreSource, /from '\.\/sandbox-mobile-market-screener-entry\.js'/);
   assert.match(source, /export \{ AlertCoordinator, SimulationDriver \}/);
   assert.equal(config.vars.MOE_MARKET_PLATFORM_ENABLED, 'true');
   assert.equal(config.vars.MOE_FRED_MACRO_ENABLED, 'false');
@@ -37,6 +41,8 @@ test('account and platform overview endpoints are read-only aggregations', () =>
     '/api/health',
     '/api/trading/mode',
     'readOnly: account.readOnly !== false',
+    'finiteNumber(account.cashBalance)',
+    'callBaseSafely',
     'liveTradingLocked: true',
     'liveFundsUsed: false',
   ]) assert.equal(source.includes(token), true, `missing platform overview token: ${token}`);
