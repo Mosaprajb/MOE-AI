@@ -43,6 +43,72 @@ function requireText(value, field) {
   return normalized;
 }
 
+function accountCurrencyAsset(balance = {}) {
+  if (!Array.isArray(balance.account_currency_assets)) return {};
+  return balance.account_currency_assets.find((item) => String(item?.currency || '').toUpperCase() === 'USD')
+    || balance.account_currency_assets[0]
+    || {};
+}
+
+function accountPnlMetrics(balance = {}, usd = {}, positions = []) {
+  const positionUnrealizedPnl = positions.reduce(
+    (sum, item) => sum + (finite(item.unrealizedPnl, 0) || 0),
+    0,
+  );
+  const brokerUnrealizedPnl = firstFinite(
+    balance.total_unrealized_profit_loss,
+    balance.totalUnrealizedProfitLoss,
+    balance.unrealized_profit_loss,
+    balance.unrealizedPnl,
+    usd.unrealized_profit_loss,
+    usd.unrealizedPnl,
+    usd.unrealized_pl,
+  );
+  const unrealizedPnl = brokerUnrealizedPnl == null
+    ? positionUnrealizedPnl
+    : brokerUnrealizedPnl;
+  const brokerDayPnl = firstFinite(
+    balance.total_day_profit_loss,
+    balance.totalDayProfitLoss,
+    balance.day_profit_loss,
+    balance.dayPnl,
+    usd.total_day_profit_loss,
+    usd.totalDayProfitLoss,
+    usd.day_profit_loss,
+    usd.dayPnl,
+  );
+  const brokerRealizedPnl = firstFinite(
+    balance.total_realized_profit_loss,
+    balance.totalRealizedProfitLoss,
+    balance.realized_profit_loss,
+    balance.realizedPnl,
+    usd.realized_profit_loss,
+    usd.realizedPnl,
+  );
+  const realizedPnl = brokerRealizedPnl == null
+    ? brokerDayPnl == null ? 0 : brokerDayPnl - unrealizedPnl
+    : brokerRealizedPnl;
+  const dayPnl = brokerDayPnl == null
+    ? realizedPnl + unrealizedPnl
+    : brokerDayPnl;
+  const source = brokerDayPnl != null
+    ? 'BROKER_DAY_PNL'
+    : brokerRealizedPnl != null
+      ? 'BROKER_REALIZED_PLUS_UNREALIZED'
+      : brokerUnrealizedPnl != null
+        ? 'BROKER_UNREALIZED_ONLY'
+        : 'POSITION_UNREALIZED_FALLBACK';
+  return {
+    dayPnl: money(dayPnl),
+    totalPnl: money(dayPnl),
+    realizedPnl: money(realizedPnl),
+    unrealizedPnl: money(unrealizedPnl),
+    positionUnrealizedPnl: money(positionUnrealizedPnl),
+    pnlSource: source,
+    pnlReliable: source === 'BROKER_DAY_PNL' || source === 'BROKER_REALIZED_PLUS_UNREALIZED',
+  };
+}
+
 async function compactId(seed, prefix) {
   const digest = await crypto.subtle.digest('SHA-256', encoder.encode(String(seed || crypto.randomUUID())));
   const hex = [...new Uint8Array(digest)]
@@ -102,11 +168,7 @@ export function liveBrokerReadiness(env = {}) {
 export function extractAccountSummary(snapshot = {}, accountType = 'DEMO') {
   const rawBalance = snapshot?.balance || {};
   const balance = rawBalance?.data && !Array.isArray(rawBalance.data) ? rawBalance.data : rawBalance;
-  const usd = Array.isArray(balance.account_currency_assets)
-    ? balance.account_currency_assets.find((item) => String(item.currency || '').toUpperCase() === 'USD')
-      || balance.account_currency_assets[0]
-      || {}
-    : {};
+  const usd = accountCurrencyAsset(balance);
   const positions = pickArray(snapshot?.positions).map((item) => {
     const quantity = firstFinite(item.quantity, item.qty, item.position, item.holding_quantity) || 0;
     return {
@@ -118,17 +180,59 @@ export function extractAccountSummary(snapshot = {}, accountType = 'DEMO') {
       unrealizedPnl: firstFinite(item.unrealized_profit_loss, item.unrealizedPnl, item.unrealized_pl, item.profit_loss),
     };
   }).filter((item) => item.symbol && item.quantity !== 0);
-  const totalPnl = positions.reduce((sum, item) => sum + (finite(item.unrealizedPnl, 0) || 0), 0);
+  const pnl = accountPnlMetrics(balance, usd, positions);
+  const netLiquidation = firstFinite(
+    usd.net_liquidation_value,
+    balance.total_net_liquidation_value,
+    balance.net_liquidation_value,
+    balance.total_asset,
+    balance.equity,
+  );
+  const priorDayEquity = netLiquidation == null ? null : netLiquidation - pnl.dayPnl;
+  const dayPnlPercent = priorDayEquity && priorDayEquity !== 0
+    ? money((pnl.dayPnl / Math.abs(priorDayEquity)) * 100)
+    : null;
   return {
     accountType: String(accountType || 'DEMO').toUpperCase(),
     connected: true,
-    balance: firstFinite(usd.net_liquidation_value, balance.total_net_liquidation_value, balance.net_liquidation_value, balance.total_asset, balance.equity),
+    balance: netLiquidation,
     cash: firstFinite(usd.cash_balance, balance.total_cash_balance, balance.cash_balance),
-    buyingPower: firstFinite(usd.day_buying_power, balance.day_buying_power, usd.overnight_buying_power, balance.overnight_buying_power),
+    buyingPower: firstFinite(
+      usd.buying_power,
+      balance.buying_power,
+      usd.day_buying_power,
+      balance.day_buying_power,
+      usd.overnight_buying_power,
+      balance.overnight_buying_power,
+    ),
     openPositions: positions.length,
-    totalPnl: money(totalPnl),
+    ...pnl,
+    dayPnlPercent,
     positions,
     fetchedAt: snapshot?.fetchedAt || new Date().toISOString(),
+  };
+}
+
+function unavailableAccountSummary(accountType, extra = {}) {
+  return {
+    accountType,
+    connected: false,
+    locked: accountType === 'LIVE',
+    balance: null,
+    cash: null,
+    buyingPower: null,
+    openPositions: 0,
+    totalPnl: 0,
+    dayPnl: 0,
+    realizedPnl: 0,
+    unrealizedPnl: 0,
+    positionUnrealizedPnl: 0,
+    dayPnlPercent: null,
+    pnlSource: 'UNAVAILABLE',
+    pnlReliable: false,
+    positions: [],
+    fetchedAt: new Date().toISOString(),
+    ...extra,
   };
 }
 
@@ -137,54 +241,25 @@ export async function getBrokerAccountSummary(accountType, env = {}) {
   if (normalized === 'LIVE') {
     const readiness = liveBrokerReadiness(env);
     if (!readiness.ready) {
-      return {
-        accountType: 'LIVE',
-        connected: false,
-        locked: true,
-        readiness,
-        balance: null,
-        cash: null,
-        buyingPower: null,
-        openPositions: 0,
-        totalPnl: 0,
-        positions: [],
-        fetchedAt: new Date().toISOString(),
-      };
+      return unavailableAccountSummary('LIVE', { locked: true, readiness });
     }
   }
   const accountId = brokerAccountId(normalized, env);
   if (!accountId) {
-    return {
-      accountType: normalized,
-      connected: false,
-      locked: normalized === 'LIVE',
+    return unavailableAccountSummary(normalized, {
       error: `${normalized} account is not configured`,
-      balance: null,
-      cash: null,
-      buyingPower: null,
-      openPositions: 0,
-      totalPnl: 0,
-      positions: [],
-      fetchedAt: new Date().toISOString(),
-    };
+    });
   }
   try {
     const snapshot = await getWebullAccountSnapshot(accountId, brokerEnvironment(normalized, env));
-    return { ...extractAccountSummary(snapshot, normalized), locked: normalized === 'LIVE' && !liveBrokerReadiness(env).ready };
-  } catch (error) {
     return {
-      accountType: normalized,
-      connected: false,
-      locked: normalized === 'LIVE',
-      error: error instanceof Error ? error.message : 'Broker account lookup failed',
-      balance: null,
-      cash: null,
-      buyingPower: null,
-      openPositions: 0,
-      totalPnl: 0,
-      positions: [],
-      fetchedAt: new Date().toISOString(),
+      ...extractAccountSummary(snapshot, normalized),
+      locked: normalized === 'LIVE' && !liveBrokerReadiness(env).ready,
     };
+  } catch (error) {
+    return unavailableAccountSummary(normalized, {
+      error: error instanceof Error ? error.message : 'Broker account lookup failed',
+    });
   }
 }
 
