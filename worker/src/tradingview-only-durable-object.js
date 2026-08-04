@@ -1,5 +1,5 @@
 import { DurableObject } from 'cloudflare:workers';
-import { TradingViewPositionCoordinator as TradingViewPositionRuntime } from './tradingview-only-runtime-final.js';
+import { TradingViewPositionCoordinator as TradingViewPositionRuntime } from './tradingview-only-runtime-reliable.js';
 
 export class TradingViewPositionCoordinator extends DurableObject {
   constructor(ctx, env) {
@@ -21,6 +21,10 @@ export class TradingViewPositionCoordinator extends DurableObject {
 
   monitor(trigger = 'RPC') {
     return this.runtime.monitor(trigger);
+  }
+
+  repairProtection(trigger = 'MANUAL_REPAIR') {
+    return this.runtime.repairProtection(trigger);
   }
 
   alarm() {
