@@ -418,6 +418,6 @@ const ENHANCEMENT = `
 export function tradingViewDashboardHtml() {
   const html = baseTradingViewDashboardHtml();
   return html.includes('</body>')
-    ? html.replace('</body>', `${ENHANCEMENT}\n</body>`)
+    ? html.replace('</body>', () => `${ENHANCEMENT}\n</body>`)
     : `${html}\n${ENHANCEMENT}`;
 }
