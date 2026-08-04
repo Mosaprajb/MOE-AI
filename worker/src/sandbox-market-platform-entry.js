@@ -1,7 +1,7 @@
 import baseWorker, {
   AlertCoordinator,
   SimulationDriver,
-} from './sandbox-mobile-market-screener-resilient-entry.js';
+} from './sandbox-mobile-market-screener-resilient-core.js';
 
 export { AlertCoordinator, SimulationDriver };
 
@@ -94,6 +94,12 @@ function sameSymbols(left, right) {
   return a.length === b.length && a.every((symbol, index) => symbol === b[index]);
 }
 
+function finiteNumber(value) {
+  if (value == null || value === '') return null;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
 function forwardedHeaders(request, additions = {}) {
   const headers = new Headers({
     accept: 'application/json',
@@ -121,6 +127,17 @@ async function callBase(request, env, ctx, path, init = {}) {
   return { response, payload };
 }
 
+async function callBaseSafely(request, env, ctx, path, init = {}) {
+  try {
+    return await callBase(request, env, ctx, path, init);
+  } catch (error) {
+    return {
+      response: { ok: false, status: 502 },
+      payload: { error: error instanceof Error ? error.message : 'Internal service request failed.' },
+    };
+  }
+}
+
 function errorMessage(payload, fallback) {
   return String(payload?.alert || payload?.error || fallback || 'Request failed.');
 }
@@ -130,7 +147,7 @@ function wait(milliseconds) {
 }
 
 async function readSelection(request, env, ctx) {
-  const result = await callBase(request, env, ctx, WATCHLIST_STATE_PATH);
+  const result = await callBaseSafely(request, env, ctx, WATCHLIST_STATE_PATH);
   if (!result.response.ok || result.payload?.ok !== true) {
     return {
       ok: false,
@@ -197,7 +214,7 @@ async function commitSelection(request, env, ctx, body = {}) {
     }, 409);
   }
 
-  const write = await callBase(request, env, ctx, SOURCE_MODE_PATH, {
+  const write = await callBaseSafely(request, env, ctx, SOURCE_MODE_PATH, {
     method: 'PUT',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ mode: 'CURATED_UNIVERSE', symbols }),
@@ -275,19 +292,19 @@ function safeAccount(account = {}) {
     readOnly: account.readOnly !== false,
     tradingLocked: account.tradingLocked !== false,
     status: account.status || null,
-    cashBalance: Number.isFinite(Number(account.cashBalance)) ? Number(account.cashBalance) : null,
-    marginBalance: Number.isFinite(Number(account.marginBalance)) ? Number(account.marginBalance) : null,
-    accountValue: Number.isFinite(Number(account.accountValue)) ? Number(account.accountValue) : null,
-    totalBalance: Number.isFinite(Number(account.totalBalance)) ? Number(account.totalBalance) : null,
+    cashBalance: finiteNumber(account.cashBalance),
+    marginBalance: finiteNumber(account.marginBalance),
+    accountValue: finiteNumber(account.accountValue),
+    totalBalance: finiteNumber(account.totalBalance),
     updatedAt: account.updatedAt || null,
   };
 }
 
 async function loadAccountOverview(request, env, ctx) {
   const [portfolioResult, healthResult, modeResult] = await Promise.all([
-    callBase(request, env, ctx, PORTFOLIO_PATH),
-    callBase(request, env, ctx, HEALTH_PATH),
-    callBase(request, env, ctx, MODE_PATH),
+    callBaseSafely(request, env, ctx, PORTFOLIO_PATH),
+    callBaseSafely(request, env, ctx, HEALTH_PATH),
+    callBaseSafely(request, env, ctx, MODE_PATH),
   ]);
   const portfolio = portfolioResult.payload || {};
   const health = healthResult.payload || {};
@@ -411,7 +428,7 @@ async function handlePlatformOverview(request, env, ctx) {
   if (!mobileRequestAllowed(request)) return json({ ok: false, error: 'Mobile platform overview access denied.' }, 403);
   const [selection, screener, account, macro] = await Promise.allSettled([
     readSelection(request, env, ctx),
-    callBase(request, env, ctx, `${MARKET_SCREENER_PATH}?sort=VOLUME`),
+    callBaseSafely(request, env, ctx, `${MARKET_SCREENER_PATH}?sort=VOLUME`),
     loadAccountOverview(request, env, ctx),
     loadMacroOverview(env),
   ]);
