@@ -8,12 +8,113 @@ export { AlertCoordinator, SimulationDriver };
 
 const DASHBOARD_PATHS = new Set(['/', '/dashboard', '/dashboard/', '/m', '/m/', '/mobile', '/mobile/', '/alerts', '/alerts/']);
 
+const SAFARI_LOGIN_PATCH = `
+<script id="moe-safari-login-patch">
+(function () {
+  'use strict';
+
+  function byId(id) { return document.getElementById(id); }
+
+  function setMessage(text, isError) {
+    var message = byId('loginMessage');
+    if (!message) return;
+    message.textContent = text || '';
+    message.style.color = isError ? '#ff647c' : '#8fa7be';
+    message.style.marginTop = '10px';
+  }
+
+  function setBusy(button, busy) {
+    if (!button) return;
+    button.disabled = busy;
+    button.style.opacity = busy ? '0.72' : '1';
+    button.textContent = busy ? 'Verifying PIN…' : 'Unlock dashboard';
+  }
+
+  function parsePayload(response) {
+    return response.text().then(function (text) {
+      var payload = {};
+      try { payload = text ? JSON.parse(text) : {}; } catch (_) {}
+      return { response: response, payload: payload };
+    });
+  }
+
+  function submitLogin(button) {
+    if (window.__moeLoginSubmitting) return;
+    var pin = byId('pin');
+    var value = pin ? String(pin.value || '').trim() : '';
+    if (!value) {
+      setMessage('Enter the control PIN first.', true);
+      if (pin) pin.focus();
+      return;
+    }
+
+    window.__moeLoginSubmitting = true;
+    setBusy(button, true);
+    setMessage('Verifying secure session…', false);
+
+    fetch('/api/tradingview/session', {
+      method: 'POST',
+      cache: 'no-store',
+      credentials: 'include',
+      headers: {
+        'content-type': 'application/json',
+        'x-moe-mobile-client': '1'
+      },
+      body: JSON.stringify({ pin: value })
+    })
+      .then(parsePayload)
+      .then(function (result) {
+        if (!result.response.ok || result.payload.ok === false) {
+          throw new Error(result.payload.error || ('Login failed · HTTP ' + result.response.status));
+        }
+        if (pin) pin.value = '';
+        setMessage('PIN accepted. Opening dashboard…', false);
+        setBusy(button, true);
+        window.setTimeout(function () {
+          window.location.replace('/mobile?session=' + Date.now());
+        }, 180);
+      })
+      .catch(function (error) {
+        window.__moeLoginSubmitting = false;
+        setBusy(button, false);
+        setMessage(error && error.message ? error.message : 'Unable to open the dashboard.', true);
+      });
+  }
+
+  function captureLoginClick(event) {
+    var button = byId('loginButton');
+    if (!button) return;
+    var target = event.target;
+    if (target !== button && !button.contains(target)) return;
+    event.preventDefault();
+    event.stopPropagation();
+    if (typeof event.stopImmediatePropagation === 'function') event.stopImmediatePropagation();
+    submitLogin(button);
+  }
+
+  function captureLoginEnter(event) {
+    if (event.key !== 'Enter' || event.target !== byId('pin')) return;
+    event.preventDefault();
+    event.stopPropagation();
+    if (typeof event.stopImmediatePropagation === 'function') event.stopImmediatePropagation();
+    submitLogin(byId('loginButton'));
+  }
+
+  document.addEventListener('click', captureLoginClick, true);
+  document.addEventListener('keydown', captureLoginEnter, true);
+})();
+</script>`;
+
 function html(content, method = 'GET') {
-  return new Response(method === 'HEAD' ? null : content, {
+  const patched = content.includes('</body>')
+    ? content.replace('</body>', () => `${SAFARI_LOGIN_PATCH}\n</body>`)
+    : `${content}\n${SAFARI_LOGIN_PATCH}`;
+  return new Response(method === 'HEAD' ? null : patched, {
     status: 200,
     headers: {
       'content-type': 'text/html; charset=utf-8',
       'cache-control': 'no-store, no-cache, must-revalidate',
+      'pragma': 'no-cache',
       'content-security-policy': "default-src 'self'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'self'; img-src 'self' data:; frame-ancestors 'none'; base-uri 'none'; form-action 'self'",
       'referrer-policy': 'same-origin',
       'x-content-type-options': 'nosniff',
@@ -119,12 +220,28 @@ async function handleClosePosition(request, env, ctx) {
   });
 }
 
+async function handleSessionCompatibility(request, env, ctx) {
+  const response = await baseWorker.fetch(request, env, ctx);
+  const headers = new Headers(response.headers);
+  const cookie = headers.get('set-cookie');
+  if (cookie) {
+    headers.set('set-cookie', cookie.replace(/SameSite=Strict/gi, 'SameSite=Lax'));
+  }
+  headers.set('cache-control', 'no-store, no-cache, must-revalidate');
+  return new Response(response.body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers,
+  });
+}
+
 export default {
   async fetch(request, env, ctx) {
     const path = new URL(request.url).pathname;
     if (DASHBOARD_PATHS.has(path) && ['GET', 'HEAD'].includes(request.method)) {
       return html(tradingViewMobileDashboardHtml(), request.method);
     }
+    if (path === '/api/tradingview/session') return handleSessionCompatibility(request, env, ctx);
     if (path === '/api/tradingview/refresh') return handleRefresh(request, env, ctx, false);
     if (path === '/api/tradingview/repair') return handleRefresh(request, env, ctx, true);
     if (path === '/api/tradingview/position/close') return handleClosePosition(request, env, ctx);
