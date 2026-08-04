@@ -261,7 +261,9 @@ test('Sandbox pilot wrapper, simulation isolation, endpoints, and secret hygiene
   assert.match(mobileUiFixEntry, /from '\.\/sandbox-scan-mode-entry\.js'/);
   assert.match(scanModeEntry, /from '\.\/sandbox-simulation-rpc-entry\.js'/);
   assert.match(rpcEntry, /from '\.\/sandbox-simulation-entry\.js'/);
-  assert.deepEqual(config.triggers.crons, ['* * * * *']);
+  assert.equal(config.triggers, undefined);
+  assert.equal(config.vars.AUTO_SCANNER_ENABLED, 'false');
+  assert.equal(config.vars.SMART_SCANNER_SCHEDULER_ENABLED, 'false');
   assert.equal(config.durable_objects.bindings[0].name, 'ALERT_COORDINATOR');
   assert.equal(config.observability.enabled, true);
   assert.equal(config.observability.logs.head_sampling_rate, 1);
