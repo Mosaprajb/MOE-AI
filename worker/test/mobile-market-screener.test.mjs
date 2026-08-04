@@ -5,12 +5,16 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
+const platformSource = readFileSync(join(root, 'worker/src/sandbox-market-platform-entry.js'), 'utf8');
+const resilientSource = readFileSync(join(root, 'worker/src/sandbox-mobile-market-screener-resilient-entry.js'), 'utf8');
 const source = readFileSync(join(root, 'worker/src/sandbox-mobile-market-screener-entry.js'), 'utf8');
 const watchlistSource = readFileSync(join(root, 'worker/src/sandbox-mobile-live-watchlist-entry.js'), 'utf8');
 const config = JSON.parse(readFileSync(join(root, 'wrangler.sandbox.jsonc'), 'utf8'));
 
-test('mobile market screener is the deployed wrapper and preserves the protected chain', () => {
-  assert.equal(config.main, 'worker/src/sandbox-mobile-market-screener-resilient-entry.js');
+test('mobile market platform is deployed and preserves the protected screener chain', () => {
+  assert.equal(config.main, 'worker/src/sandbox-market-platform-entry.js');
+  assert.match(platformSource, /from '\.\/sandbox-mobile-market-screener-resilient-entry\.js'/);
+  assert.match(resilientSource, /from '\.\/sandbox-mobile-market-screener-entry\.js'/);
   assert.match(source, /from '\.\/sandbox-mobile-live-watchlist-entry\.js'/);
   assert.match(source, /export \{ AlertCoordinator, SimulationDriver \}/);
   assert.match(watchlistSource, /from '\.\/sandbox-moerand-clean-utbot-entry\.js'/);
@@ -54,17 +58,17 @@ test('Yahoo and Webull style mobile screener exposes filters, sorting, live colu
   ]) assert.equal(source.includes(token), true, `missing screener UI token: ${token}`);
 });
 
-test('selected rows save as a curated scanner list and remain locked while trading', () => {
+test('selected rows use verified persistence and remain locked while trading', () => {
   for (const token of [
-    "fetch('/api/scanner/source-mode'",
-    "mode:'CURATED_UNIVERSE'",
-    'symbols:symbols',
-    '/api/mobile/watchlist/state',
-    'Scanner active. Stop trading before adding stocks.',
-    'maximumScannerSymbols',
+    '/api/mobile/scanner/selection',
+    '/api/scanner/source-mode',
+    "mode: 'CURATED_UNIVERSE'",
+    'SCANNER_SELECTION_NOT_PERSISTED',
+    'SCANNER_RUNNING_SYMBOLS_LOCKED',
+    'x-moe-scanner-selection-verified',
     'window.__moeRefreshSelectedWatchlist',
     'moe:screener-symbols-saved',
-  ]) assert.equal(source.includes(token), true, `missing screener selection token: ${token}`);
+  ]) assert.equal(platformSource.includes(token), true, `missing verified selection token: ${token}`);
   assert.match(source, /saved\.size\+pending\.size>=30/);
   assert.match(source, /locked=payload\.locked===true/);
 });
