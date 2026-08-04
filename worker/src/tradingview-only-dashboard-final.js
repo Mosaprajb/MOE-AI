@@ -12,6 +12,7 @@ const ENHANCEMENT = String.raw`
   window.__moeTradingViewFinalUi=true;
   let initialized=false;
   let latestAuditId=null;
+  let archiveObserver=null;
 
   function notify(message){
     const toast=document.getElementById('toast');
@@ -68,9 +69,10 @@ const ENHANCEMENT = String.raw`
     const body=document.getElementById('archiveRows');
     const select=document.getElementById('archiveSort');
     if(!body||!select) return;
-    const rows=Array.from(body.querySelectorAll('tr')).filter(function(row){return row.cells.length>=8;});
+    const current=Array.from(body.querySelectorAll('tr')).filter(function(row){return row.cells.length>=8;});
+    const sorted=current.slice();
     const mode=select.value;
-    rows.sort(function(a,b){
+    sorted.sort(function(a,b){
       if(mode==='DATE_ASC'||mode==='DATE_DESC'){
         const av=Date.parse(a.cells[0]?.textContent||'')||0;
         const bv=Date.parse(b.cells[0]?.textContent||'')||0;
@@ -82,13 +84,18 @@ const ENHANCEMENT = String.raw`
       }
       return String(a.cells[1]?.textContent||'').localeCompare(String(b.cells[1]?.textContent||''));
     });
-    rows.forEach(function(row){body.appendChild(row);});
+    const changed=sorted.some(function(row,index){return row!==current[index];});
+    if(!changed) return;
+    if(archiveObserver) archiveObserver.disconnect();
+    sorted.forEach(function(row){body.appendChild(row);});
+    if(archiveObserver) archiveObserver.observe(body,{childList:true});
   }
 
   function observeArchive(){
     const body=document.getElementById('archiveRows');
     if(!body) return;
-    new MutationObserver(sortArchiveRows).observe(body,{childList:true});
+    archiveObserver=new MutationObserver(sortArchiveRows);
+    archiveObserver.observe(body,{childList:true});
   }
 
   function start(){
