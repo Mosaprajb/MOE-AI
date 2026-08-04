@@ -1,7 +1,7 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "moerand-alerts-sandbox",
-  "main": "worker/src/sandbox-mobile-market-screener-resilient-entry.js",
+  "main": "worker/src/sandbox-market-platform-entry.js",
   "compatibility_date": "2026-07-22",
   "observability": {
     "enabled": true,
@@ -43,6 +43,8 @@
     "APP_URL": "https://mosaprajb.github.io/MOE-AI/",
     "MOE_RUNTIME_ENVIRONMENT": "SANDBOX_PILOT",
     "MOE_MOBILE_DASHBOARD_ENABLED": "true",
+    "MOE_MARKET_PLATFORM_ENABLED": "true",
+    "MOE_FRED_MACRO_ENABLED": "false",
     "MOE_MOBILE_SESSION_TTL_MINUTES": "10",
     "MOE_MOBILE_MAX_CASH_ALLOCATION_PERCENT": "100",
     "MOE_MOBILE_MAX_MARGIN_ALLOCATION_PERCENT": "100",
