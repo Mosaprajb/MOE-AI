@@ -163,6 +163,16 @@ test('settings drafts survive background polling until explicit save', () => {
   assert.match(finalDashboard, /Stop loss total \$/);
 });
 
+test('embedded dashboard enhancement is valid browser JavaScript', async () => {
+  const moduleUrl = new URL('../src/tradingview-only-dashboard-final.js', import.meta.url);
+  const { tradingViewDashboardHtml } = await import(`${moduleUrl.href}?browser-script-test=${Date.now()}`);
+  const html = tradingViewDashboardHtml();
+  const match = html.match(/<script id="moe-tradingview-final-ui">([\s\S]*?)<\/script>/);
+  assert.ok(match, 'enhancement script must be emitted with a valid HTML id');
+  assert.doesNotThrow(() => new Function(match[1]));
+  assert.equal(html.includes('id=\\"moe-tradingview-final-ui\\"'), false);
+});
+
 test('scanner stays research-only and strategies stay hidden', () => {
   assert.match(dashboard, /Execution source: TradingView webhooks only/);
   assert.match(dashboard, /Scanner · research only/);
