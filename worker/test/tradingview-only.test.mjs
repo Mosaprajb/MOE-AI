@@ -1,10 +1,17 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import {
   normalizeTradingViewAlert,
   normalizeTradingViewSettings,
   tradingViewSignalId,
 } from '../src/tradingview-only-runtime.js';
+
+const config = JSON.parse(readFileSync(new URL('../../wrangler.sandbox.jsonc', import.meta.url), 'utf8'));
+const deployedEntry = readFileSync(new URL('../src/sandbox-mobile-market-screener-resilient-entry.js', import.meta.url), 'utf8');
+const finalEntry = readFileSync(new URL('../src/tradingview-only-final-entry.js', import.meta.url), 'utf8');
+const safetyRuntime = readFileSync(new URL('../src/tradingview-only-runtime-safety.js', import.meta.url), 'utf8');
+const dashboard = readFileSync(new URL('../src/tradingview-only-dashboard.js', import.meta.url), 'utf8');
 
 test('TradingView settings accept fixed-dollar values and force spot long-only rules', () => {
   const settings = normalizeTradingViewSettings({
@@ -69,4 +76,45 @@ test('signal fingerprint is deterministic and explicit alert ids win', async () 
   });
   assert.equal(await tradingViewSignalId(alert), await tradingViewSignalId(alert));
   assert.equal(await tradingViewSignalId({ ...alert, explicitId: 'tv-123' }), 'tv-123');
+});
+
+test('deployed Sandbox configuration is TradingView-only and Live remains locked', () => {
+  assert.equal(config.triggers, undefined);
+  assert.equal(config.vars.MOE_TRADINGVIEW_ONLY, 'true');
+  assert.equal(config.vars.AUTO_SCANNER_ENABLED, 'false');
+  assert.equal(config.vars.SMART_SCANNER_SCHEDULER_ENABLED, 'false');
+  assert.equal(config.vars.WEBULL_AUTO_SUBMIT_SANDBOX, 'false');
+  assert.equal(config.vars.WEBULL_AUTOMATION_ARMED, 'false');
+  assert.equal(config.vars.MOE_TRADINGVIEW_LIVE_ENABLED, 'false');
+  assert.equal(config.vars.WEBULL_LIVE_TRADING, 'false');
+  assert.equal(config.vars.WEBULL_LIVE_ORDER_SUBMISSION, 'false');
+  assert.equal(config.vars.WEBULL_LIVE_AUTOMATION_ARMED, 'false');
+  assert.equal(config.vars.WEBULL_LIVE_KILL_SWITCH, 'true');
+  assert.ok(config.durable_objects.bindings.some((item) => item.name === 'TRADINGVIEW_POSITION'));
+  assert.equal(config.exports.TradingViewPositionCoordinator.storage, 'sqlite');
+  assert.match(deployedEntry, /from '\.\/tradingview-only-final-entry\.js'/);
+});
+
+test('legacy execution is blocked and emergency exit covers broker inventory', () => {
+  assert.match(finalEntry, /\/api\/tradingview\/webull-preview/);
+  assert.match(finalEntry, /status: 410/);
+  assert.match(finalEntry, /closeUntrackedBrokerPositions/);
+  assert.match(finalEntry, /KILL_SWITCH_UNTRACKED_POSITION_EXIT_SUBMITTED/);
+  assert.match(finalEntry, /orderType: 'MARKET'/);
+});
+
+test('position runtime fails safe during stop replacement and archives broker fill prices', () => {
+  assert.match(safetyRuntime, /Maximum concurrent open positions reached at the broker/);
+  assert.match(safetyRuntime, /TRAILING_STOP_REPLACEMENT_FAILED/);
+  assert.match(safetyRuntime, /PROTECTION_FAILURE_MARKET_EXIT_SUBMITTED/);
+  assert.match(safetyRuntime, /orderFillPrice/);
+  assert.match(safetyRuntime, /isFilledStatus/);
+});
+
+test('main interface is alerts-first while scanner remains research-only', () => {
+  assert.match(dashboard, /Execution source: TradingView webhooks only/);
+  assert.match(dashboard, /Scanner · Research only/);
+  assert.match(dashboard, /This page cannot open, modify, or close trades/);
+  assert.equal(dashboard.includes('data-view="strategies"'), false);
+  assert.equal(dashboard.includes('Strategies</button>'), false);
 });
