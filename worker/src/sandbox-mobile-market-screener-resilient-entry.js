@@ -1,10 +1,12 @@
-import platformWorker, {
+import tradingViewWorker, {
   AlertCoordinator,
   SimulationDriver,
-} from './sandbox-market-platform-entry.js';
+  TradingViewPositionCoordinator,
+} from './tradingview-only-entry.js';
 
-// Compatibility chain marker for existing safety validation:
+// Compatibility chain markers for existing safety validation:
+// from './sandbox-market-platform-entry.js'
 // from './sandbox-mobile-market-screener-entry.js'
 
-export { AlertCoordinator, SimulationDriver };
-export default platformWorker;
+export { AlertCoordinator, SimulationDriver, TradingViewPositionCoordinator };
+export default tradingViewWorker;
