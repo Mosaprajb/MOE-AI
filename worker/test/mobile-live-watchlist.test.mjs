@@ -11,7 +11,7 @@ const scanModeSource = readFileSync(join(root, 'worker/src/sandbox-scan-mode-ent
 const config = JSON.parse(readFileSync(join(root, 'wrangler.sandbox.jsonc'), 'utf8'));
 
 test('modern mobile watchlist remains in the deployed market screener chain', () => {
-  assert.equal(config.main, 'worker/src/sandbox-mobile-market-screener-entry.js');
+  assert.equal(config.main, 'worker/src/sandbox-mobile-market-screener-resilient-entry.js');
   assert.match(marketScreenerSource, /from '\.\/sandbox-mobile-live-watchlist-entry\.js'/);
   assert.match(source, /from '\.\/sandbox-moerand-clean-utbot-entry\.js'/);
   assert.match(source, /export \{ AlertCoordinator, SimulationDriver \}/);
