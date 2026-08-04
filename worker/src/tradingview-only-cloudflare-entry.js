@@ -7,9 +7,10 @@ import { TradingViewPositionCoordinator } from './tradingview-only-durable-objec
 export { AlertCoordinator, SimulationDriver, TradingViewPositionCoordinator };
 
 const STANDALONE_LOGIN_PATH = '/mobile/login-v2';
-const MOBILE_BOOT_PATH = '/mobile/boot-v3.js';
-const MOBILE_CLIENT_PATH = '/mobile/client-v3.js';
-const MOBILE_ASSET_VERSION = '20260804-3';
+const NATIVE_UNLOCK_PATH = '/mobile/unlock';
+const MOBILE_BOOT_PATH = '/mobile/boot-v4.js';
+const MOBILE_CLIENT_PATH = '/mobile/client-v4.js';
+const MOBILE_ASSET_VERSION = '20260804-4';
 const DASHBOARD_PATHS = new Set(['/', '/dashboard', '/dashboard/', '/m', '/m/', '/mobile', '/mobile/', '/alerts', '/alerts/']);
 
 function escapeHtml(value) {
@@ -21,12 +22,25 @@ function escapeHtml(value) {
     .replaceAll("'", '&#039;');
 }
 
+function noCacheRedirect(request, path, status = 303) {
+  return new Response(null, {
+    status,
+    headers: {
+      location: new URL(path, request.url).toString(),
+      'cache-control': 'no-store, no-cache, must-revalidate',
+      pragma: 'no-cache',
+      expires: '0',
+      'x-content-type-options': 'nosniff',
+    },
+  });
+}
+
 function standaloneLoginHtml(request) {
   const url = new URL(request.url);
   const error = url.searchParams.get('error') || url.searchParams.get('login_error') || '';
   let message = '';
   if (error === 'wrong') message = 'الرمز غير صحيح. أعد المحاولة.';
-  else if (error === 'session') message = 'تعذر إنشاء جلسة آمنة. أعد المحاولة.';
+  else if (error === 'session') message = 'لم تُستعد الجلسة السابقة. حدّث هذه الصفحة أولًا ولا تُدخل الرمز مرة ثانية.';
   else if (error === 'request') message = 'تم رفض طلب الدخول. أعد تحميل الصفحة.';
 
   return `<!doctype html>
@@ -44,20 +58,21 @@ function standaloneLoginHtml(request) {
     p { margin: 0 0 22px; color: #9fb3c7; line-height: 1.6; }
     label { display: block; margin-bottom: 8px; font-weight: 700; }
     input { width: 100%; min-height: 54px; padding: 12px 15px; border: 1px solid #2b4d68; border-radius: 14px; background: #07131f; color: #fff; font-size: 20px; text-align: center; letter-spacing: 3px; }
-    button { width: 100%; min-height: 54px; margin-top: 14px; border: 0; border-radius: 14px; background: #35a7ff; color: #03111d; font-size: 17px; font-weight: 800; }
-    .error { margin: 16px 0 0; padding: 12px; border-radius: 12px; background: rgba(255,82,109,.12); color: #ff8194; }
+    button, .retry { width: 100%; min-height: 54px; display: grid; place-items: center; margin-top: 14px; border: 0; border-radius: 14px; background: #35a7ff; color: #03111d; font-size: 17px; font-weight: 800; text-decoration: none; }
+    .retry { background: #17324a; color: #dcecff; }
+    .error { margin: 16px 0 0; padding: 12px; border-radius: 12px; background: rgba(255,82,109,.12); color: #ff8194; line-height: 1.6; }
     small { display: block; margin-top: 18px; color: #6f879d; text-align: center; }
   </style>
 </head>
 <body>
   <main>
     <h1>MOE-AI</h1>
-    <p>صفحة دخول مباشرة وآمنة، لا تستخدم JavaScript ولا تنتظر رسالة Verifying.</p>
-    <form method="post" action="/mobile/unlock" autocomplete="off">
+    <p>صفحة دخول مباشرة وآمنة. بعد نجاح الرمز تُثبَّت الجلسة أولًا ثم تُفتح لوحة التحكم.</p>
+    ${error === 'session' ? `<a class="retry" href="/mobile/login-v2?resume=1&v=${MOBILE_ASSET_VERSION}">استعادة الجلسة الحالية</a>` : `<form method="post" action="${NATIVE_UNLOCK_PATH}" autocomplete="off">
       <label for="pin">الرمز السري</label>
       <input id="pin" name="pin" type="password" inputmode="numeric" autocomplete="current-password" required autofocus>
       <button type="submit">فتح لوحة التحكم</button>
-    </form>
+    </form>`}
     ${message ? `<div class="error" role="alert">${escapeHtml(message)}</div>` : ''}
     <small>لا ترسل الرمز السري لأي شخص.</small>
   </main>
@@ -82,6 +97,56 @@ function standaloneLoginResponse(request) {
   });
 }
 
+function sessionTransitionHtml(destination) {
+  return `<!doctype html>
+<html lang="ar" dir="rtl">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <meta http-equiv="refresh" content="1;url=${escapeHtml(destination)}">
+  <title>MOE-AI — تم تسجيل الدخول</title>
+  <style>
+    :root { color-scheme: dark; font-family: -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; }
+    * { box-sizing: border-box; }
+    body { margin: 0; min-height: 100vh; display: grid; place-items: center; padding: 24px; background: #07111d; color: #eef6ff; }
+    main { width: min(100%, 420px); padding: 30px 22px; text-align: center; border: 1px solid #1e3850; border-radius: 22px; background: #0b1928; }
+    h1 { margin: 0 0 12px; font-size: 25px; }
+    p { color: #9fb3c7; line-height: 1.7; }
+    a { min-height: 54px; display: grid; place-items: center; margin-top: 18px; border-radius: 14px; background: #35a7ff; color: #03111d; font-weight: 800; text-decoration: none; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>تم تسجيل الدخول بنجاح</h1>
+    <p>جاري تثبيت الجلسة الآمنة وفتح لوحة التحكم. لن يُطلب الرمز مرة أخرى.</p>
+    <a href="${escapeHtml(destination)}">فتح لوحة التحكم الآن</a>
+  </main>
+</body>
+</html>`;
+}
+
+function sessionTransitionResponse(request, nativeResponse) {
+  const destination = `/mobile?unlocked=1&v=${MOBILE_ASSET_VERSION}`;
+  const setCookie = nativeResponse.headers.get('set-cookie');
+  const headers = new Headers({
+    'content-type': 'text/html; charset=utf-8',
+    'cache-control': 'no-store, no-cache, must-revalidate',
+    pragma: 'no-cache',
+    expires: '0',
+    refresh: `1; url=${destination}`,
+    'content-security-policy': "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'",
+    'referrer-policy': 'no-referrer',
+    'x-content-type-options': 'nosniff',
+    'x-frame-options': 'DENY',
+    'x-moe-session-handoff': MOBILE_ASSET_VERSION,
+  });
+  if (setCookie) headers.set('set-cookie', setCookie);
+  return new Response(request.method === 'HEAD' ? null : sessionTransitionHtml(destination), {
+    status: 200,
+    headers,
+  });
+}
+
 function scriptResponse(body) {
   return new Response(body, {
     status: 200,
@@ -91,8 +156,38 @@ function scriptResponse(body) {
       pragma: 'no-cache',
       expires: '0',
       'x-content-type-options': 'nosniff',
+      'x-moe-mobile-assets': MOBILE_ASSET_VERSION,
     },
   });
+}
+
+async function sessionIsActive(request, env, ctx) {
+  const statusUrl = new URL('/api/tradingview/status', request.url);
+  const headers = new Headers();
+  const cookie = request.headers.get('cookie');
+  const userAgent = request.headers.get('user-agent');
+  if (cookie) headers.set('cookie', cookie);
+  if (userAgent) headers.set('user-agent', userAgent);
+  headers.set('x-moe-mobile-client', '1');
+  const response = await mobileWorker.fetch(new Request(statusUrl, {
+    method: 'GET',
+    headers,
+  }), env, ctx);
+  return response.status !== 401 && response.status !== 403;
+}
+
+async function handleUnlockBridge(request, env, ctx) {
+  const nativeResponse = await mobileWorker.fetch(request, env, ctx);
+  const location = String(nativeResponse.headers.get('location') || '');
+  const setCookie = nativeResponse.headers.get('set-cookie');
+
+  if (nativeResponse.status >= 300 && nativeResponse.status < 400 && setCookie && location.includes('unlocked=1')) {
+    return sessionTransitionResponse(request, nativeResponse);
+  }
+  if (location.includes('login_error=wrong')) return noCacheRedirect(request, `${STANDALONE_LOGIN_PATH}?error=wrong`);
+  if (location.includes('login_error=request')) return noCacheRedirect(request, `${STANDALONE_LOGIN_PATH}?error=request`);
+  if (location.includes('login_error=session')) return noCacheRedirect(request, `${STANDALONE_LOGIN_PATH}?error=session`);
+  return nativeResponse;
 }
 
 const MOBILE_BOOT_SCRIPT = `
@@ -115,6 +210,9 @@ const MOBILE_BOOT_SCRIPT = `
     var seconds = total % 60;
     function two(number) { return String(number).length < 2 ? '0' + number : String(number); }
     return two(hours) + ':' + two(minutes) + ':' + two(seconds);
+  }
+  function wait(milliseconds) {
+    return new Promise(function (resolve) { window.setTimeout(resolve, milliseconds); });
   }
   function account(prefix, value) {
     value = value || {};
@@ -157,22 +255,33 @@ const MOBILE_BOOT_SCRIPT = `
       toast.className = 'toast show';
     }
   }
-  function loadStatus() {
+  function loadStatus(attempt) {
+    var currentAttempt = Number(attempt) || 0;
     return fetch('/api/tradingview/status', {
       method: 'GET',
       cache: 'no-store',
       credentials: 'same-origin',
       headers: { 'x-moe-mobile-client': '1' }
     }).then(function (response) {
-      if (response.status === 401) {
-        window.location.replace('/mobile/login-v2?error=session&v=' + Date.now());
-        throw new Error('Authentication required');
+      if (response.status === 401 || response.status === 403) {
+        if (currentAttempt < 4) {
+          return wait(350 * (currentAttempt + 1)).then(function () { return loadStatus(currentAttempt + 1); });
+        }
+        window.location.replace('/mobile/login-v2?error=session&v=20260804-4');
+        var authError = new Error('Authentication required');
+        authError.silent = true;
+        throw authError;
       }
       return response.json().then(function (data) {
         if (!response.ok || data.ok === false) throw new Error(data.error || 'HTTP ' + response.status);
         return data;
       });
-    }).then(apply).catch(showError);
+    }).then(function (data) {
+      if (data) apply(data);
+      return data;
+    }).catch(function (error) {
+      if (!error || error.silent !== true) showError(error);
+    });
   }
   function setView(name) {
     var views = document.querySelectorAll('.view');
@@ -195,7 +304,7 @@ const MOBILE_BOOT_SCRIPT = `
       buttons[index].addEventListener('click', function () { setView(this.getAttribute('data-nav')); });
     }
     var refresh = byId('refreshButton');
-    if (refresh) refresh.addEventListener('click', function () { loadStatus(); });
+    if (refresh) refresh.addEventListener('click', function () { loadStatus(0); });
   }
 
   window.addEventListener('error', function (event) {
@@ -205,7 +314,7 @@ const MOBILE_BOOT_SCRIPT = `
     if (!window.__MOE_MAIN_CLIENT_READY__) showError(event.reason || 'JavaScript promise error');
   });
 
-  loadStatus();
+  loadStatus(0);
   window.setTimeout(function () {
     if (!window.__MOE_MAIN_CLIENT_READY__) bindFallback();
   }, 900);
@@ -256,18 +365,32 @@ async function patchedDashboard(request, env, ctx) {
 export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
+
+    if (url.pathname === NATIVE_UNLOCK_PATH && request.method === 'POST') {
+      return handleUnlockBridge(request, env, ctx);
+    }
+
     if (url.pathname === STANDALONE_LOGIN_PATH && ['GET', 'HEAD'].includes(request.method)) {
+      if (await sessionIsActive(request, env, ctx)) {
+        return noCacheRedirect(request, `/mobile?resume=1&v=${MOBILE_ASSET_VERSION}`, 302);
+      }
       return standaloneLoginResponse(request);
     }
+
     if (url.pathname === MOBILE_BOOT_PATH && request.method === 'GET') {
       return scriptResponse(MOBILE_BOOT_SCRIPT);
     }
     if (url.pathname === MOBILE_CLIENT_PATH && request.method === 'GET') {
       return extractedMobileClient(request, env, ctx);
     }
+
     if (DASHBOARD_PATHS.has(url.pathname) && ['GET', 'HEAD'].includes(request.method)) {
+      if (!(await sessionIsActive(request, env, ctx))) {
+        return noCacheRedirect(request, `${STANDALONE_LOGIN_PATH}?v=${MOBILE_ASSET_VERSION}`, 302);
+      }
       return patchedDashboard(request, env, ctx);
     }
+
     return mobileWorker.fetch(request, env, ctx);
   },
 
