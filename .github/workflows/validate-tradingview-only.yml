@@ -34,6 +34,8 @@ jobs:
       - name: Check TradingView-only source syntax
         run: |
           node --check worker/src/tradingview-only-broker.js
+          node --check worker/src/tradingview-only-settings-v2.js
+          node --check worker/src/tradingview-only-market-clock.js
           node --check worker/src/tradingview-only-runtime.js
           node --check worker/src/tradingview-only-runtime-safety.js
           node --check worker/src/tradingview-only-runtime-final.js
@@ -45,7 +47,7 @@ jobs:
           node --check worker/src/tradingview-only-final-entry.js
           node --check worker/src/tradingview-only-cloudflare-entry.js
           node --check worker/src/sandbox-mobile-market-screener-resilient-entry.js
-      - name: Test fixed-dollar and long-only contracts
+      - name: Test whole-trade, session, and long-only contracts
         run: node --test worker/test/tradingview-only.test.mjs worker/test/tradingview-only-fractional.test.mjs
       - name: Validate Sandbox Worker bundle
         run: npx wrangler deploy --dry-run --config wrangler.sandbox.jsonc
