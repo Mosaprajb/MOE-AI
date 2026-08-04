@@ -7,14 +7,14 @@ on:
     paths:
       - 'worker/src/tradingview-only-*.js'
       - 'worker/src/sandbox-mobile-market-screener-resilient-entry.js'
-      - 'worker/test/tradingview-only.test.mjs'
+      - 'worker/test/tradingview-only*.test.mjs'
       - 'wrangler.sandbox.jsonc'
       - '.github/workflows/validate-tradingview-only.yml'
   pull_request:
     paths:
       - 'worker/src/tradingview-only-*.js'
       - 'worker/src/sandbox-mobile-market-screener-resilient-entry.js'
-      - 'worker/test/tradingview-only.test.mjs'
+      - 'worker/test/tradingview-only*.test.mjs'
       - 'wrangler.sandbox.jsonc'
 
 permissions:
@@ -46,6 +46,6 @@ jobs:
           node --check worker/src/tradingview-only-cloudflare-entry.js
           node --check worker/src/sandbox-mobile-market-screener-resilient-entry.js
       - name: Test fixed-dollar and long-only contracts
-        run: node --test worker/test/tradingview-only.test.mjs
+        run: node --test worker/test/tradingview-only.test.mjs worker/test/tradingview-only-fractional.test.mjs
       - name: Validate Sandbox Worker bundle
         run: npx wrangler deploy --dry-run --config wrangler.sandbox.jsonc
