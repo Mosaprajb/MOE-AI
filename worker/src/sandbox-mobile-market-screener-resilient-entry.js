@@ -4,7 +4,7 @@ import tradingViewWorker, {
   TradingViewPositionCoordinator,
 } from './tradingview-only-cloudflare-entry.js';
 
-// TradingView-only Sandbox deployment v4: queued webhooks, per-ticker Durable Objects, and exact dollar sizing.
+// TradingView-only Sandbox deployment v5: whole-trade targets, session clock, optional margin-long, and no-overnight auto-flatten.
 // Compatibility chain markers for existing safety validation:
 // from './sandbox-market-platform-entry.js'
 // from './sandbox-mobile-market-screener-entry.js'
