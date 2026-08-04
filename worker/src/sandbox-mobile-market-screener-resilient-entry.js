@@ -60,11 +60,12 @@ body{
   border-color:transparent!important;
   box-shadow:0 12px 28px rgba(94,116,255,.30)!important;
 }
-.iconbtn,.button,.navbtn,.linkbtn,.panel summary,.bottomnav button,input,select{
+.iconbtn,.button,.navbtn,.linkbtn,.panel summary,.bottomnav button{
   touch-action:manipulation;
   -webkit-user-select:none;
   user-select:none;
 }
+input,select{touch-action:manipulation;-webkit-user-select:text;user-select:text}
 .iconbtn,.button,.navbtn,.linkbtn,.bottomnav button{
   transition:transform .12s ease,filter .12s ease,box-shadow .12s ease,border-color .12s ease!important;
 }
@@ -84,6 +85,8 @@ button:disabled,.button:disabled{opacity:.56!important;cursor:wait!important;fil
 </style>
 <script id="moe-mobile-browser-runtime-v7">
 'use strict';
+var moeThemeMeta = document.querySelector('meta[name="theme-color"]');
+if (moeThemeMeta) moeThemeMeta.setAttribute('content', '#11152d');
 var __defProp = window.__defProp || Object.defineProperty;
 var __getOwnPropDesc = window.__getOwnPropDesc || Object.getOwnPropertyDescriptor;
 var __getOwnPropSymbols = window.__getOwnPropSymbols || Object.getOwnPropertySymbols;
@@ -135,12 +138,20 @@ function shouldPatchDashboard(request, response) {
   return String(response.headers.get('content-type') || '').toLowerCase().includes('text/html');
 }
 
+function responseInit(response, headers = response.headers) {
+  return {
+    status: response.status,
+    statusText: response.statusText,
+    headers,
+  };
+}
+
 async function patchDashboardResponse(request, response) {
   if (!shouldPatchDashboard(request, response)) return response;
 
   const source = await response.text();
   if (source.includes('moe-mobile-browser-runtime-v7')) {
-    return new Response(source, response);
+    return new Response(source, responseInit(response));
   }
 
   const patched = source.includes('</head>')
@@ -153,11 +164,7 @@ async function patchDashboardResponse(request, response) {
   headers.set('pragma', 'no-cache');
   headers.set('expires', '0');
 
-  return new Response(patched, {
-    status: response.status,
-    statusText: response.statusText,
-    headers,
-  });
+  return new Response(patched, responseInit(response, headers));
 }
 
 const resilientWorker = {
