@@ -188,7 +188,7 @@ test('SimulationDriver RPC export inherits from the Cloudflare DurableObject bas
 });
 
 test('Sandbox configuration keeps Pilot disarmed and every Live gate locked', () => {
-  assert.equal(config.main, 'worker/src/sandbox-mobile-market-screener-entry.js');
+  assert.equal(config.main, 'worker/src/sandbox-mobile-market-screener-resilient-entry.js');
   assert.match(marketScreenerEntrySource, /from '\.\/sandbox-mobile-live-watchlist-entry\.js'/);
   assert.match(marketScreenerEntrySource, /liveTradingLocked: true/);
   assert.match(marketScreenerEntrySource, /liveFundsUsed: false/);
