@@ -10,7 +10,7 @@ const watchlistSource = readFileSync(join(root, 'worker/src/sandbox-mobile-live-
 const config = JSON.parse(readFileSync(join(root, 'wrangler.sandbox.jsonc'), 'utf8'));
 
 test('mobile market screener is the deployed wrapper and preserves the protected chain', () => {
-  assert.equal(config.main, 'worker/src/sandbox-mobile-market-screener-entry.js');
+  assert.equal(config.main, 'worker/src/sandbox-mobile-market-screener-resilient-entry.js');
   assert.match(source, /from '\.\/sandbox-mobile-live-watchlist-entry\.js'/);
   assert.match(source, /export \{ AlertCoordinator, SimulationDriver \}/);
   assert.match(watchlistSource, /from '\.\/sandbox-moerand-clean-utbot-entry\.js'/);
