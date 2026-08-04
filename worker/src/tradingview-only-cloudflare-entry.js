@@ -1,7 +1,7 @@
 import worker, {
   AlertCoordinator,
   SimulationDriver,
-} from './tradingview-only-final-entry.js';
+} from './tradingview-only-mobile-entry.js';
 import { TradingViewPositionCoordinator } from './tradingview-only-durable-object.js';
 
 export { AlertCoordinator, SimulationDriver, TradingViewPositionCoordinator };
