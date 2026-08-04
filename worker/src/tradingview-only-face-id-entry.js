@@ -5,11 +5,14 @@ import safariAuthWorker, {
 } from './tradingview-only-safari-auth-entry.js';
 import {
   MOBILE_ASSET_VERSION,
+  SESSION_COOKIE,
+  cookieValue,
   createChallenge,
   createDashboardSession,
   dashboardSessionCookie,
   passkeyRecordCookie,
   readPasskeyRecord,
+  readSignedToken,
   requestIsSameSite,
   verifyChallenge,
 } from './tradingview-only-passkey-token.js';
@@ -51,9 +54,10 @@ function json(payload, status = 200, cookies = []) {
   });
 }
 
-function redirect(request, path, status = 303) {
-  const headers = responseHeaders('text/plain; charset=utf-8');
+function redirect(request, path, status = 303, cookies = []) {
+  const headers = responseHeaders('text/plain; charset=utf-8', cookies);
   headers.set('location', new URL(path, request.url).toString());
+  headers.set('x-moe-auth-handoff', 'direct-redirect-v2');
   return new Response(null, { status, headers });
 }
 
@@ -68,25 +72,15 @@ async function readJson(request) {
   return request.json().catch(() => null);
 }
 
-function forwardedHeaders(request) {
-  const headers = new Headers();
-  for (const name of ['cookie', 'user-agent', 'cf-connecting-ip']) {
-    const value = request.headers.get(name);
-    if (value) headers.set(name, value);
-  }
-  headers.set('x-moe-mobile-client', '1');
-  return headers;
-}
-
-async function dashboardSessionActive(request, env, ctx) {
-  const statusUrl = new URL('/api/tradingview/status', request.url);
-  const response = await safariAuthWorker.fetch(new Request(statusUrl, {
-    method: 'GET',
-    headers: forwardedHeaders(request),
-  }), env, ctx);
-  if (!response.ok) return false;
-  const payload = await response.clone().json().catch(() => null);
-  return Boolean(payload && payload.ok !== false);
+async function dashboardSessionActive(request, env) {
+  const token = cookieValue(request, SESSION_COOKIE);
+  if (!token) return false;
+  const payload = await readSignedToken(token, env);
+  return Boolean(
+    payload
+    && payload.scope === 'MOE_TRADINGVIEW_DASHBOARD'
+    && Number(payload.expiresAt) > Date.now(),
+  );
 }
 
 function recordAudit(env, ctx, type) {
@@ -99,8 +93,8 @@ function recordAudit(env, ctx, type) {
   }
 }
 
-async function handleLoginPage(request, env, ctx) {
-  if (await dashboardSessionActive(request, env, ctx)) {
+async function handleLoginPage(request, env) {
+  if (await dashboardSessionActive(request, env)) {
     return redirect(request, `/mobile?resume=1&v=${MOBILE_ASSET_VERSION}`, 302);
   }
   const url = new URL(request.url);
@@ -111,22 +105,23 @@ async function handleLoginPage(request, env, ctx) {
 async function handlePinLogin(request, env, ctx) {
   const response = await safariAuthWorker.fetch(request, env, ctx);
   const cookies = setCookies(response.headers);
-  const sessionCookies = cookies.filter((cookie) => cookie.startsWith('moe_tv_session='));
+  const sessionCookies = cookies.filter((cookie) => cookie.startsWith(`${SESSION_COOKIE}=`));
   if (!sessionCookies.length) return response;
+
   const record = await readPasskeyRecord(request, env);
-  if (record) return response;
   const destination = `/mobile?unlocked=1&v=${MOBILE_ASSET_VERSION}`;
+  if (record) return redirect(request, destination, 303, sessionCookies);
   return page(setupPageHtml(destination), 'GET', sessionCookies);
 }
 
-async function requireSession(request, env, ctx) {
+async function requireSession(request, env) {
   if (!requestIsSameSite(request)) return json({ ok: false, error: 'Invalid request origin' }, 403);
-  if (!(await dashboardSessionActive(request, env, ctx))) return json({ ok: false, error: 'Authentication required' }, 401);
+  if (!(await dashboardSessionActive(request, env))) return json({ ok: false, error: 'Authentication required' }, 401);
   return null;
 }
 
-async function registerOptions(request, env, ctx) {
-  const denied = await requireSession(request, env, ctx);
+async function registerOptions(request, env) {
+  const denied = await requireSession(request, env);
   if (denied) return denied;
   const challenge = await createChallenge('register', request, env);
   const existing = await readPasskeyRecord(request, env);
@@ -152,7 +147,7 @@ async function registerOptions(request, env, ctx) {
 }
 
 async function registerComplete(request, env, ctx) {
-  const denied = await requireSession(request, env, ctx);
+  const denied = await requireSession(request, env);
   if (denied) return denied;
   const body = await readJson(request);
   const challenge = await verifyChallenge(body?.token, 'register', request, env);
@@ -209,20 +204,20 @@ export default {
     const url = new URL(request.url);
     const path = url.pathname;
 
-    if (path === LOGIN_PATH && ['GET', 'HEAD'].includes(request.method)) return handleLoginPage(request, env, ctx);
+    if (path === LOGIN_PATH && ['GET', 'HEAD'].includes(request.method)) return handleLoginPage(request, env);
     if (LOGIN_POST_PATHS.has(path) && request.method === 'POST') return handlePinLogin(request, env, ctx);
 
     if (path === SETUP_PATH && request.method === 'GET') {
-      if (!(await dashboardSessionActive(request, env, ctx))) return redirect(request, `${LOGIN_PATH}?error=session`, 302);
+      if (!(await dashboardSessionActive(request, env))) return redirect(request, `${LOGIN_PATH}?error=session`, 302);
       return page(setupPageHtml(`/mobile?unlocked=1&v=${MOBILE_ASSET_VERSION}`));
     }
-    if (path === '/api/mobile/passkey/register/options' && request.method === 'GET') return registerOptions(request, env, ctx);
+    if (path === '/api/mobile/passkey/register/options' && request.method === 'GET') return registerOptions(request, env);
     if (path === '/api/mobile/passkey/register/complete' && request.method === 'POST') return registerComplete(request, env, ctx);
     if (path === '/api/mobile/passkey/login/options' && request.method === 'GET') return loginOptions(request, env);
     if (path === '/api/mobile/passkey/login/complete' && request.method === 'POST') return loginComplete(request, env, ctx);
 
     if (DASHBOARD_PATHS.has(path) && ['GET', 'HEAD'].includes(request.method)) {
-      if (!(await dashboardSessionActive(request, env, ctx))) return redirect(request, `${LOGIN_PATH}?v=${MOBILE_ASSET_VERSION}`, 302);
+      if (!(await dashboardSessionActive(request, env))) return redirect(request, `${LOGIN_PATH}?v=${MOBILE_ASSET_VERSION}`, 302);
     }
     return safariAuthWorker.fetch(request, env, ctx);
   },
