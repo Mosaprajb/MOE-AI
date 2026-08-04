@@ -10,7 +10,7 @@ const STANDALONE_LOGIN_PATH = '/mobile/login-v2';
 const NATIVE_UNLOCK_PATH = '/mobile/unlock';
 const MOBILE_BOOT_PATH = '/mobile/boot-v4.js';
 const MOBILE_CLIENT_PATH = '/mobile/client-v4.js';
-const MOBILE_ASSET_VERSION = '20260804-4';
+const MOBILE_ASSET_VERSION = '20260804-6';
 const DASHBOARD_PATHS = new Set(['/', '/dashboard', '/dashboard/', '/m', '/m/', '/mobile', '/mobile/', '/alerts', '/alerts/']);
 
 function escapeHtml(value) {
@@ -58,7 +58,7 @@ function standaloneLoginHtml(request) {
     p { margin: 0 0 22px; color: #9fb3c7; line-height: 1.6; }
     label { display: block; margin-bottom: 8px; font-weight: 700; }
     input { width: 100%; min-height: 54px; padding: 12px 15px; border: 1px solid #2b4d68; border-radius: 14px; background: #07131f; color: #fff; font-size: 20px; text-align: center; letter-spacing: 3px; }
-    button, .retry { width: 100%; min-height: 54px; display: grid; place-items: center; margin-top: 14px; border: 0; border-radius: 14px; background: #35a7ff; color: #03111d; font-size: 17px; font-weight: 800; text-decoration: none; }
+    button, .retry { width: 100%; min-height: 54px; display: grid; place-items: center; margin-top: 14px; border: 0; border-radius: 14px; background: #35a7ff; color: #03111d; font-size: 17px; font-weight: 800; text-decoration: none; touch-action: manipulation; -webkit-appearance: none; appearance: none; cursor: pointer; }
     .retry { background: #17324a; color: #dcecff; }
     .error { margin: 16px 0 0; padding: 12px; border-radius: 12px; background: rgba(255,82,109,.12); color: #ff8194; line-height: 1.6; }
     small { display: block; margin-top: 18px; color: #6f879d; text-align: center; }
@@ -267,7 +267,7 @@ const MOBILE_BOOT_SCRIPT = `
         if (currentAttempt < 4) {
           return wait(350 * (currentAttempt + 1)).then(function () { return loadStatus(currentAttempt + 1); });
         }
-        window.location.replace('/mobile/login-v2?error=session&v=20260804-4');
+        window.location.replace('/mobile/login-v2?error=session&v=20260804-6');
         var authError = new Error('Authentication required');
         authError.silent = true;
         throw authError;
@@ -333,8 +333,25 @@ async function extractedMobileClient(request, env, ctx) {
   const scripts = [...sourceHtml.matchAll(/<script(?:\s[^>]*)?>([\s\S]*?)<\/script>/gi)]
     .map((match) => match[1])
     .filter(Boolean);
-  const body = `${scripts.join('\n')}\nwindow.__MOE_MAIN_CLIENT_READY__ = true;`;
+  const body = `${scripts.join('\
+')}\
+window.__MOE_MAIN_CLIENT_READY__ = true;`;
   return scriptResponse(body);
+}
+
+function installNativeDashboardLogin(body) {
+  const loginControls = /<input id="pin"[^>]*><button id="loginButton"[^>]*>[\s\S]*?<\/button><div class="message" id="loginMessage"><\/div>/;
+  if (!loginControls.test(body)) return body;
+
+  const nativeControls = `<form id="moeNativeLoginForm" method="post" action="${NATIVE_UNLOCK_PATH}" autocomplete="off">
+    <input id="nativePin" name="pin" type="password" inputmode="numeric" autocomplete="current-password" placeholder="Control PIN" required aria-label="Control PIN">
+    <button id="nativeLoginButton" type="submit" class="button primary" style="touch-action:manipulation;-webkit-appearance:none;appearance:none;pointer-events:auto">Unlock dashboard</button>
+    <div class="message" id="loginMessage"></div>
+  </form>
+  <input id="pin" type="hidden" value="" aria-hidden="true">
+  <button id="loginButton" type="button" hidden aria-hidden="true" tabindex="-1" style="display:none!important"></button>`;
+
+  return body.replace(loginControls, nativeControls);
 }
 
 async function patchedDashboard(request, env, ctx) {
@@ -344,6 +361,7 @@ async function patchedDashboard(request, env, ctx) {
 
   let body = await response.text();
   body = body.replace(/<script(?:\s[^>]*)?>[\s\S]*?<\/script>/gi, '');
+  body = installNativeDashboardLogin(body);
   const scripts = `<script src="${MOBILE_BOOT_PATH}?v=${MOBILE_ASSET_VERSION}" defer></script><script src="${MOBILE_CLIENT_PATH}?v=${MOBILE_ASSET_VERSION}" defer></script>`;
   body = body.includes('</body>') ? body.replace('</body>', `${scripts}</body>`) : `${body}${scripts}`;
 
@@ -354,6 +372,7 @@ async function patchedDashboard(request, env, ctx) {
   headers.set('expires', '0');
   headers.set('content-security-policy', "default-src 'self'; style-src 'unsafe-inline'; script-src 'self' 'unsafe-inline'; connect-src 'self'; img-src 'self' data:; frame-ancestors 'none'; base-uri 'none'; form-action 'self'");
   headers.set('x-moe-mobile-assets', MOBILE_ASSET_VERSION);
+  headers.set('x-moe-native-login', 'dashboard-form-v1');
 
   return new Response(request.method === 'HEAD' ? null : body, {
     status: response.status,
