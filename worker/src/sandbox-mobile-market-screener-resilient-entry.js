@@ -3,10 +3,11 @@ import tradingViewWorker, {
   SimulationDriver,
   TradingViewPositionCoordinator,
 } from './tradingview-only-safari-auth-entry.js';
+import { tradingViewPnlControlPatch } from './tradingview-only-pnl-control-patch.js';
 
-// TradingView-only Sandbox deployment v7: Safari-safe interactive controls,
-// royal-blue/violet mobile theme, whole-trade targets, session clock,
-// optional margin-long, and no-overnight auto-flatten.
+// TradingView-only Sandbox deployment v8: Safari-safe interactive controls,
+// broker-authoritative P&L, reliability tools, royal-blue/violet mobile theme,
+// whole-trade targets, session clock, optional margin-long, and no-overnight auto-flatten.
 // Compatibility chain markers for existing safety validation:
 // from './tradingview-only-cloudflare-entry.js'
 // from './sandbox-market-platform-entry.js'
@@ -150,19 +151,22 @@ async function patchDashboardResponse(request, response) {
   if (!shouldPatchDashboard(request, response)) return response;
 
   const source = await response.text();
-  if (source.includes('moe-mobile-browser-runtime-v7')) {
-    return new Response(source, responseInit(response));
-  }
+  const additions = [];
+  if (!source.includes('moe-mobile-browser-runtime-v7')) additions.push(MOBILE_HEAD_PATCH);
+  if (!source.includes('moe-pnl-control-script-v1')) additions.push(tradingViewPnlControlPatch());
+  if (!additions.length) return new Response(source, responseInit(response));
 
+  const patch = additions.join('\n');
   const patched = source.includes('</head>')
-    ? source.replace('</head>', `${MOBILE_HEAD_PATCH}\n</head>`)
-    : `${MOBILE_HEAD_PATCH}\n${source}`;
+    ? source.replace('</head>', `${patch}\n</head>`)
+    : `${patch}\n${source}`;
 
   const headers = new Headers(response.headers);
   headers.delete('content-length');
   headers.set('cache-control', 'no-store, no-cache, must-revalidate');
   headers.set('pragma', 'no-cache');
   headers.set('expires', '0');
+  headers.set('x-moe-pnl-controls', 'broker-day-pnl-v1');
 
   return new Response(patched, responseInit(response, headers));
 }
