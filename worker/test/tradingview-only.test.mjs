@@ -11,7 +11,9 @@ const config = JSON.parse(readFileSync(new URL('../../wrangler.sandbox.jsonc', i
 const deployedEntry = readFileSync(new URL('../src/sandbox-mobile-market-screener-resilient-entry.js', import.meta.url), 'utf8');
 const finalEntry = readFileSync(new URL('../src/tradingview-only-final-entry.js', import.meta.url), 'utf8');
 const safetyRuntime = readFileSync(new URL('../src/tradingview-only-runtime-safety.js', import.meta.url), 'utf8');
+const finalRuntime = readFileSync(new URL('../src/tradingview-only-runtime-final.js', import.meta.url), 'utf8');
 const dashboard = readFileSync(new URL('../src/tradingview-only-dashboard.js', import.meta.url), 'utf8');
+const finalDashboard = readFileSync(new URL('../src/tradingview-only-dashboard-final.js', import.meta.url), 'utf8');
 
 test('TradingView settings accept fixed-dollar values and force spot long-only rules', () => {
   const settings = normalizeTradingViewSettings({
@@ -95,12 +97,21 @@ test('deployed Sandbox configuration is TradingView-only and Live remains locked
   assert.match(deployedEntry, /from '\.\/tradingview-only-final-entry\.js'/);
 });
 
-test('legacy execution is blocked and emergency exit covers broker inventory', () => {
+test('idempotency is permanent and legacy execution remains blocked', () => {
+  assert.match(finalEntry, /claimTradingViewSignal/);
+  assert.match(finalEntry, /permanent: true/);
+  assert.equal(finalEntry.includes("storage.delete(`tradingview-only:dedupe:"), false);
   assert.match(finalEntry, /\/api\/tradingview\/webull-preview/);
   assert.match(finalEntry, /status: 410/);
+});
+
+test('emergency exit covers broker inventory and retries rejected closes', () => {
   assert.match(finalEntry, /closeUntrackedBrokerPositions/);
   assert.match(finalEntry, /KILL_SWITCH_UNTRACKED_POSITION_EXIT_SUBMITTED/);
   assert.match(finalEntry, /orderType: 'MARKET'/);
+  assert.match(finalRuntime, /KILL_SWITCH_EXIT_RETRIED/);
+  assert.match(finalRuntime, /isTerminalFailureStatus/);
+  assert.match(finalRuntime, /killRetryCount/);
 });
 
 test('position runtime fails safe during stop replacement and archives broker fill prices', () => {
@@ -117,4 +128,13 @@ test('main interface is alerts-first while scanner remains research-only', () =>
   assert.match(dashboard, /This page cannot open, modify, or close trades/);
   assert.equal(dashboard.includes('data-view="strategies"'), false);
   assert.equal(dashboard.includes('Strategies</button>'), false);
+});
+
+test('interface provides real-time trade notifications and sortable archive', () => {
+  assert.match(finalDashboard, /TRADINGVIEW_POSITION_OPENED/);
+  assert.match(finalDashboard, /TRAILING_STOP_RAISED/);
+  assert.match(finalDashboard, /TRADINGVIEW_POSITION_CLOSED/);
+  assert.match(finalDashboard, /archiveSort/);
+  assert.match(finalDashboard, /Highest P\/L/);
+  assert.match(finalDashboard, /MutationObserver/);
 });
