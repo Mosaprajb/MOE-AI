@@ -22,7 +22,7 @@ const alpacaSource = readFileSync(join(root, 'worker/src/alpaca-market-regime.js
 const config = readFileSync(join(root, 'wrangler.sandbox.jsonc'), 'utf8');
 
 test('sandbox Worker is wired through the isolated simulation entry', () => {
-  assert.match(config, /"main": "worker\/src\/sandbox-mobile-market-screener-entry\.js"/);
+  assert.match(config, /"main": "worker\/src\/sandbox-mobile-market-screener-resilient-entry\.js"/);
   assert.match(marketScreenerEntry, /from '\.\/sandbox-mobile-live-watchlist-entry\.js'/);
   assert.match(marketScreenerEntry, /\/api\/mobile\/market-screener/);
   assert.match(marketScreenerEntry, /liveTradingLocked: true/);
