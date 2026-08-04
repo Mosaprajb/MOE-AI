@@ -44,13 +44,14 @@ jobs:
           node --check worker/src/tradingview-only-dashboard.js
           node --check worker/src/tradingview-only-dashboard-final.js
           node --check worker/src/tradingview-only-dashboard-mobile.js
+          node --check worker/src/tradingview-only-pnl-control-patch.js
           node --check worker/src/tradingview-only-webhook-queue.js
           node --check worker/src/tradingview-only-entry.js
           node --check worker/src/tradingview-only-final-entry.js
           node --check worker/src/tradingview-only-mobile-entry.js
           node --check worker/src/tradingview-only-cloudflare-entry.js
           node --check worker/src/sandbox-mobile-market-screener-resilient-entry.js
-      - name: Test whole-trade, session, long-only, protection, and mobile contracts
-        run: node --test worker/test/tradingview-only.test.mjs worker/test/tradingview-only-fractional.test.mjs worker/test/tradingview-only-reliability-mobile.test.mjs
+      - name: Test whole-trade, session, long-only, protection, P&L, and mobile contracts
+        run: node --test worker/test/tradingview-only.test.mjs worker/test/tradingview-only-fractional.test.mjs worker/test/tradingview-only-reliability-mobile.test.mjs worker/test/tradingview-only-pnl-controls.test.mjs
       - name: Validate Sandbox Worker bundle
         run: npx wrangler deploy --dry-run --config wrangler.sandbox.jsonc
