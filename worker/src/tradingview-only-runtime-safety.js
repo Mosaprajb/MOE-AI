@@ -1,7 +1,5 @@
-import {
-  TradingViewPositionCoordinator as BaseTradingViewPositionCoordinator,
-  normalizeTradingViewSettings,
-} from './tradingview-only-runtime.js';
+import { TradingViewPositionCoordinator as BaseTradingViewPositionCoordinator } from './tradingview-only-runtime.js';
+import { normalizeTradingViewSettingsV2, TRADING_MODES } from './tradingview-only-settings-v2.js';
 import {
   brokerAccountId,
   getBrokerAccountSummary,
@@ -36,10 +34,51 @@ function activeState(state) {
   return Boolean(state && ['PENDING_ENTRY', 'OPEN', 'MANAGING', 'CLOSING_KILL'].includes(state.status));
 }
 
-function fractionalQuantity(dollarAmount, sharePrice) {
-  const raw = finite(dollarAmount, 0) / finite(sharePrice, Infinity);
-  if (!(raw > 0)) return 0;
-  return Math.floor(raw * 1_000_000) / 1_000_000;
+function wholeShareQuantity(dollarAmount, sharePrice) {
+  const amount = finite(dollarAmount, 0);
+  const priceValue = finite(sharePrice, 0);
+  if (!(amount > 0 && priceValue > 0)) return 0;
+  return Math.floor(amount / priceValue);
+}
+
+function committedLongNotional(account = {}) {
+  return (Array.isArray(account.positions) ? account.positions : []).reduce((total, position) => {
+    const marketValue = Math.abs(finite(position.marketValue, 0));
+    if (marketValue > 0) return total + marketValue;
+    const quantity = Math.abs(finite(position.quantity, 0));
+    const currentPrice = finite(position.currentPrice, finite(position.averagePrice, 0));
+    return total + quantity * Math.max(0, currentPrice);
+  }, 0);
+}
+
+function buyingPowerGuard(account, settings) {
+  const marginMode = settings.tradingMode === TRADING_MODES.MARGIN;
+  const available = finite(marginMode ? account.buyingPower : account.cash, null);
+  if (!(available >= 0)) {
+    throw new Error(marginMode ? 'Margin buying power is unavailable' : 'Cash buying power is unavailable');
+  }
+  const committed = committedLongNotional(account);
+  const totalCapacity = Math.max(available + committed, available);
+  const cap = totalCapacity * (settings.maxBuyingPowerPercent / 100);
+  const afterEntry = committed + settings.positionSizeDollars;
+
+  if (settings.positionSizeDollars > available + 0.01) {
+    throw new Error(marginMode
+      ? 'Configured trade amount exceeds available margin buying power'
+      : 'Cash-only check failed: configured trade amount exceeds available cash');
+  }
+  if (afterEntry > cap + 0.01) {
+    throw new Error('Buying-power percentage cap would be exceeded');
+  }
+
+  return {
+    marginMode,
+    availableBuyingPower: money(available),
+    committedNotional: money(committed),
+    totalCapacity: money(totalCapacity),
+    maximumAllowedNotional: money(cap),
+    projectedCommittedNotional: money(afterEntry),
+  };
 }
 
 function delay(milliseconds) {
@@ -73,7 +112,7 @@ export class TradingViewPositionCoordinator extends BaseTradingViewPositionCoord
       return { accepted: true, ignored: true, reason: 'POSITION_ALREADY_OPEN', state: current };
     }
 
-    const normalized = normalizeTradingViewSettings(settings);
+    const normalized = normalizeTradingViewSettingsV2(settings);
     const accountType = String(runtime?.accountType || normalized.accountType || 'DEMO').toUpperCase();
     if (accountType === 'LIVE' && runtime?.liveActivated !== true) {
       throw new Error('Live TradingView execution remains locked');
@@ -88,9 +127,7 @@ export class TradingViewPositionCoordinator extends BaseTradingViewPositionCoord
     if (Number(account.openPositions || 0) >= Number(normalized.maxOpenPositions || 1)) {
       throw new Error('Maximum concurrent open positions reached at the broker');
     }
-    if (!(finite(account.cash, null) >= normalized.positionSizeDollars)) {
-      throw new Error('Spot-only cash check failed: configured trade amount exceeds available cash');
-    }
+    const powerGuard = buyingPowerGuard(account, normalized);
 
     const positions = await withRetry(
       'Broker position lookup failed',
@@ -101,18 +138,20 @@ export class TradingViewPositionCoordinator extends BaseTradingViewPositionCoord
       throw new Error('Duplicate entry blocked: the broker already holds this ticker');
     }
 
-    const quantity = fractionalQuantity(normalized.positionSizeDollars, alert.price);
-    if (!(quantity > 0)) throw new Error('Configured position size cannot produce a valid fractional share quantity');
+    const quantity = wholeShareQuantity(normalized.positionSizeDollars, alert.price);
+    if (quantity < 1) throw new Error('Configured position size is too small to buy one whole share');
     const estimatedNotional = money(quantity * alert.price);
-    if (estimatedNotional > normalized.positionSizeDollars + 0.01 || estimatedNotional > finite(account.cash, 0)) {
-      throw new Error('Spot-only cash sizing check failed');
+    if (estimatedNotional > normalized.positionSizeDollars + 0.01) {
+      throw new Error('Whole-share position sizing exceeded the configured dollar amount');
     }
 
     const entryPrice = price(alert.price);
-    const takeProfitPrice = price(entryPrice + normalized.takeProfitDollars);
-    const initialStopPrice = price(entryPrice - normalized.stopLossDollars);
+    const takeProfitPerShare = normalized.takeProfitDollars / quantity;
+    const stopLossPerShare = normalized.stopLossDollars / quantity;
+    const takeProfitPrice = price(entryPrice + takeProfitPerShare);
+    const initialStopPrice = price(entryPrice - stopLossPerShare);
     if (!(initialStopPrice > 0 && initialStopPrice < entryPrice && takeProfitPrice > entryPrice)) {
-      throw new Error('Configured fixed-dollar target or stop creates an invalid protected order');
+      throw new Error('Configured whole-trade target or stop creates an invalid protected order');
     }
 
     const accountId = brokerAccountId(accountType, this.env);
@@ -130,18 +169,22 @@ export class TradingViewPositionCoordinator extends BaseTradingViewPositionCoord
 
     const now = new Date().toISOString();
     const state = await this.writeState({
-      version: 1,
+      version: 2,
       symbol: alert.symbol,
       status: 'PENDING_ENTRY',
       positionOpen: false,
       accountType,
       accountId,
       quantity,
-      fractionalQuantity: true,
+      wholeSharesOnly: true,
       configuredPositionDollars: normalized.positionSizeDollars,
       estimatedNotional,
       plannedEntryPrice: entryPrice,
       entryPrice,
+      takeProfitTotalDollars: normalized.takeProfitDollars,
+      stopLossTotalDollars: normalized.stopLossDollars,
+      takeProfitPerShare: money(takeProfitPerShare),
+      stopLossPerShare: money(stopLossPerShare),
       takeProfitPrice,
       initialStopPrice,
       currentStopPrice: initialStopPrice,
@@ -152,6 +195,13 @@ export class TradingViewPositionCoordinator extends BaseTradingViewPositionCoord
       trailRiseStepDollars: 0.05,
       trailStopStepDollars: 0.01,
       trailingSteps: 0,
+      tradingMode: normalized.tradingMode,
+      maxBuyingPowerPercent: normalized.maxBuyingPowerPercent,
+      session: normalized.session,
+      noOvernightHolding: true,
+      cashOnly: normalized.cashOnly,
+      marginLongEnabled: normalized.marginLongEnabled,
+      buyingPowerGuard: powerGuard,
       orderIds: {
         entry: submission.ids.entry,
         takeProfit: submission.ids.takeProfit,
@@ -175,13 +225,18 @@ export class TradingViewPositionCoordinator extends BaseTradingViewPositionCoord
       accountType,
       signalId: state.signalId,
       quantity,
-      fractionalQuantity: true,
+      wholeSharesOnly: true,
       configuredPositionDollars: normalized.positionSizeDollars,
       estimatedNotional,
+      takeProfitTotalDollars: normalized.takeProfitDollars,
+      stopLossTotalDollars: normalized.stopLossDollars,
       entryPrice,
       takeProfitPrice,
       stopLossPrice: initialStopPrice,
-      spotOnly: true,
+      tradingMode: normalized.tradingMode,
+      maxBuyingPowerPercent: normalized.maxBuyingPowerPercent,
+      cashOnly: normalized.cashOnly,
+      marginLongEnabled: normalized.marginLongEnabled,
       longOnly: true,
     });
     await this.schedule();
@@ -233,14 +288,15 @@ export class TradingViewPositionCoordinator extends BaseTradingViewPositionCoord
   }
 
   async completePosition(state, fallbackExitPrice, fallbackReason) {
+    const closeReason = state.killSwitchReason === 'AUTO_FLATTEN' ? 'AUTO_FLATTEN' : 'KILL_SWITCH';
     const candidates = [
-      { id: state.orderIds?.close, reason: 'KILL_SWITCH' },
+      { id: state.orderIds?.close, reason: closeReason },
       { id: state.orderIds?.takeProfit, reason: 'TARGET' },
       { id: state.orderIds?.currentStop, reason: state.trailingActivated ? 'TRAILING_STOP' : 'STOP_LOSS' },
     ].filter((item, index, array) => item.id && array.findIndex((candidate) => candidate.id === item.id) === index);
 
     let exitPrice = fallbackExitPrice;
-    let exitReason = fallbackReason;
+    let exitReason = state.killSwitchReason || fallbackReason;
     const details = await Promise.allSettled(candidates.map((candidate) => getBrokerOrderDetail(
       state.accountType,
       state.accountId,
