@@ -12,10 +12,12 @@ import {
   scannerOnlyHtml,
   tradingViewDashboardHtml,
 } from './tradingview-only-dashboard-final.js';
+import { handleQueuedTradingViewWebhook } from './tradingview-only-webhook-queue.js';
 
 const DEDUPE_INDEX_KEY = 'tradingview-only:dedupe-index:v1';
 const DASHBOARD_PATHS = new Set(['/', '/dashboard', '/dashboard/', '/m', '/m/', '/mobile', '/mobile/', '/alerts', '/alerts/']);
 const SCANNER_PATHS = new Set(['/scanner', '/scanner/']);
+const WEBHOOK_PATHS = new Set(['/api/tradingview/signal', '/api/tradingview/webhook']);
 const OLD_EXECUTION_PATHS = new Set([
   '/api/tradingview/webull-preview',
 ]);
@@ -148,6 +150,9 @@ export default {
     }
     if (SCANNER_PATHS.has(path) && ['GET', 'HEAD'].includes(request.method)) {
       return html(scannerOnlyHtml(), request.method);
+    }
+    if (WEBHOOK_PATHS.has(path)) {
+      return handleQueuedTradingViewWebhook(request, env, ctx);
     }
     if (OLD_EXECUTION_PATHS.has(path)) {
       return Response.json({
