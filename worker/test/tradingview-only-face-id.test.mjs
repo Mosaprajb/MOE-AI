@@ -19,10 +19,27 @@ test('Face ID is primary and PIN remains the fallback', () => {
 test('dashboard uses one guarded login page instead of the old overlay', () => {
   const entry = source('tradingview-only-face-id-entry.js');
   assert.match(entry, /LOGIN_PATH = '\/mobile\/login-v2'/);
-  assert.match(entry, /if \(!response\.ok\) return false/);
   assert.match(entry, /DASHBOARD_PATHS\.has\(path\)/);
   assert.match(entry, /return redirect\(request, `\$\{LOGIN_PATH\}/);
   assert.match(entry, /return page\(setupPageHtml\(destination\)/);
+});
+
+test('PIN handoff redirects directly and preserves the new session cookie', () => {
+  const entry = source('tradingview-only-face-id-entry.js');
+  assert.match(entry, /function redirect\(request, path, status = 303, cookies = \[\]\)/);
+  assert.match(entry, /x-moe-auth-handoff', 'direct-redirect-v2'/);
+  assert.match(entry, /sessionCookies = cookies\.filter/);
+  assert.match(entry, /if \(record\) return redirect\(request, destination, 303, sessionCookies\)/);
+  assert.doesNotMatch(entry, /if \(record\) return response/);
+});
+
+test('dashboard session is validated directly from its signed cookie', () => {
+  const entry = source('tradingview-only-face-id-entry.js');
+  assert.match(entry, /SESSION_COOKIE/);
+  assert.match(entry, /cookieValue\(request, SESSION_COOKIE\)/);
+  assert.match(entry, /readSignedToken\(token, env\)/);
+  assert.match(entry, /payload\.scope === 'MOE_TRADINGVIEW_DASHBOARD'/);
+  assert.doesNotMatch(entry, /statusUrl = new URL\('\/api\/tradingview\/status'/);
 });
 
 test('passkey requires platform user verification and server signature verification', () => {
