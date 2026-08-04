@@ -7,11 +7,15 @@ on:
     paths:
       - 'worker/src/mobile-scanner-visible-ui.js'
       - 'worker/src/mobile-paper-broker-gate.js'
+      - 'worker/src/sandbox-market-platform-entry.js'
+      - 'worker/src/sandbox-mobile-market-screener-resilient-entry.js'
+      - 'worker/src/sandbox-mobile-market-screener-resilient-core.js'
       - 'worker/src/sandbox-mobile-market-screener-entry.js'
       - 'worker/src/sandbox-mobile-live-watchlist-entry.js'
       - 'worker/src/sandbox-moerand-clean-utbot-entry.js'
       - 'worker/src/sandbox-mobile-account-balances-entry.js'
       - 'worker/src/sandbox-mobile-account-balances-implementation.js'
+      - 'worker/test/mobile-market-platform.test.mjs'
       - 'worker/test/mobile-market-screener.test.mjs'
       - 'worker/test/mobile-live-watchlist.test.mjs'
       - 'worker/test/mobile-scanner-monitor-contract.test.mjs'
@@ -28,12 +32,12 @@ permissions:
   contents: read
 
 concurrency:
-  group: deploy-mobile-market-screener
+  group: deploy-mobile-market-platform
   cancel-in-progress: true
 
 jobs:
   test-deploy-verify:
-    name: Test, deploy, and verify mobile market screener
+    name: Test, deploy, and verify mobile market platform
     runs-on: ubuntu-latest
     timeout-minutes: 35
     steps:
@@ -54,12 +58,16 @@ jobs:
           node --check worker/src/mobile-scanner-visible-ui.js
           node --check worker/src/sandbox-mobile-live-watchlist-entry.js
           node --check worker/src/sandbox-mobile-market-screener-entry.js
+          node --check worker/src/sandbox-mobile-market-screener-resilient-core.js
+          node --check worker/src/sandbox-market-platform-entry.js
+          node --check worker/src/sandbox-mobile-market-screener-resilient-entry.js
 
-      - name: Test mobile scanner, watchlist, and screener contracts
+      - name: Test mobile market platform contracts
         run: |
           node --test --test-concurrency=1 worker/test/mobile-scanner-monitor-contract.test.mjs
           node --test --test-concurrency=1 worker/test/mobile-live-watchlist.test.mjs
           node --test --test-concurrency=1 worker/test/mobile-market-screener.test.mjs
+          node --test --test-concurrency=1 worker/test/mobile-market-platform.test.mjs
 
       - name: Test Sandbox safety chain
         run: |
@@ -75,6 +83,9 @@ jobs:
           node <<'NODE'
           const { readFileSync } = require('node:fs');
           const config = JSON.parse(readFileSync('wrangler.sandbox.jsonc', 'utf8'));
+          const compatibility = readFileSync('worker/src/sandbox-mobile-market-screener-resilient-entry.js', 'utf8');
+          const platform = readFileSync('worker/src/sandbox-market-platform-entry.js', 'utf8');
+          const resilientCore = readFileSync('worker/src/sandbox-mobile-market-screener-resilient-core.js', 'utf8');
           const screener = readFileSync('worker/src/sandbox-mobile-market-screener-entry.js', 'utf8');
           const watchlist = readFileSync('worker/src/sandbox-mobile-live-watchlist-entry.js', 'utf8');
           const implementation = readFileSync('worker/src/sandbox-mobile-account-balances-implementation.js', 'utf8');
@@ -87,14 +98,33 @@ jobs:
             WEBULL_LIVE_AUTOMATION_ARMED: 'false',
             WEBULL_LIVE_KILL_SWITCH: 'true',
           };
-          if (config.main !== 'worker/src/sandbox-mobile-market-screener-entry.js') throw new Error(`Unexpected Sandbox entry: ${config.main}`);
+          if (config.main !== 'worker/src/sandbox-mobile-market-screener-resilient-entry.js') throw new Error(`Unexpected Sandbox entry: ${config.main}`);
+          if (!/from '\.\/sandbox-market-platform-entry\.js'/.test(compatibility)) throw new Error('Compatibility entry does not delegate to the market platform');
+          if (!/from '\.\/sandbox-mobile-market-screener-resilient-core\.js'/.test(platform)) throw new Error('Market platform does not delegate to the resilient core');
+          if (!/from '\.\/sandbox-mobile-market-screener-entry\.js'/.test(resilientCore)) throw new Error('Resilient core does not delegate to the market screener');
           if (!/from '\.\/sandbox-mobile-live-watchlist-entry\.js'/.test(screener)) throw new Error('Screener wrapper chain is invalid');
           if (!/from '\.\/sandbox-moerand-clean-utbot-entry\.js'/.test(watchlist)) throw new Error('Watchlist wrapper chain is invalid');
           for (const [key, value] of Object.entries(expected)) if (config.vars?.[key] !== value) throw new Error(`${key} must remain ${value}`);
           for (const token of [
+            '/api/mobile/scanner/selection',
+            '/api/mobile/account/overview',
+            '/api/mobile/platform/overview',
+            '/api/mobile/platform/sources',
+            '/api/mobile/macro/overview',
+            'SCANNER_SELECTION_NOT_PERSISTED',
+            'SCANNER_RUNNING_SYMBOLS_LOCKED',
+            'OFFICIAL_OR_LICENSED_DATA_ONLY',
+            'liveTradingLocked: true',
+            'liveFundsUsed: false',
+          ]) if (!platform.includes(token)) throw new Error(`Market platform missing ${token}`);
+          for (const token of [
             '/api/mobile/market-screener',
             '/api/mobile/watchlist/quotes',
-            '/api/scanner/source-mode',
+            'PRIMARY_BATCH_SIZE = 20',
+            'RETRY_BATCH_SIZE = 5',
+            'Promise.allSettled',
+          ]) if (!resilientCore.includes(token)) throw new Error(`Resilient core missing ${token}`);
+          for (const token of [
             'Market Screener',
             'Select visible',
             'Add to scanner (0)',
@@ -107,8 +137,12 @@ jobs:
             "WEBULL_LIVE_AUTOMATION_ARMED: 'false'",
             "WEBULL_LIVE_KILL_SWITCH: 'true'",
           ]) if (!implementation.includes(token)) throw new Error(`Implementation missing safety token: ${token}`);
+          for (const source of ['Finviz','Fiscal AI','Koyfin','Capitol Trades','TradingView','StockAnalysis','Macrotrends','FRED','OneInsider','Simply Wall St','Finchat','Investing.com','Investopedia','Quiver Quantitative','WhaleWisdom']) {
+            if (!platform.includes(`name: '${source}'`)) throw new Error(`Market source catalog missing ${source}`);
+          }
+          if (platform.includes('placeWebullSandboxOrder') || platform.includes('placeWebullLiveOrder')) throw new Error('Market platform must not submit orders');
           if (screener.includes('placeWebullSandboxOrder') || screener.includes('placeWebullLiveOrder')) throw new Error('Screener must not submit orders');
-          console.log(JSON.stringify({ sandboxEntry: config.main, marketScreenerVerified: true, liveTradingLocked: true }, null, 2));
+          console.log(JSON.stringify({ sandboxEntry: config.main, marketPlatformVerified: true, resilientQuotesVerified: true, liveTradingLocked: true }, null, 2));
           NODE
 
       - name: Build Cloudflare Worker
@@ -120,11 +154,15 @@ jobs:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         run: npx wrangler deploy --config wrangler.sandbox.jsonc
 
-      - name: Verify deployed mobile market screener
+      - name: Verify deployed mobile market platform
         env:
           MOBILE_URL: https://moerand-alerts-sandbox.mosaprajb.workers.dev/m
           SCREENER_URL: https://moerand-alerts-sandbox.mosaprajb.workers.dev/api/mobile/market-screener?sort=VOLUME
           WATCHLIST_STATE_URL: https://moerand-alerts-sandbox.mosaprajb.workers.dev/api/mobile/watchlist/state
+          SELECTION_URL: https://moerand-alerts-sandbox.mosaprajb.workers.dev/api/mobile/scanner/selection
+          ACCOUNT_URL: https://moerand-alerts-sandbox.mosaprajb.workers.dev/api/mobile/account/overview
+          SOURCES_URL: https://moerand-alerts-sandbox.mosaprajb.workers.dev/api/mobile/platform/sources
+          PLATFORM_URL: https://moerand-alerts-sandbox.mosaprajb.workers.dev/api/mobile/platform/overview
         run: |
           node <<'NODE'
           const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -136,8 +174,16 @@ jobs:
             }
             throw lastError;
           }
+          async function getJson(label, url, headers) {
+            return retry(label, async () => {
+              const response = await fetch(`${url}${url.includes('?') ? '&' : '?'}t=${Date.now()}`, { cache: 'no-store', headers });
+              const payload = await response.json().catch(() => ({}));
+              if (!response.ok || payload.ok !== true) throw new Error(`HTTP ${response.status}: ${payload.error || 'invalid payload'}`);
+              return payload;
+            });
+          }
           const html = await retry('mobile dashboard', async () => {
-            const response = await fetch(`${process.env.MOBILE_URL}?market-screener=${Date.now()}`, { cache: 'no-store' });
+            const response = await fetch(`${process.env.MOBILE_URL}?market-platform=${Date.now()}`, { cache: 'no-store' });
             if (!response.ok) throw new Error(`HTTP ${response.status}`);
             return response.text();
           });
@@ -145,6 +191,8 @@ jobs:
             'id="moe-market-screener-style"',
             'id="moeMarketScreener"',
             'id="moe-market-screener-script"',
+            'id="moe-market-platform-style"',
+            'id="moe-market-platform-script"',
             'Market Screener',
             'Screener filters',
             'Search ticker or company',
@@ -154,22 +202,31 @@ jobs:
           ]) if (!html.includes(token)) throw new Error(`Mobile dashboard missing ${token}`);
 
           const headers = { 'x-moe-mobile-client': '1', accept: 'application/json' };
-          const screener = await retry('market screener API', async () => {
-            const response = await fetch(`${process.env.SCREENER_URL}&t=${Date.now()}`, { cache: 'no-store', headers });
-            const payload = await response.json().catch(() => ({}));
-            if (!response.ok || payload.ok !== true) throw new Error(`HTTP ${response.status}: ${payload.error || 'invalid payload'}`);
-            return payload;
-          });
+          const screener = await getJson('market screener API', process.env.SCREENER_URL, headers);
           if (!Array.isArray(screener.rows) || !screener.rows.length) throw new Error('Screener returned no stocks');
           if (!screener.rows.every((row) => row.symbol && Object.hasOwn(row, 'price') && Object.hasOwn(row, 'changePercent') && Object.hasOwn(row, 'volume'))) throw new Error('Screener rows are incomplete');
-          if (screener.liveTradingLocked !== true || screener.liveFundsUsed !== false) throw new Error('Live safety changed');
+          if (screener.liveTradingLocked !== true || screener.liveFundsUsed !== false) throw new Error('Screener safety changed');
 
-          const state = await retry('watchlist state', async () => {
-            const response = await fetch(`${process.env.WATCHLIST_STATE_URL}?t=${Date.now()}`, { cache: 'no-store', headers });
-            const payload = await response.json().catch(() => ({}));
-            if (!response.ok || payload.ok !== true) throw new Error(`HTTP ${response.status}: ${payload.error || 'invalid payload'}`);
-            return payload;
-          });
+          const state = await getJson('watchlist state', process.env.WATCHLIST_STATE_URL, headers);
           if (!Array.isArray(state.symbols)) throw new Error('Selected scanner symbols are missing');
-          console.log(JSON.stringify({ deployed: true, results: screener.rows.length, firstSymbols: screener.rows.slice(0, 5).map((row) => row.symbol), selectedSymbols: state.symbols, editPolicy: state.editPolicy, liveTradingLocked: true }, null, 2));
+          const selection = await getJson('verified selection state', process.env.SELECTION_URL, headers);
+          if (!Array.isArray(selection.symbols) || selection.verified !== true) throw new Error('Verified scanner selection endpoint is incomplete');
+          const account = await getJson('account overview', process.env.ACCOUNT_URL, headers);
+          if (!account.accounts || !account.accounts.paper || !account.accounts.live) throw new Error('Account overview is incomplete');
+          if (account.liveTradingLocked !== true || account.liveFundsUsed !== false) throw new Error('Account safety changed');
+          const sources = await getJson('market source catalog', process.env.SOURCES_URL, headers);
+          if (!Array.isArray(sources.sources) || sources.sources.length !== 15) throw new Error('Market source catalog is incomplete');
+          const platform = await getJson('platform overview', process.env.PLATFORM_URL, headers);
+          if (!platform.scanner || !platform.market || !platform.account) throw new Error('Platform overview is incomplete');
+          if (platform.liveTradingLocked !== true || platform.liveFundsUsed !== false) throw new Error('Platform safety changed');
+          console.log(JSON.stringify({
+            deployed: true,
+            results: screener.rows.length,
+            firstSymbols: screener.rows.slice(0, 5).map((row) => row.symbol),
+            selectedSymbols: selection.symbols,
+            sourceCount: sources.sources.length,
+            accountDegraded: account.degraded,
+            platformDegraded: platform.degraded,
+            liveTradingLocked: true,
+          }, null, 2));
           NODE
