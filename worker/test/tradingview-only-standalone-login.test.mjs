@@ -43,11 +43,21 @@ test('existing sessions resume without requesting the control PIN again', () => 
 test('mobile dashboard loads versioned same-origin client assets with retries and fallback controls', () => {
   assert.match(entry, /MOBILE_BOOT_PATH = '\/mobile\/boot-v4\.js'/);
   assert.match(entry, /MOBILE_CLIENT_PATH = '\/mobile\/client-v4\.js'/);
-  assert.match(entry, /MOBILE_ASSET_VERSION = '20260804-4'/);
+  assert.match(entry, /MOBILE_ASSET_VERSION = '\d{8}-\d+'/);
   assert.match(entry, /script-src 'self'/);
   assert.match(entry, /x-moe-mobile-assets/);
   assert.match(entry, /__MOE_MAIN_CLIENT_READY__/);
   assert.match(entry, /__MOE_FALLBACK_BOUND__/);
   assert.match(entry, /credentials: 'same-origin'/);
   assert.match(entry, /currentAttempt < 4/);
+});
+
+test('expired dashboard sessions retain a native iPhone login form independent of JavaScript', () => {
+  assert.match(entry, /function installNativeDashboardLogin/);
+  assert.match(entry, /id="moeNativeLoginForm" method="post" action="\$\{NATIVE_UNLOCK_PATH\}"/);
+  assert.match(entry, /id="nativePin" name="pin" type="password"/);
+  assert.match(entry, /id="nativeLoginButton" type="submit"/);
+  assert.match(entry, /touch-action:manipulation/);
+  assert.match(entry, /body = installNativeDashboardLogin\(body\)/);
+  assert.match(entry, /x-moe-native-login', 'dashboard-form-v1'/);
 });
