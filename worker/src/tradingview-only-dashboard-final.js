@@ -5,7 +5,7 @@ import {
 
 export { scannerOnlyHtml };
 
-const ENHANCEMENT = String.raw`
+const ENHANCEMENT = `
 <style id="moe-tradingview-v2-style">
 @keyframes moeConnectionPulse{0%,100%{transform:scale(.85);opacity:.7;box-shadow:0 0 0 0 rgba(74,222,128,.45)}50%{transform:scale(1.18);opacity:1;box-shadow:0 0 0 8px rgba(74,222,128,0)}}
 .connectionLine{display:flex;align-items:center;gap:8px;min-height:20px;font-size:12px;color:var(--m)}
