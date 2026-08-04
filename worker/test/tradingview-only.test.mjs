@@ -10,6 +10,7 @@ import {
 const config = JSON.parse(readFileSync(new URL('../../wrangler.sandbox.jsonc', import.meta.url), 'utf8'));
 const deployedEntry = readFileSync(new URL('../src/sandbox-mobile-market-screener-resilient-entry.js', import.meta.url), 'utf8');
 const finalEntry = readFileSync(new URL('../src/tradingview-only-final-entry.js', import.meta.url), 'utf8');
+const webhookQueue = readFileSync(new URL('../src/tradingview-only-webhook-queue.js', import.meta.url), 'utf8');
 const safetyRuntime = readFileSync(new URL('../src/tradingview-only-runtime-safety.js', import.meta.url), 'utf8');
 const finalRuntime = readFileSync(new URL('../src/tradingview-only-runtime-final.js', import.meta.url), 'utf8');
 const dashboard = readFileSync(new URL('../src/tradingview-only-dashboard.js', import.meta.url), 'utf8');
@@ -105,6 +106,15 @@ test('idempotency is permanent and legacy execution remains blocked', () => {
   assert.match(finalEntry, /status: 410/);
 });
 
+test('webhook returns quickly and queues isolated per-ticker execution', () => {
+  assert.match(finalEntry, /handleQueuedTradingViewWebhook/);
+  assert.match(webhookQueue, /ctx\.waitUntil\(task\)/);
+  assert.match(webhookQueue, /DURABLE_OBJECT_TICKER_QUEUE/);
+  assert.match(webhookQueue, /positionCoordinator\(env, alert\.symbol\)\.processAlert/);
+  assert.match(webhookQueue, /queued: true/);
+  assert.match(webhookQueue, /}, 202\)/);
+});
+
 test('emergency exit covers broker inventory and retries rejected closes', () => {
   assert.match(finalEntry, /closeUntrackedBrokerPositions/);
   assert.match(finalEntry, /KILL_SWITCH_UNTRACKED_POSITION_EXIT_SUBMITTED/);
@@ -137,4 +147,5 @@ test('interface provides real-time trade notifications and sortable archive', ()
   assert.match(finalDashboard, /archiveSort/);
   assert.match(finalDashboard, /Highest P\/L/);
   assert.match(finalDashboard, /MutationObserver/);
+  assert.match(finalDashboard, /archiveObserver\.disconnect/);
 });
