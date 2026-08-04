@@ -7,6 +7,8 @@ import { tradingViewMobileDashboardHtml } from './tradingview-only-dashboard-mob
 export { AlertCoordinator, SimulationDriver };
 
 const DASHBOARD_PATHS = new Set(['/', '/dashboard', '/dashboard/', '/m', '/m/', '/mobile', '/mobile/', '/alerts', '/alerts/']);
+const SESSION_COOKIE = 'moe_tv_session';
+const encoder = new TextEncoder();
 
 const SAFARI_LOGIN_PATCH = `
 <script id="moe-safari-login-patch">
@@ -38,6 +40,37 @@ const SAFARI_LOGIN_PATCH = `
     });
   }
 
+  function requestSession(value) {
+    var controller = typeof AbortController === 'function' ? new AbortController() : null;
+    var timeoutId = window.setTimeout(function () {
+      if (controller) controller.abort();
+    }, 10000);
+    var options = {
+      method: 'POST',
+      cache: 'no-store',
+      credentials: 'include',
+      headers: {
+        'content-type': 'application/json',
+        'x-moe-mobile-client': '1'
+      },
+      body: JSON.stringify({ pin: value })
+    };
+    if (controller) options.signal = controller.signal;
+
+    return fetch('/api/tradingview/session', options)
+      .then(function (response) {
+        window.clearTimeout(timeoutId);
+        return parsePayload(response);
+      })
+      .catch(function (error) {
+        window.clearTimeout(timeoutId);
+        if (error && error.name === 'AbortError') {
+          throw new Error('Login timed out. Reload the page and try again.');
+        }
+        throw error;
+      });
+  }
+
   function submitLogin(button) {
     if (window.__moeLoginSubmitting) return;
     var pin = byId('pin');
@@ -52,17 +85,7 @@ const SAFARI_LOGIN_PATCH = `
     setBusy(button, true);
     setMessage('Verifying secure session…', false);
 
-    fetch('/api/tradingview/session', {
-      method: 'POST',
-      cache: 'no-store',
-      credentials: 'include',
-      headers: {
-        'content-type': 'application/json',
-        'x-moe-mobile-client': '1'
-      },
-      body: JSON.stringify({ pin: value })
-    })
-      .then(parsePayload)
+    requestSession(value)
       .then(function (result) {
         if (!result.response.ok || result.payload.ok === false) {
           throw new Error(result.payload.error || ('Login failed · HTTP ' + result.response.status));
@@ -71,8 +94,8 @@ const SAFARI_LOGIN_PATCH = `
         setMessage('PIN accepted. Opening dashboard…', false);
         setBusy(button, true);
         window.setTimeout(function () {
-          window.location.replace('/mobile?session=' + Date.now());
-        }, 180);
+          window.location.href = '/mobile?session=' + Date.now();
+        }, 50);
       })
       .catch(function (error) {
         window.__moeLoginSubmitting = false;
@@ -123,15 +146,90 @@ function html(content, method = 'GET') {
   });
 }
 
-function json(payload, status = 200) {
+function json(payload, status = 200, headers = {}) {
   return Response.json(payload, {
     status,
     headers: {
       'cache-control': 'no-store, no-cache, must-revalidate',
       'content-type': 'application/json; charset=utf-8',
       'x-content-type-options': 'nosniff',
+      ...headers,
     },
   });
+}
+
+function finite(value, fallback = null) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+function constantTimeTextEqual(left, right) {
+  const a = encoder.encode(String(left || ''));
+  const b = encoder.encode(String(right || ''));
+  let difference = a.length ^ b.length;
+  const length = Math.max(a.length, b.length);
+  for (let index = 0; index < length; index += 1) difference |= (a[index] || 0) ^ (b[index] || 0);
+  return difference === 0;
+}
+
+function base64UrlEncode(bytes) {
+  let binary = '';
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '');
+}
+
+function sessionSecret(env = {}) {
+  const value = String(env.MOE_MOBILE_SESSION_SECRET || env.MOE_WEBHOOK_SECRET || '').trim();
+  if (value.length < 16) throw new Error('A secure mobile session secret is not configured');
+  return value;
+}
+
+async function hmac(value, env) {
+  const key = await crypto.subtle.importKey(
+    'raw',
+    encoder.encode(sessionSecret(env)),
+    { name: 'HMAC', hash: 'SHA-256' },
+    false,
+    ['sign'],
+  );
+  return new Uint8Array(await crypto.subtle.sign('HMAC', key, encoder.encode(value)));
+}
+
+async function createSession(env) {
+  const issuedAt = Date.now();
+  const ttlSeconds = Math.max(300, Math.min(86_400, finite(env.MOE_TRADINGVIEW_SESSION_TTL_SECONDS, 43_200)));
+  const payload = {
+    scope: 'MOE_TRADINGVIEW_DASHBOARD',
+    issuedAt,
+    expiresAt: issuedAt + ttlSeconds * 1000,
+    nonce: crypto.randomUUID(),
+  };
+  const body = base64UrlEncode(encoder.encode(JSON.stringify(payload)));
+  const signature = base64UrlEncode(await hmac(body, env));
+  return { token: `${body}.${signature}`, payload, ttlSeconds };
+}
+
+function sameOrigin(request) {
+  const origin = request.headers.get('origin');
+  return !origin || origin === new URL(request.url).origin;
+}
+
+function globalCoordinator(env) {
+  return env.ALERT_COORDINATOR.getByName('global');
+}
+
+function recordLoginAudit(env, ctx, type) {
+  let task;
+  try {
+    task = Promise.resolve(globalCoordinator(env).recordTradingViewAudit({ type }));
+  } catch (error) {
+    console.warn(JSON.stringify({ event: 'TRADINGVIEW_LOGIN_AUDIT_SKIPPED', type, error: String(error || '') }));
+    return;
+  }
+  task = task.catch((error) => {
+    console.warn(JSON.stringify({ event: 'TRADINGVIEW_LOGIN_AUDIT_FAILED', type, error: String(error || '') }));
+  });
+  if (ctx && typeof ctx.waitUntil === 'function') ctx.waitUntil(task);
 }
 
 function positionCoordinator(env, symbol) {
@@ -221,17 +319,35 @@ async function handleClosePosition(request, env, ctx) {
 }
 
 async function handleSessionCompatibility(request, env, ctx) {
-  const response = await baseWorker.fetch(request, env, ctx);
-  const headers = new Headers(response.headers);
-  const cookie = headers.get('set-cookie');
-  if (cookie) {
-    headers.set('set-cookie', cookie.replace(/SameSite=Strict/gi, 'SameSite=Lax'));
+  if (request.method !== 'POST') return json({ ok: false, error: 'Method not allowed' }, 405);
+  if (!sameOrigin(request)) return json({ ok: false, error: 'Invalid request origin' }, 403);
+
+  const payload = await request.json().catch(() => null);
+  if (!payload || typeof payload !== 'object') return json({ ok: false, error: 'Valid JSON is required' }, 400);
+
+  const expected = String(env.MOE_SIMULATION_CONTROL_PIN || env.MOE_TRADINGVIEW_CONTROL_PIN || '').trim();
+  if (!expected) return json({ ok: false, error: 'Control PIN is not configured' }, 503);
+  if (!constantTimeTextEqual(payload.pin, expected)) {
+    recordLoginAudit(env, ctx, 'TRADINGVIEW_DASHBOARD_LOGIN_FAILED');
+    return json({ ok: false, error: 'Wrong control PIN' }, 401);
   }
-  headers.set('cache-control', 'no-store, no-cache, must-revalidate');
-  return new Response(response.body, {
-    status: response.status,
-    statusText: response.statusText,
-    headers,
+
+  let session;
+  try {
+    session = await createSession(env);
+  } catch (error) {
+    return json({
+      ok: false,
+      error: error instanceof Error ? error.message : 'Unable to create dashboard session',
+    }, 503);
+  }
+
+  recordLoginAudit(env, ctx, 'TRADINGVIEW_DASHBOARD_LOGIN_SUCCEEDED');
+  return json({
+    ok: true,
+    expiresAt: new Date(session.payload.expiresAt).toISOString(),
+  }, 200, {
+    'set-cookie': `${SESSION_COOKIE}=${session.token}; Path=/; Max-Age=${session.ttlSeconds}; HttpOnly; Secure; SameSite=Lax`,
   });
 }
 
