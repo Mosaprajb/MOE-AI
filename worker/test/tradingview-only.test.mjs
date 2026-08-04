@@ -9,6 +9,8 @@ import {
 
 const config = JSON.parse(readFileSync(new URL('../../wrangler.sandbox.jsonc', import.meta.url), 'utf8'));
 const deployedEntry = readFileSync(new URL('../src/sandbox-mobile-market-screener-resilient-entry.js', import.meta.url), 'utf8');
+const cloudflareEntry = readFileSync(new URL('../src/tradingview-only-cloudflare-entry.js', import.meta.url), 'utf8');
+const durableObject = readFileSync(new URL('../src/tradingview-only-durable-object.js', import.meta.url), 'utf8');
 const finalEntry = readFileSync(new URL('../src/tradingview-only-final-entry.js', import.meta.url), 'utf8');
 const webhookQueue = readFileSync(new URL('../src/tradingview-only-webhook-queue.js', import.meta.url), 'utf8');
 const safetyRuntime = readFileSync(new URL('../src/tradingview-only-runtime-safety.js', import.meta.url), 'utf8');
@@ -95,7 +97,16 @@ test('deployed Sandbox configuration is TradingView-only and Live remains locked
   assert.equal(config.vars.WEBULL_LIVE_KILL_SWITCH, 'true');
   assert.ok(config.durable_objects.bindings.some((item) => item.name === 'TRADINGVIEW_POSITION'));
   assert.equal(config.exports.TradingViewPositionCoordinator.storage, 'sqlite');
-  assert.match(deployedEntry, /from '\.\/tradingview-only-final-entry\.js'/);
+  assert.match(deployedEntry, /from '\.\/tradingview-only-cloudflare-entry\.js'/);
+});
+
+test('ticker state is exported as a real Cloudflare Durable Object', () => {
+  assert.match(cloudflareEntry, /tradingview-only-durable-object\.js/);
+  assert.match(durableObject, /import \{ DurableObject \} from 'cloudflare:workers'/);
+  assert.match(durableObject, /extends DurableObject/);
+  assert.match(durableObject, /this\.runtime = new TradingViewPositionRuntime\(ctx, env\)/);
+  assert.match(durableObject, /processAlert\(alert, settings, globalRuntime\)/);
+  assert.match(durableObject, /alarm\(\)/);
 });
 
 test('idempotency is permanent and legacy execution remains blocked', () => {
