@@ -65,6 +65,7 @@ test('Cloudflare entry uses the reliable runtime and native Safari login', () =>
   const cloudflare = readFileSync(join(root, 'worker/src/tradingview-only-cloudflare-entry.js'), 'utf8');
   const mobileEntry = readFileSync(join(root, 'worker/src/tradingview-only-mobile-entry.js'), 'utf8');
   const reliable = readFileSync(join(root, 'worker/src/tradingview-only-runtime-reliable.js'), 'utf8');
+  const resilientEntry = readFileSync(join(root, 'worker/src/sandbox-mobile-market-screener-resilient-entry.js'), 'utf8');
   assert.match(durable, /tradingview-only-runtime-reliable\.js/);
   assert.match(durable, /repairProtection/);
   assert.match(cloudflare, /tradingview-only-mobile-entry\.js/);
@@ -83,4 +84,8 @@ test('Cloudflare entry uses the reliable runtime and native Safari login', () =>
   assert.match(mobileEntry, /Opening dashboard/);
   assert.match(reliable, /fetchHighSince/);
   assert.match(reliable, /TRAILING_STOP_CATCHUP_EXIT_REQUIRED/);
+  assert.match(resilientEntry, /moe-mobile-browser-runtime-v7/);
+  assert.match(resilientEntry, /var __name = window\.__name/);
+  assert.match(resilientEntry, /moe-mobile-royal-theme-v7/);
+  assert.match(resilientEntry, /touch-action:manipulation/);
 });
