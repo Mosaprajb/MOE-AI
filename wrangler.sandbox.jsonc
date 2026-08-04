@@ -18,12 +18,14 @@
   "durable_objects": {
     "bindings": [
       { "name": "ALERT_COORDINATOR", "class_name": "AlertCoordinator" },
-      { "name": "SIMULATION_DRIVER", "class_name": "SimulationDriver" }
+      { "name": "SIMULATION_DRIVER", "class_name": "SimulationDriver" },
+      { "name": "TRADINGVIEW_POSITION", "class_name": "TradingViewPositionCoordinator" }
     ]
   },
   "exports": {
     "AlertCoordinator": { "type": "durable-object", "storage": "sqlite" },
-    "SimulationDriver": { "type": "durable-object", "storage": "sqlite" }
+    "SimulationDriver": { "type": "durable-object", "storage": "sqlite" },
+    "TradingViewPositionCoordinator": { "type": "durable-object", "storage": "sqlite" }
   },
   "secrets": {
     "required": [
@@ -95,12 +97,12 @@
     "WEBULL_API_BASE_URL": "https://api.sandbox.webull.com",
     "WEBULL_SANDBOX_ENABLED": "true",
     "WEBULL_SANDBOX_ORDER_SUBMISSION": "true",
-    "WEBULL_AUTO_SUBMIT_SANDBOX": "true",
-    "WEBULL_AUTOMATION_ARMED": "true",
+    "WEBULL_AUTO_SUBMIT_SANDBOX": "false",
+    "WEBULL_AUTOMATION_ARMED": "false",
     "WEBULL_PROTECTED_ORDERS": "true",
     "WEBULL_READ_ONLY_SYNC": "true",
-    "WEBULL_MAX_QUANTITY": "1",
-    "WEBULL_MAX_NOTIONAL": "1000",
+    "WEBULL_MAX_QUANTITY": "1000000",
+    "WEBULL_MAX_NOTIONAL": "1000000",
     "MOE_TRADING_CONTROL_MIN_SCORE": "68",
     "MOE_TRADING_CONTROL_MIN_CONFIDENCE": "68",
     "WEBULL_LIVE_API_BASE_URL": "https://api.webull.com",
@@ -109,17 +111,20 @@
     "WEBULL_LIVE_AUTOMATION_ARMED": "false",
     "WEBULL_LIVE_KILL_SWITCH": "true",
     "WEBULL_BOOTSTRAP_ENABLED": "false",
-    "MOE_MAX_OPEN_POSITIONS": "1",
+    "MOE_MAX_OPEN_POSITIONS": "30",
     "MOE_MAX_DAILY_TRADES": "30",
     "MOE_MAX_PORTFOLIO_RISK_PERCENT": "0.5",
-    "MOE_MAX_CORRELATED_POSITIONS": "1",
-    "MOE_MAX_SECTOR_POSITIONS": "1",
+    "MOE_MAX_CORRELATED_POSITIONS": "30",
+    "MOE_MAX_SECTOR_POSITIONS": "30",
     "MOE_MAX_DAILY_LOSS_PERCENT": "0.5",
-    "MOE_MAX_SYMBOL_CONCENTRATION_PERCENT": "25",
-    "MOE_MAX_SECTOR_EXPOSURE_PERCENT": "35",
+    "MOE_MAX_SYMBOL_CONCENTRATION_PERCENT": "100",
+    "MOE_MAX_SECTOR_EXPOSURE_PERCENT": "100",
     "MOE_MAX_OPEN_RISK_PERCENT": "0.5",
     "MOE_PORTFOLIO_ACCOUNT_STALE_SECONDS": "120",
     "MOE_TRADINGVIEW_ONLY": "true",
+    "MOE_TRADINGVIEW_LIVE_ENABLED": "false",
+    "MOE_TRADINGVIEW_MONITOR_INTERVAL_SECONDS": "5",
+    "MOE_TRADINGVIEW_SESSION_TTL_SECONDS": "43200",
     "AUTO_SCANNER_ENABLED": "false",
     "AUTO_SCANNER_TRADING_HOURS": "AUTO",
     "AUTO_SCANNER_OVERNIGHT_ENABLED": "false",
