@@ -5,6 +5,7 @@ on:
     paths:
       - 'worker/src/mobile-scanner-visible-ui.js'
       - 'worker/src/mobile-paper-broker-gate.js'
+      - 'worker/src/sandbox-mobile-market-screener-resilient-entry.js'
       - 'worker/src/sandbox-mobile-market-screener-entry.js'
       - 'worker/src/sandbox-mobile-live-watchlist-entry.js'
       - 'worker/src/sandbox-moerand-clean-utbot-entry.js'
@@ -50,6 +51,7 @@ jobs:
           node --check worker/src/mobile-scanner-visible-ui.js
           node --check worker/src/sandbox-mobile-live-watchlist-entry.js
           node --check worker/src/sandbox-mobile-market-screener-entry.js
+          node --check worker/src/sandbox-mobile-market-screener-resilient-entry.js
 
       - name: Test mobile scanner, watchlist, and screener contracts
         run: |
@@ -71,6 +73,7 @@ jobs:
           node <<'NODE'
           const { readFileSync } = require('node:fs');
           const config = JSON.parse(readFileSync('wrangler.sandbox.jsonc', 'utf8'));
+          const resilient = readFileSync('worker/src/sandbox-mobile-market-screener-resilient-entry.js', 'utf8');
           const screener = readFileSync('worker/src/sandbox-mobile-market-screener-entry.js', 'utf8');
           const watchlist = readFileSync('worker/src/sandbox-mobile-live-watchlist-entry.js', 'utf8');
           const clean = readFileSync('worker/src/sandbox-moerand-clean-utbot-entry.js', 'utf8');
@@ -83,8 +86,11 @@ jobs:
             WEBULL_LIVE_AUTOMATION_ARMED: 'false',
             WEBULL_LIVE_KILL_SWITCH: 'true',
           };
-          if (config.main !== 'worker/src/sandbox-mobile-market-screener-entry.js') {
+          if (config.main !== 'worker/src/sandbox-mobile-market-screener-resilient-entry.js') {
             throw new Error(`Unexpected Sandbox entry: ${config.main}`);
+          }
+          if (!/from '\.\/sandbox-mobile-market-screener-entry\.js'/.test(resilient)) {
+            throw new Error('Resilient entry does not delegate to the market screener wrapper');
           }
           if (!/from '\.\/sandbox-mobile-live-watchlist-entry\.js'/.test(screener)) {
             throw new Error('Market screener does not delegate to the protected watchlist wrapper');
@@ -115,7 +121,7 @@ jobs:
           for (const [key, value] of Object.entries(expected)) {
             if (config.vars?.[key] !== value) throw new Error(`${key} must remain ${value}`);
           }
-          console.log(JSON.stringify({ sandboxEntry: config.main, marketScreenerVerified: true, liveLocked: true }, null, 2));
+          console.log(JSON.stringify({ sandboxEntry: config.main, resilientEntryVerified: true, marketScreenerVerified: true, liveLocked: true }, null, 2));
           NODE
 
       - name: Build Cloudflare Worker
