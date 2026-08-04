@@ -9,9 +9,10 @@ const entry = readFileSync(join(directory, '../src/tradingview-only-cloudflare-e
 
 test('standalone mobile login is server rendered and does not require JavaScript', () => {
   assert.match(entry, /STANDALONE_LOGIN_PATH = '\/mobile\/login-v2'/);
-  assert.match(entry, /<form method="post" action="\/mobile\/unlock"/);
+  assert.match(entry, /NATIVE_UNLOCK_PATH = '\/mobile\/unlock'/);
+  assert.match(entry, /<form method="post" action="\$\{NATIVE_UNLOCK_PATH\}"/);
   assert.match(entry, /فتح لوحة التحكم/);
-  assert.match(entry, /لا تستخدم JavaScript/);
+  assert.match(entry, /بعد نجاح الرمز تُثبَّت الجلسة أولًا/);
   assert.match(entry, /cache-control': 'no-store, no-cache, must-revalidate'/);
   assert.match(entry, /form-action 'self'/);
 
@@ -22,12 +23,31 @@ test('standalone mobile login is server rendered and does not require JavaScript
   assert.doesNotMatch(standaloneSection, /<script/i);
 });
 
-test('mobile dashboard loads versioned same-origin client assets with a fallback controller', () => {
-  assert.match(entry, /MOBILE_BOOT_PATH = '\/mobile\/boot-v3\.js'/);
-  assert.match(entry, /MOBILE_CLIENT_PATH = '\/mobile\/client-v3\.js'/);
+test('successful native login stabilizes the Safari cookie before dashboard navigation', () => {
+  assert.match(entry, /function sessionTransitionResponse/);
+  assert.match(entry, /x-moe-session-handoff/);
+  assert.match(entry, /تم تسجيل الدخول بنجاح/);
+  assert.match(entry, /جاري تثبيت الجلسة الآمنة/);
+  assert.match(entry, /nativeResponse\.headers\.get\('set-cookie'\)/);
+  assert.match(entry, /location\.includes\('unlocked=1'\)/);
+});
+
+test('existing sessions resume without requesting the control PIN again', () => {
+  assert.match(entry, /async function sessionIsActive/);
+  assert.match(entry, /return response\.status !== 401 && response\.status !== 403/);
+  assert.match(entry, /if \(await sessionIsActive\(request, env, ctx\)\)/);
+  assert.match(entry, /\/mobile\?resume=1/);
+  assert.match(entry, /استعادة الجلسة الحالية/);
+});
+
+test('mobile dashboard loads versioned same-origin client assets with retries and fallback controls', () => {
+  assert.match(entry, /MOBILE_BOOT_PATH = '\/mobile\/boot-v4\.js'/);
+  assert.match(entry, /MOBILE_CLIENT_PATH = '\/mobile\/client-v4\.js'/);
+  assert.match(entry, /MOBILE_ASSET_VERSION = '20260804-4'/);
   assert.match(entry, /script-src 'self'/);
   assert.match(entry, /x-moe-mobile-assets/);
   assert.match(entry, /__MOE_MAIN_CLIENT_READY__/);
   assert.match(entry, /__MOE_FALLBACK_BOUND__/);
   assert.match(entry, /credentials: 'same-origin'/);
+  assert.match(entry, /currentAttempt < 4/);
 });
