@@ -2,7 +2,7 @@ import tradingViewWorker, {
   AlertCoordinator,
   SimulationDriver,
   TradingViewPositionCoordinator,
-} from './tradingview-only-entry.js';
+} from './tradingview-only-final-entry.js';
 
 // Compatibility chain markers for existing safety validation:
 // from './sandbox-market-platform-entry.js'
