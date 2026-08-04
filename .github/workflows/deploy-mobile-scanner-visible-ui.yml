@@ -1,43 +1,30 @@
-name: Deploy Mobile Scanner Visible UI
+name: Deploy TradingView Mobile Control
 
 on:
   push:
     branches:
       - feature/moe-core-domain-v2
     paths:
-      - 'worker/src/mobile-scanner-visible-ui.js'
-      - 'worker/src/mobile-paper-broker-gate.js'
-      - 'worker/src/sandbox-market-platform-entry.js'
+      - 'worker/src/tradingview-only-*.js'
       - 'worker/src/sandbox-mobile-market-screener-resilient-entry.js'
-      - 'worker/src/sandbox-mobile-market-screener-resilient-core.js'
-      - 'worker/src/sandbox-mobile-market-screener-entry.js'
-      - 'worker/src/sandbox-mobile-live-watchlist-entry.js'
-      - 'worker/src/sandbox-moerand-clean-utbot-entry.js'
-      - 'worker/src/sandbox-mobile-account-balances-entry.js'
-      - 'worker/src/sandbox-mobile-account-balances-implementation.js'
-      - 'worker/test/mobile-market-platform.test.mjs'
-      - 'worker/test/mobile-market-screener.test.mjs'
-      - 'worker/test/mobile-live-watchlist.test.mjs'
-      - 'worker/test/mobile-scanner-monitor-contract.test.mjs'
-      - 'worker/test/moerand-clean-mobile-settings.test.mjs'
-      - 'worker/test/sandbox-operations-dashboard.test.mjs'
+      - 'worker/test/tradingview-only*.test.mjs'
       - 'worker/test/sandbox-runtime-pilot-observability.test.mjs'
-      - 'worker/test/sandbox-simulation-mode.test.mjs'
       - 'wrangler.sandbox.jsonc'
       - 'package.json'
       - 'package-lock.json'
       - '.github/workflows/deploy-mobile-scanner-visible-ui.yml'
+  workflow_dispatch:
 
 permissions:
   contents: read
 
 concurrency:
-  group: deploy-mobile-market-platform
+  group: deploy-tradingview-mobile-control
   cancel-in-progress: true
 
 jobs:
   test-deploy-verify:
-    name: Test, deploy, and verify mobile market platform
+    name: Test, deploy, and verify TradingView mobile control
     runs-on: ubuntu-latest
     timeout-minutes: 35
     steps:
@@ -53,42 +40,27 @@ jobs:
       - name: Install locked dependencies
         run: npm ci
 
-      - name: Validate mobile source syntax
+      - name: Validate TradingView source syntax
         run: |
-          node --check worker/src/mobile-scanner-visible-ui.js
-          node --check worker/src/sandbox-mobile-live-watchlist-entry.js
-          node --check worker/src/sandbox-mobile-market-screener-entry.js
-          node --check worker/src/sandbox-mobile-market-screener-resilient-core.js
-          node --check worker/src/sandbox-market-platform-entry.js
-          node --check worker/src/sandbox-mobile-market-screener-resilient-entry.js
+          for file in worker/src/tradingview-only-*.js worker/src/sandbox-mobile-market-screener-resilient-entry.js; do
+            node --check "$file"
+          done
 
-      - name: Test mobile market platform contracts
-        run: |
-          node --test --test-concurrency=1 worker/test/mobile-scanner-monitor-contract.test.mjs
-          node --test --test-concurrency=1 worker/test/mobile-live-watchlist.test.mjs
-          node --test --test-concurrency=1 worker/test/mobile-market-screener.test.mjs
-          node --test --test-concurrency=1 worker/test/mobile-market-platform.test.mjs
-
-      - name: Test Sandbox safety chain
-        run: |
-          node --test --test-concurrency=1 worker/test/sandbox-simulation-mode.test.mjs
-          node --test --test-concurrency=1 worker/test/sandbox-runtime-pilot-observability.test.mjs
-          node --test --test-concurrency=1 worker/test/sandbox-operations-dashboard.test.mjs
+      - name: Test TradingView execution and mobile contracts
+        run: node --test --test-concurrency=1 worker/test/tradingview-only*.test.mjs
 
       - name: Run complete Worker suite
         run: npm run test:worker
 
-      - name: Confirm Sandbox deployment safety
+      - name: Confirm TradingView-only Sandbox safety
         run: |
           node <<'NODE'
           const { readFileSync } = require('node:fs');
           const config = JSON.parse(readFileSync('wrangler.sandbox.jsonc', 'utf8'));
-          const compatibility = readFileSync('worker/src/sandbox-mobile-market-screener-resilient-entry.js', 'utf8');
-          const platform = readFileSync('worker/src/sandbox-market-platform-entry.js', 'utf8');
-          const resilientCore = readFileSync('worker/src/sandbox-mobile-market-screener-resilient-core.js', 'utf8');
-          const screener = readFileSync('worker/src/sandbox-mobile-market-screener-entry.js', 'utf8');
-          const watchlist = readFileSync('worker/src/sandbox-mobile-live-watchlist-entry.js', 'utf8');
-          const implementation = readFileSync('worker/src/sandbox-mobile-account-balances-implementation.js', 'utf8');
+          const entry = readFileSync('worker/src/sandbox-mobile-market-screener-resilient-entry.js', 'utf8');
+          const broker = readFileSync('worker/src/tradingview-only-broker.js', 'utf8');
+          const pnl = readFileSync('worker/src/tradingview-only-pnl-control-patch.js', 'utf8');
+
           const expected = {
             MOE_SANDBOX_PILOT_ENABLED: 'false',
             MOE_LIVE_MODE_UNLOCKED: 'false',
@@ -97,52 +69,39 @@ jobs:
             WEBULL_LIVE_ORDER_SUBMISSION: 'false',
             WEBULL_LIVE_AUTOMATION_ARMED: 'false',
             WEBULL_LIVE_KILL_SWITCH: 'true',
+            MOE_TRADINGVIEW_ONLY: 'true',
+            MOE_TRADINGVIEW_LIVE_ENABLED: 'false',
+            AUTO_SCANNER_ENABLED: 'false',
+            SMART_SCANNER_SCHEDULER_ENABLED: 'false',
           };
-          if (config.main !== 'worker/src/sandbox-mobile-market-screener-resilient-entry.js') throw new Error(`Unexpected Sandbox entry: ${config.main}`);
-          if (!/from '\.\/sandbox-market-platform-entry\.js'/.test(compatibility)) throw new Error('Compatibility entry does not delegate to the market platform');
-          if (!/from '\.\/sandbox-mobile-market-screener-resilient-core\.js'/.test(platform)) throw new Error('Market platform does not delegate to the resilient core');
-          if (!/from '\.\/sandbox-mobile-market-screener-entry\.js'/.test(resilientCore)) throw new Error('Resilient core does not delegate to the market screener');
-          if (!/from '\.\/sandbox-mobile-live-watchlist-entry\.js'/.test(screener)) throw new Error('Screener wrapper chain is invalid');
-          if (!/from '\.\/sandbox-moerand-clean-utbot-entry\.js'/.test(watchlist)) throw new Error('Watchlist wrapper chain is invalid');
-          for (const [key, value] of Object.entries(expected)) if (config.vars?.[key] !== value) throw new Error(`${key} must remain ${value}`);
-          for (const token of [
-            '/api/mobile/scanner/selection',
-            '/api/mobile/account/overview',
-            '/api/mobile/platform/overview',
-            '/api/mobile/platform/sources',
-            '/api/mobile/macro/overview',
-            'SCANNER_SELECTION_NOT_PERSISTED',
-            'SCANNER_RUNNING_SYMBOLS_LOCKED',
-            'OFFICIAL_OR_LICENSED_DATA_ONLY',
-            'liveTradingLocked: true',
-            'liveFundsUsed: false',
-          ]) if (!platform.includes(token)) throw new Error(`Market platform missing ${token}`);
-          for (const token of [
-            '/api/mobile/market-screener',
-            '/api/mobile/watchlist/quotes',
-            'PRIMARY_BATCH_SIZE = 20',
-            'RETRY_BATCH_SIZE = 5',
-            'Promise.allSettled',
-          ]) if (!resilientCore.includes(token)) throw new Error(`Resilient core missing ${token}`);
-          for (const token of [
-            'Market Screener',
-            'Select visible',
-            'Add to scanner (0)',
-            'liveTradingLocked: true',
-            'liveFundsUsed: false',
-          ]) if (!screener.includes(token)) throw new Error(`Screener missing ${token}`);
-          for (const token of [
-            "WEBULL_LIVE_TRADING: 'false'",
-            "WEBULL_LIVE_ORDER_SUBMISSION: 'false'",
-            "WEBULL_LIVE_AUTOMATION_ARMED: 'false'",
-            "WEBULL_LIVE_KILL_SWITCH: 'true'",
-          ]) if (!implementation.includes(token)) throw new Error(`Implementation missing safety token: ${token}`);
-          for (const source of ['Finviz','Fiscal AI','Koyfin','Capitol Trades','TradingView','StockAnalysis','Macrotrends','FRED','OneInsider','Simply Wall St','Finchat','Investing.com','Investopedia','Quiver Quantitative','WhaleWisdom']) {
-            if (!platform.includes(`name: '${source}'`)) throw new Error(`Market source catalog missing ${source}`);
+
+          if (config.main !== 'worker/src/sandbox-mobile-market-screener-resilient-entry.js') {
+            throw new Error(`Unexpected Sandbox entry: ${config.main}`);
           }
-          if (platform.includes('placeWebullSandboxOrder') || platform.includes('placeWebullLiveOrder')) throw new Error('Market platform must not submit orders');
-          if (screener.includes('placeWebullSandboxOrder') || screener.includes('placeWebullLiveOrder')) throw new Error('Screener must not submit orders');
-          console.log(JSON.stringify({ sandboxEntry: config.main, marketPlatformVerified: true, resilientQuotesVerified: true, liveTradingLocked: true }, null, 2));
+          for (const [key, value] of Object.entries(expected)) {
+            if (config.vars?.[key] !== value) throw new Error(`${key} must remain ${value}`);
+          }
+          for (const token of [
+            'tradingview-only-safari-auth-entry.js',
+            'tradingview-only-pnl-control-patch.js',
+            'patchTradingViewDashboardWithPnlControl',
+          ]) {
+            if (!entry.includes(token)) throw new Error(`Deployment entry missing ${token}`);
+          }
+          for (const token of ['dayPnl', 'realizedPnl', 'unrealizedPnl', 'pnlSource']) {
+            if (!broker.includes(token)) throw new Error(`Broker summary missing ${token}`);
+          }
+          for (const token of ['moe-pnl-control-style-v1', 'moe-pnl-control-script-v1', 'P&L', 'Run checks']) {
+            if (!pnl.includes(token)) throw new Error(`P&L control patch missing ${token}`);
+          }
+          console.log(JSON.stringify({
+            sandboxEntry: config.main,
+            tradingViewOnly: true,
+            scannerExecutionEnabled: false,
+            liveTradingLocked: true,
+            brokerPnlEnabled: true,
+            pnlControlsEnabled: true,
+          }, null, 2));
           NODE
 
       - name: Build Cloudflare Worker
@@ -154,79 +113,94 @@ jobs:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         run: npx wrangler deploy --config wrangler.sandbox.jsonc
 
-      - name: Verify deployed mobile market platform
+      - name: Verify deployed TradingView mobile control
         env:
-          MOBILE_URL: https://moerand-alerts-sandbox.mosaprajb.workers.dev/m
-          SCREENER_URL: https://moerand-alerts-sandbox.mosaprajb.workers.dev/api/mobile/market-screener?sort=VOLUME
-          WATCHLIST_STATE_URL: https://moerand-alerts-sandbox.mosaprajb.workers.dev/api/mobile/watchlist/state
-          SELECTION_URL: https://moerand-alerts-sandbox.mosaprajb.workers.dev/api/mobile/scanner/selection
-          ACCOUNT_URL: https://moerand-alerts-sandbox.mosaprajb.workers.dev/api/mobile/account/overview
-          SOURCES_URL: https://moerand-alerts-sandbox.mosaprajb.workers.dev/api/mobile/platform/sources
-          PLATFORM_URL: https://moerand-alerts-sandbox.mosaprajb.workers.dev/api/mobile/platform/overview
+          WORKER_ORIGIN: https://moerand-alerts-sandbox.mosaprajb.workers.dev
         run: |
           node <<'NODE'
-          const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+          const origin = process.env.WORKER_ORIGIN;
+          const wait = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
+
           async function retry(label, operation) {
             let lastError;
             for (let attempt = 1; attempt <= 12; attempt += 1) {
-              try { return await operation(); }
-              catch (error) { lastError = error; console.log(`${label} attempt ${attempt}: ${error.message}`); await wait(5000); }
+              try {
+                return await operation();
+              } catch (error) {
+                lastError = error;
+                console.log(`${label} attempt ${attempt}: ${error.message}`);
+                await wait(5000);
+              }
             }
             throw lastError;
           }
-          async function getJson(label, url, headers) {
-            return retry(label, async () => {
-              const response = await fetch(`${url}${url.includes('?') ? '&' : '?'}t=${Date.now()}`, { cache: 'no-store', headers });
-              const payload = await response.json().catch(() => ({}));
-              if (!response.ok || payload.ok !== true) throw new Error(`HTTP ${response.status}: ${payload.error || 'invalid payload'}`);
-              return payload;
+
+          await retry('protected mobile route', async () => {
+            const response = await fetch(`${origin}/m?t=${Date.now()}`, {
+              cache: 'no-store',
+              redirect: 'manual',
             });
-          }
-          const html = await retry('mobile dashboard', async () => {
-            const response = await fetch(`${process.env.MOBILE_URL}?market-platform=${Date.now()}`, { cache: 'no-store' });
-            if (!response.ok) throw new Error(`HTTP ${response.status}`);
-            return response.text();
+            if (![301, 302, 303, 307, 308].includes(response.status)) {
+              throw new Error(`Expected authentication redirect, received HTTP ${response.status}`);
+            }
+            const location = response.headers.get('location') || '';
+            if (!location.includes('/mobile/login-v2')) {
+              throw new Error(`Unexpected authentication destination: ${location}`);
+            }
           });
-          for (const token of [
-            'id="moe-market-screener-style"',
-            'id="moeMarketScreener"',
-            'id="moe-market-screener-script"',
-            'id="moe-market-platform-style"',
-            'id="moe-market-platform-script"',
-            'Market Screener',
-            'Screener filters',
-            'Search ticker or company',
-            'Select visible',
-            'Add to scanner (0)',
-            'Open market screener',
-          ]) if (!html.includes(token)) throw new Error(`Mobile dashboard missing ${token}`);
 
-          const headers = { 'x-moe-mobile-client': '1', accept: 'application/json' };
-          const screener = await getJson('market screener API', process.env.SCREENER_URL, headers);
-          if (!Array.isArray(screener.rows) || !screener.rows.length) throw new Error('Screener returned no stocks');
-          if (!screener.rows.every((row) => row.symbol && Object.hasOwn(row, 'price') && Object.hasOwn(row, 'changePercent') && Object.hasOwn(row, 'volume'))) throw new Error('Screener rows are incomplete');
-          if (screener.liveTradingLocked !== true || screener.liveFundsUsed !== false) throw new Error('Screener safety changed');
+          await retry('standalone login page', async () => {
+            const response = await fetch(`${origin}/mobile/login-v2?t=${Date.now()}`, { cache: 'no-store' });
+            const html = await response.text();
+            if (!response.ok) throw new Error(`HTTP ${response.status}`);
+            for (const token of ['MOE-AI', '/mobile/unlock', 'الرمز السري']) {
+              if (!html.includes(token)) throw new Error(`Login page missing ${token}`);
+            }
+            if (!String(response.headers.get('cache-control') || '').includes('no-store')) {
+              throw new Error('Login page must remain non-cacheable');
+            }
+          });
 
-          const state = await getJson('watchlist state', process.env.WATCHLIST_STATE_URL, headers);
-          if (!Array.isArray(state.symbols)) throw new Error('Selected scanner symbols are missing');
-          const selection = await getJson('verified selection state', process.env.SELECTION_URL, headers);
-          if (!Array.isArray(selection.symbols) || selection.verified !== true) throw new Error('Verified scanner selection endpoint is incomplete');
-          const account = await getJson('account overview', process.env.ACCOUNT_URL, headers);
-          if (!account.accounts || !account.accounts.paper || !account.accounts.live) throw new Error('Account overview is incomplete');
-          if (account.liveTradingLocked !== true || account.liveFundsUsed !== false) throw new Error('Account safety changed');
-          const sources = await getJson('market source catalog', process.env.SOURCES_URL, headers);
-          if (!Array.isArray(sources.sources) || sources.sources.length !== 15) throw new Error('Market source catalog is incomplete');
-          const platform = await getJson('platform overview', process.env.PLATFORM_URL, headers);
-          if (!platform.scanner || !platform.market || !platform.account) throw new Error('Platform overview is incomplete');
-          if (platform.liveTradingLocked !== true || platform.liveFundsUsed !== false) throw new Error('Platform safety changed');
+          await retry('mobile JavaScript assets', async () => {
+            const bootResponse = await fetch(`${origin}/mobile/boot-v4.js?t=${Date.now()}`, { cache: 'no-store' });
+            const clientResponse = await fetch(`${origin}/mobile/client-v4.js?t=${Date.now()}`, { cache: 'no-store' });
+            const [boot, client] = await Promise.all([bootResponse.text(), clientResponse.text()]);
+            if (!bootResponse.ok || !clientResponse.ok) {
+              throw new Error(`Asset HTTP status: boot=${bootResponse.status}, client=${clientResponse.status}`);
+            }
+            if (!boot.includes('loadStatus')) throw new Error('Mobile boot asset is incomplete');
+            if (!client.includes('__MOE_MAIN_CLIENT_READY__')) throw new Error('Mobile client asset is incomplete');
+          });
+
+          await retry('webhook authentication barrier', async () => {
+            const response = await fetch(`${origin}/api/tradingview/signal?t=${Date.now()}`, {
+              method: 'POST',
+              cache: 'no-store',
+              headers: { 'content-type': 'application/json' },
+              body: JSON.stringify({ ticker: 'AAPL', signal: 'BUY', price: 1 }),
+            });
+            const payload = await response.json().catch(() => ({}));
+            if (response.status !== 401 || payload.ok !== false) {
+              throw new Error(`Unauthorized webhook was not rejected: HTTP ${response.status}`);
+            }
+          });
+
+          await retry('legacy execution barrier', async () => {
+            const response = await fetch(`${origin}/api/tradingview/webull-preview?t=${Date.now()}`, {
+              cache: 'no-store',
+              redirect: 'manual',
+            });
+            const payload = await response.json().catch(() => ({}));
+            if (response.status !== 410 || payload.blocked !== true) {
+              throw new Error(`Legacy execution path is not blocked: HTTP ${response.status}`);
+            }
+          });
+
           console.log(JSON.stringify({
             deployed: true,
-            results: screener.rows.length,
-            firstSymbols: screener.rows.slice(0, 5).map((row) => row.symbol),
-            selectedSymbols: selection.symbols,
-            sourceCount: sources.sources.length,
-            accountDegraded: account.degraded,
-            platformDegraded: platform.degraded,
-            liveTradingLocked: true,
+            authenticationProtected: true,
+            mobileAssetsHealthy: true,
+            webhookSecretRequired: true,
+            legacyExecutionBlocked: true,
           }, null, 2));
           NODE
