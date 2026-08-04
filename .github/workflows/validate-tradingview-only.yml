@@ -37,11 +37,13 @@ jobs:
           node --check worker/src/tradingview-only-runtime.js
           node --check worker/src/tradingview-only-runtime-safety.js
           node --check worker/src/tradingview-only-runtime-final.js
+          node --check worker/src/tradingview-only-durable-object.js
           node --check worker/src/tradingview-only-dashboard.js
           node --check worker/src/tradingview-only-dashboard-final.js
           node --check worker/src/tradingview-only-webhook-queue.js
           node --check worker/src/tradingview-only-entry.js
           node --check worker/src/tradingview-only-final-entry.js
+          node --check worker/src/tradingview-only-cloudflare-entry.js
           node --check worker/src/sandbox-mobile-market-screener-resilient-entry.js
       - name: Test fixed-dollar and long-only contracts
         run: node --test worker/test/tradingview-only.test.mjs
