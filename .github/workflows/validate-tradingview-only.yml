@@ -1,0 +1,46 @@
+name: Validate TradingView Only
+
+on:
+  push:
+    branches:
+      - feature/moe-core-domain-v2
+    paths:
+      - 'worker/src/tradingview-only-*.js'
+      - 'worker/src/sandbox-mobile-market-screener-resilient-entry.js'
+      - 'worker/test/tradingview-only.test.mjs'
+      - 'wrangler.sandbox.jsonc'
+      - '.github/workflows/validate-tradingview-only.yml'
+  pull_request:
+    paths:
+      - 'worker/src/tradingview-only-*.js'
+      - 'worker/src/sandbox-mobile-market-screener-resilient-entry.js'
+      - 'worker/test/tradingview-only.test.mjs'
+      - 'wrangler.sandbox.jsonc'
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - name: Check TradingView-only source syntax
+        run: |
+          node --check worker/src/tradingview-only-broker.js
+          node --check worker/src/tradingview-only-runtime.js
+          node --check worker/src/tradingview-only-runtime-safety.js
+          node --check worker/src/tradingview-only-dashboard.js
+          node --check worker/src/tradingview-only-entry.js
+          node --check worker/src/tradingview-only-final-entry.js
+          node --check worker/src/sandbox-mobile-market-screener-resilient-entry.js
+      - name: Test fixed-dollar and long-only contracts
+        run: node --test worker/test/tradingview-only.test.mjs
+      - name: Validate Sandbox Worker bundle
+        run: npx wrangler deploy --dry-run --config wrangler.sandbox.jsonc
