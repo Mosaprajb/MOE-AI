@@ -238,7 +238,7 @@ test('Sandbox pilot wrapper, simulation isolation, endpoints, and secret hygiene
   const gitignore = readFileSync(join(root, '.gitignore'), 'utf8');
 
   assert.equal(config.name, 'moerand-alerts-sandbox');
-  assert.equal(config.main, 'worker/src/sandbox-mobile-market-screener-entry.js');
+  assert.equal(config.main, 'worker/src/sandbox-mobile-market-screener-resilient-entry.js');
   assert.match(marketScreenerEntry, /from '\.\/sandbox-mobile-live-watchlist-entry\.js'/);
   assert.match(marketScreenerEntry, /\/api\/mobile\/market-screener/);
   assert.match(marketScreenerEntry, /liveTradingLocked: true/);
