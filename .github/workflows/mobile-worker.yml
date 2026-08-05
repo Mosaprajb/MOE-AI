@@ -1,0 +1,61 @@
+name: Mobile Worker Integration
+
+on:
+  pull_request:
+    paths:
+      - "worker/src/lib/mobile-*.ts"
+      - "worker/src/lib/apns.ts"
+      - "worker/src/routes/mobile.ts"
+      - "worker/src/index.ts"
+      - "worker/migrations/0003_mobile_native_api.sql"
+      - "worker/test/mobile-*.test.mjs"
+      - "worker/package.json"
+      - "worker/wrangler.toml"
+      - ".github/workflows/mobile-worker.yml"
+  push:
+    branches:
+      - "agent/mobile-worker-integration"
+    paths:
+      - "worker/**"
+      - ".github/workflows/mobile-worker.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mobile-worker-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    name: Validate native mobile Worker API
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Enable pnpm
+        run: corepack enable
+
+      - name: Install Worker dependencies
+        working-directory: worker
+        run: pnpm install --frozen-lockfile
+
+      - name: Type-check Worker
+        working-directory: worker
+        run: pnpm run type-check
+
+      - name: Run mobile session, APNs, and route integration tests
+        working-directory: worker
+        run: pnpm run test:mobile
+
+      - name: Wrangler dry-run
+        working-directory: worker
+        run: pnpm exec wrangler deploy --dry-run

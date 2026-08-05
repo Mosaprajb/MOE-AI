@@ -4,41 +4,41 @@ main       = "src/index.ts"
 compatibility_date  = "2024-11-01"
 compatibility_flags = ["nodejs_compat"]
 
-# ── KV Namespace — persistent trading settings / kill-switch / mode ───────────
+# Persistent trading settings, mobile reception state, kill-switch, and mode.
 [[kv_namespaces]]
 binding = "CONFIG"
 id = "74e96387146345c3b424838696d814b5"
 
-# ── D1 Database — scanner, trades, decisions, learning history ────────────────
-# The Worker code reads this binding as env.DB.
+# Scanner, trades, decisions, mobile audit, login throttling, and APNs tokens.
 [[d1_databases]]
 binding = "DB"
 database_name = "moe-ai"
 database_id = "0c9f645b-da53-4f80-aaa8-ad04f86393a3"
 migrations_dir = "migrations"
 
-# ── Cloudflare Secrets (set via: wrangler secret put <NAME>) ──────────────────
-# WEBULL_SANDBOX_APP_KEY         — paper trading app key
-# WEBULL_SANDBOX_APP_SECRET      — paper trading app secret
-# WEBULL_SANDBOX_ACCESS_TOKEN    — paper trading access token
-# WEBULL_SANDBOX_ACCOUNT_ID      — paper trading account ID
-# WEBULL_LIVE_APP_KEY            — live trading app key
-# WEBULL_LIVE_APP_SECRET         — live trading app secret
-# WEBULL_LIVE_ACCESS_TOKEN       — live trading access token
-# WEBULL_LIVE_ACCOUNT_ID         — live trading account ID
-# MOE_WEBHOOK_SECRET             — shared secret for TradingView webhook validation
+# Cloudflare Secrets (set with: wrangler secret put <NAME>)
+# WEBULL_SANDBOX_APP_KEY
+# WEBULL_SANDBOX_APP_SECRET
+# WEBULL_SANDBOX_ACCESS_TOKEN
+# WEBULL_SANDBOX_ACCOUNT_ID
+# WEBULL_LIVE_APP_KEY
+# WEBULL_LIVE_APP_SECRET
+# WEBULL_LIVE_ACCESS_TOKEN
+# WEBULL_LIVE_ACCOUNT_ID
+# MOE_WEBHOOK_SECRET
+# MOE_MOBILE_CONTROL_PIN           - PIN accepted by the native iPhone app
+# MOE_MOBILE_SESSION_SECRET        - random secret with at least 32 characters
+# APNS_TEAM_ID                     - Apple Developer Team ID
+# APNS_KEY_ID                      - APNs authentication key ID
+# APNS_PRIVATE_KEY_P8              - complete private .p8 key contents
 
-# ── Durable Objects cleanup migration ─────────────────────────────────────────
-# Deletes the legacy AlertCoordinator DO namespace from the old Worker.
-# Safe to remove from wrangler.toml after first successful deploy.
-# Scanner cron removed — signals now received from TradingView webhooks
-
+# Deletes the legacy AlertCoordinator Durable Object namespace.
 [[migrations]]
 tag             = "v2-cleanup"
 deleted_classes = ["AlertCoordinator"]
 
 [vars]
-WORKER_VERSION      = "6.1.0"
+WORKER_VERSION      = "6.2.0"
 RISK_PCT              = "5"
 SCANNER_TP_PCT        = "1.5"
 SCANNER_TRAIL_PCT     = "1.0"
@@ -46,8 +46,12 @@ SCANNER_HARD_STOP_PCT = "1.5"
 SCANNER_PRICE_MIN     = "10"
 SCANNER_PRICE_MAX     = "100"
 MAX_OPEN_POSITIONS    = "4"
-MAX_DAILY_TRADES    = "8"
-MAX_DAILY_LOSS_PCT  = "2"
-MAX_OPEN_RISK_PCT   = "2"
-MAX_PORTFOLIO_HEAT  = "6"
-ALLOWED_ORIGINS     = "https://moerand-alerts.mosaprajb.workers.dev,https://moe-ai.replit.app,https://*.replit.dev,https://*.replit.app,http://127.0.0.1"
+MAX_DAILY_TRADES      = "8"
+MAX_DAILY_LOSS_PCT    = "2"
+MAX_OPEN_RISK_PCT     = "2"
+MAX_PORTFOLIO_HEAT    = "6"
+MOE_MOBILE_SESSION_TTL_SECONDS = "28800"
+MOE_MOBILE_LIVE_CONTROL_ENABLED = "false"
+APNS_ENABLED          = "false"
+APNS_BUNDLE_ID        = "com.moerand.moeai"
+ALLOWED_ORIGINS       = "https://moerand-alerts.mosaprajb.workers.dev,https://moe-ai.replit.app,https://*.replit.dev,https://*.replit.app,http://127.0.0.1"

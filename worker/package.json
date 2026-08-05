@@ -7,6 +7,8 @@
     "deploy": "wrangler deploy",
     "deploy:sandbox": "wrangler deploy --env sandbox",
     "type-check": "tsc --noEmit",
+    "test:mobile": "node --experimental-strip-types --test test/mobile-*.test.mjs",
+    "validate:mobile": "pnpm run type-check && pnpm run test:mobile && wrangler deploy --dry-run",
     "db:migrate": "wrangler d1 execute moe-db --file=src/db/schema.sql"
   },
   "devDependencies": {
