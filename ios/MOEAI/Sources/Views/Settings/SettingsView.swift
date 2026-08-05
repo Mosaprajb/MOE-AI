@@ -7,12 +7,14 @@ struct SettingsView: View {
   @EnvironmentObject private var session: SessionStore
   @EnvironmentObject private var notifications: NotificationManager
   @EnvironmentObject private var network: NetworkMonitor
+  @EnvironmentObject private var preferences: AppPreferences
 
   @State private var serverURL = ""
   @State private var liveConfirmation = ""
   @State private var showLiveConfirmation = false
   @State private var showActivateKillSwitch = false
   @State private var showClearKillSwitch = false
+  @State private var showForgetDeviceConfirmation = false
   @State private var showDiagnostics = false
   @State private var isPreparingDiagnostics = false
   @State private var diagnosticsReport = ""
@@ -31,6 +33,7 @@ struct SettingsView: View {
       accountSection
       safetySection
       notificationsSection
+      preferencesSection
       securitySection
       diagnosticsSection
       applicationSection
@@ -74,7 +77,7 @@ struct SettingsView: View {
       Button("تفعيل", role: .destructive) {
         let confirmation = liveConfirmation.trimmingCharacters(in: .whitespacesAndNewlines)
         liveConfirmation = ""
-        Task { await model.setReception(enabled: true, liveConfirmation: confirmation) }
+        Task { await authorizeAndEnableReception(liveConfirmation: confirmation) }
       }
       Button("إلغاء", role: .cancel) { liveConfirmation = "" }
     } message: {
@@ -98,35 +101,66 @@ struct SettingsView: View {
       titleVisibility: .visible
     ) {
       Button("مسح Kill Switch") {
-        Task { await model.clearKillSwitch() }
+        Task { await authorizeAndClearKillSwitch() }
       }
       Button("إلغاء", role: .cancel) {}
     } message: {
       Text("سيبقى استقبال الإشارات متوقفًا بعد المسح إلى أن تفعّله يدويًا.")
     }
+    .confirmationDialog(
+      "نسيان هذا الجهاز؟",
+      isPresented: $showForgetDeviceConfirmation,
+      titleVisibility: .visible
+    ) {
+      Button("حذف الرمز وقفل التطبيق", role: .destructive) {
+        Task { await authorizeAndForgetDevice() }
+      }
+      Button("إلغاء", role: .cancel) {}
+    } message: {
+      Text("سيُحذف رمز MOE-AI من Keychain، وتُمسح جلسة التطبيق المحلية. ستحتاج إلى إدخال الرمز من جديد.")
+    }
   }
 
   private var connectionSection: some View {
     Section("الاتصال") {
-      TextField("Cloudflare Worker URL", text: $serverURL)
-        .textInputAutocapitalization(.never)
-        .autocorrectionDisabled()
-        .keyboardType(.URL)
+      if AppConfiguration.allowsCustomWorkerURL {
+        TextField("Cloudflare Worker URL", text: $serverURL)
+          .textInputAutocapitalization(.never)
+          .autocorrectionDisabled()
+          .keyboardType(.URL)
 
-      Button("حفظ واختبار الرابط") {
-        session.baseURLText = serverURL
-        Task {
-          if await session.saveServerURL() {
-            await model.loadAll()
-          }
+        Button("حفظ واختبار الرابط") {
+          Task { await saveServerURL() }
         }
+        .disabled(
+          !network.snapshot.isConnected
+            || session.isAuthorizingSensitiveAction
+        )
+
+        Text("يُسمح بروابط HTTPS فقط. روابط HTTP متاحة محليًا في Debug على localhost للاختبار.")
+          .font(.footnote)
+          .foregroundStyle(MOETheme.muted)
+      } else {
+        LabeledContent(
+          "خادم Worker",
+          value: SupportDiagnostics.workerEndpointSummary(session.baseURLText)
+        )
+        Label(
+          "تم تثبيت الخادم في إصدار TestFlight لمنع تحويل PIN أو أوامر التداول إلى خادم غير معتمد.",
+          systemImage: "lock.shield.fill"
+        )
+        .font(.footnote)
+        .foregroundStyle(MOETheme.muted)
       }
 
       LabeledContent("الشبكة", value: network.snapshot.statusText)
       LabeledContent("نوع الاتصال", value: network.snapshot.detailsText)
       LabeledContent("الوضع", value: model.status.mode ?? "—")
       LabeledContent("المصدر", value: model.status.executionSource ?? "—")
-      LabeledContent("آخر تحديث", value: model.lastRefresh?.formatted(date: .omitted, time: .shortened) ?? "—")
+      LabeledContent(
+        "آخر تحديث",
+        value: model.lastRefresh?.formatted(date: .omitted, time: .shortened) ?? "—"
+      )
 
       if model.consecutiveRequestFailures > 0 {
         LabeledContent(
@@ -152,9 +186,20 @@ struct SettingsView: View {
       }
 
       LabeledContent("نوع التشغيل", value: model.status.settings?.tradingMode ?? "—")
-      LabeledContent("الحد الأقصى للمراكز", value: "\(model.status.settings?.maxOpenPositions ?? 0)")
-      LabeledContent("حجم الصفقة", value: formatCurrency(model.status.settings?.positionSizeDollars))
-      LabeledContent("حالة الحساب", value: model.activeAccount.connected == true ? "متصل" : (model.activeAccount.locked == true ? "مقفل" : "غير متصل"))
+      LabeledContent(
+        "الحد الأقصى للمراكز",
+        value: "\(model.status.settings?.maxOpenPositions ?? 0)"
+      )
+      LabeledContent(
+        "حجم الصفقة",
+        value: formatCurrency(model.status.settings?.positionSizeDollars)
+      )
+      LabeledContent(
+        "حالة الحساب",
+        value: model.activeAccount.connected == true
+          ? "متصل"
+          : (model.activeAccount.locked == true ? "مقفل" : "غير متصل")
+      )
     }
   }
 
@@ -174,12 +219,16 @@ struct SettingsView: View {
           } else if model.isLiveSelected {
             showLiveConfirmation = true
           } else {
-            Task { await model.setReception(enabled: true) }
+            Task { await authorizeAndEnableReception() }
           }
         }
         .buttonStyle(.borderedProminent)
         .tint(receptionEnabled ? MOETheme.negative : MOETheme.accent)
-        .disabled(model.pendingAction != nil || !network.snapshot.isConnected)
+        .disabled(
+          model.pendingAction != nil
+            || session.isAuthorizingSensitiveAction
+            || !network.snapshot.isConnected
+        )
       }
 
       HStack {
@@ -199,8 +248,16 @@ struct SettingsView: View {
         }
         .buttonStyle(.bordered)
         .tint(killSwitchActive ? MOETheme.warning : MOETheme.negative)
-        .disabled(model.pendingAction != nil || !network.snapshot.isConnected)
+        .disabled(
+          model.pendingAction != nil
+            || session.isAuthorizingSensitiveAction
+            || !network.snapshot.isConnected
+        )
       }
+
+      Text("يظل تفعيل Kill Switch سريعًا للطوارئ. أمّا مسحه أو تفعيل الاستقبال فيتطلب Face ID أو رمز الجهاز عند تشغيل الحماية.")
+        .font(.footnote)
+        .foregroundStyle(MOETheme.muted)
     }
   }
 
@@ -208,7 +265,11 @@ struct SettingsView: View {
     Section("الإشعارات") {
       LabeledContent("إذن النظام", value: notificationStatusText)
 
-      Button(notifications.authorizationStatus == .authorized ? "إعادة تسجيل الجهاز" : "تفعيل الإشعارات") {
+      Button(
+        notifications.authorizationStatus == .authorized
+          ? "إعادة تسجيل الجهاز"
+          : "تفعيل الإشعارات"
+      ) {
         Task {
           if notifications.authorizationStatus == .authorized {
             await notifications.retryRegistration()
@@ -242,22 +303,58 @@ struct SettingsView: View {
     }
   }
 
+  private var preferencesSection: some View {
+    Section("الحماية والتحديث") {
+      Picker("القفل التلقائي", selection: $preferences.autoLockInterval) {
+        ForEach(AutoLockInterval.allCases) { interval in
+          Text(interval.displayName).tag(interval)
+        }
+      }
+
+      Picker("تحديث البيانات", selection: $preferences.autoRefreshInterval) {
+        ForEach(AutoRefreshInterval.allCases) { interval in
+          Text(interval.displayName).tag(interval)
+        }
+      }
+
+      Toggle(
+        "تأكيد الأوامر الحساسة بهوية الجهاز",
+        isOn: $preferences.requiresAuthenticationForSensitiveActions
+      )
+      .tint(MOETheme.accent)
+
+      LabeledContent("طريقة التأكيد", value: "Face ID أو رمز قفل الجهاز")
+
+      Button("استعادة الإعدادات الآمنة الافتراضية") {
+        preferences.reset()
+      }
+
+      Text("تشمل الأوامر الحساسة إغلاق مركز، تفعيل استقبال الإشارات، مسح Kill Switch، تغيير Worker، ونسيان الجهاز.")
+        .font(.footnote)
+        .foregroundStyle(MOETheme.muted)
+    }
+  }
+
   private var securitySection: some View {
     Section("الجهاز") {
-      Button("قفل التطبيق") {
-        session.signOut()
+      Button("قفل التطبيق الآن") {
+        session.lockForPrivacy()
       }
 
       Button("نسيان هذا الجهاز", role: .destructive) {
-        session.forgetDevice()
+        showForgetDeviceConfirmation = true
       }
+      .disabled(session.isAuthorizingSensitiveAction)
     }
   }
 
   private var diagnosticsSection: some View {
     Section("التشخيص والدعم") {
       LabeledContent("حالة الشبكة", value: network.snapshot.statusText)
-      LabeledContent("آخر طلب API", value: model.lastRefresh?.formatted(date: .omitted, time: .shortened) ?? "—")
+      LabeledContent(
+        "آخر طلب API",
+        value: model.lastRefresh?.formatted(date: .omitted, time: .shortened) ?? "—"
+      )
 
       Button {
         Task { await prepareDiagnosticsReport() }
@@ -282,6 +379,8 @@ struct SettingsView: View {
     Section("التطبيق") {
       LabeledContent("الواجهة", value: "SwiftUI Native")
       LabeledContent("Safari / WebView", value: "غير مستخدم")
+      LabeledContent("إعداد البناء", value: buildConfigurationName)
+      LabeledContent("Worker مخصص", value: AppConfiguration.allowsCustomWorkerURL ? "مسموح في Debug" : "مقفل")
       LabeledContent("الإصدار", value: appVersionDescription)
       LabeledContent("Bundle ID", value: Bundle.main.bundleIdentifier ?? "—")
     }
@@ -296,6 +395,72 @@ struct SettingsView: View {
     case .ephemeral: return "مؤقت للتطبيق"
     @unknown default: return "غير معروف"
     }
+  }
+
+  private var buildConfigurationName: String {
+    #if DEBUG
+    "Debug"
+    #else
+    "Release"
+    #endif
+  }
+
+  @MainActor
+  private func saveServerURL() async {
+    guard let proposedURL = AppConfiguration.normalizedURL(from: serverURL) else {
+      session.errorMessage = APIError.invalidBaseURL.localizedDescription
+      return
+    }
+
+    let currentURL = AppConfiguration.normalizedURL(from: session.baseURLText)
+    let changed = currentURL?.absoluteString != proposedURL.absoluteString
+    if changed {
+      let authorized = await session.authorizeSensitiveAction(
+        reason: "تغيير خادم Cloudflare Worker المستخدم للمصادقة وأوامر التداول",
+        required: preferences.requiresAuthenticationForSensitiveActions
+      )
+      guard authorized else { return }
+    }
+
+    session.baseURLText = proposedURL.absoluteString
+    serverURL = proposedURL.absoluteString
+    if await session.saveServerURL(), session.isAuthenticated {
+      await model.loadAll()
+    }
+  }
+
+  @MainActor
+  private func authorizeAndEnableReception(liveConfirmation: String? = nil) async {
+    let accountName = model.isLiveSelected ? "الحساب الحقيقي" : "الحساب التجريبي"
+    let authorized = await session.authorizeSensitiveAction(
+      reason: "تفعيل استقبال إشارات TradingView على \(accountName)",
+      required: preferences.requiresAuthenticationForSensitiveActions
+    )
+    guard authorized else { return }
+    await model.setReception(
+      enabled: true,
+      liveConfirmation: liveConfirmation
+    )
+  }
+
+  @MainActor
+  private func authorizeAndClearKillSwitch() async {
+    let authorized = await session.authorizeSensitiveAction(
+      reason: "مسح Kill Switch والسماح بإعادة تشغيل استقبال الإشارات لاحقًا",
+      required: preferences.requiresAuthenticationForSensitiveActions
+    )
+    guard authorized else { return }
+    await model.clearKillSwitch()
+  }
+
+  @MainActor
+  private func authorizeAndForgetDevice() async {
+    let authorized = await session.authorizeSensitiveAction(
+      reason: "حذف رمز MOE-AI المحفوظ من Keychain ونسيان هذا الجهاز",
+      required: preferences.requiresAuthenticationForSensitiveActions
+    )
+    guard authorized else { return }
+    session.forgetDevice()
   }
 
   @MainActor
@@ -324,6 +489,9 @@ struct SettingsView: View {
       pushRegistered: notifications.registrationSucceeded,
       pushTokenAvailable: notifications.deviceToken != nil,
       pushError: notifications.errorMessage,
+      autoLock: preferences.autoLockInterval.displayName,
+      autoRefresh: preferences.autoRefreshInterval.displayName,
+      sensitiveActionAuthentication: preferences.requiresAuthenticationForSensitiveActions,
       apiDiagnostics: apiDiagnostics
     )
 
@@ -354,6 +522,9 @@ enum SupportDiagnostics {
     pushRegistered: Bool,
     pushTokenAvailable: Bool,
     pushError: String?,
+    autoLock: String = AutoLockInterval.thirtySeconds.displayName,
+    autoRefresh: String = AutoRefreshInterval.fifteenSeconds.displayName,
+    sensitiveActionAuthentication: Bool = true,
     apiDiagnostics: APIRequestDiagnostics
   ) -> String {
     let formatter = ISO8601DateFormatter()
@@ -390,6 +561,9 @@ enum SupportDiagnostics {
       "push_registered=\(pushRegistered)",
       "push_token_available=\(pushTokenAvailable)",
       "last_push_error=\(sanitized(pushError))",
+      "auto_lock=\(sanitized(autoLock))",
+      "auto_refresh=\(sanitized(autoRefresh))",
+      "sensitive_action_authentication=\(sensitiveActionAuthentication)",
       "api_request_id=\(sanitized(apiDiagnostics.requestID))",
       "api_method=\(sanitized(apiDiagnostics.method))",
       "api_path=\(sanitized(apiDiagnostics.path))",
