@@ -48,9 +48,14 @@ export function mobileAccountTypeForMode(mode: TradingMode): 'DEMO' | 'LIVE' {
   return mode === 'LIVE' ? 'LIVE' : 'DEMO';
 }
 
+async function runSchemaStatement(env: MobileEnv, sql: string): Promise<void> {
+  if (!env.DB) return;
+  await env.DB.prepare(sql).run();
+}
+
 export async function ensureMobileAuditSchema(env: MobileEnv): Promise<void> {
   if (!env.DB) return;
-  await env.DB.exec(`
+  await runSchemaStatement(env, `
     CREATE TABLE IF NOT EXISTS mobile_audit (
       id TEXT PRIMARY KEY,
       type TEXT NOT NULL,
@@ -60,16 +65,20 @@ export async function ensureMobileAuditSchema(env: MobileEnv): Promise<void> {
       error TEXT,
       request_id TEXT,
       created_at TEXT NOT NULL
-    );
+    )
+  `);
+  await runSchemaStatement(env, `
     CREATE INDEX IF NOT EXISTS idx_mobile_audit_created
-      ON mobile_audit(created_at DESC);
+      ON mobile_audit(created_at DESC)
+  `);
+  await runSchemaStatement(env, `
     CREATE TABLE IF NOT EXISTS mobile_login_attempts (
       fingerprint TEXT PRIMARY KEY,
       failures INTEGER NOT NULL DEFAULT 0,
       window_started_at INTEGER NOT NULL,
       locked_until INTEGER,
       updated_at INTEGER NOT NULL
-    );
+    )
   `);
 }
 
