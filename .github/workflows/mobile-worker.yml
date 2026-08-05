@@ -60,9 +60,23 @@ jobs:
         working-directory: worker
         run: pnpm run test:mobile
 
+      - name: Prepare local Worker config
+        working-directory: worker
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          source = Path("wrangler.toml").read_text()
+          start = source.find("[[migrations]]")
+          end = source.find("[vars]", start) if start >= 0 else -1
+          if start >= 0 and end >= 0:
+              source = source[:start] + source[end:]
+          Path("wrangler.mobile-ci.toml").write_text(source)
+          PY
+
       - name: Apply local D1 migrations
         working-directory: worker
-        run: pnpm exec wrangler d1 migrations apply moe-ai --local
+        run: pnpm exec wrangler d1 migrations apply moe-ai --local --config wrangler.mobile-ci.toml
 
       - name: Run local Worker HTTP contract
         working-directory: worker
@@ -77,12 +91,17 @@ jobs:
           EOF
 
           LOG_FILE="$RUNNER_TEMP/moe-mobile-local-worker.log"
-          pnpm exec wrangler dev --local --ip 127.0.0.1 --port 8787 > "$LOG_FILE" 2>&1 &
+          pnpm exec wrangler dev \
+            --local \
+            --config wrangler.mobile-ci.toml \
+            --ip 127.0.0.1 \
+            --port 8787 \
+            > "$LOG_FILE" 2>&1 &
           WORKER_PID=$!
           cleanup() {
             kill "$WORKER_PID" >/dev/null 2>&1 || true
             wait "$WORKER_PID" >/dev/null 2>&1 || true
-            rm -f .dev.vars
+            rm -f .dev.vars wrangler.mobile-ci.toml
           }
           trap cleanup EXIT
 
