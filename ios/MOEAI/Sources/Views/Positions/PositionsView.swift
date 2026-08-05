@@ -91,7 +91,7 @@ private struct PositionCard: View {
         HStack {
           VStack(alignment: .leading, spacing: 3) {
             Text(position.symbol ?? "—")
-              .font(.title2.black())
+              .font(.title2.weight(.black))
             Text(position.indicator ?? position.accountType ?? "—")
               .font(.caption)
               .foregroundStyle(MOETheme.muted)

@@ -131,7 +131,7 @@ private struct ScannerRowCard: View {
       HStack(spacing: 12) {
         VStack(alignment: .leading, spacing: 4) {
           Text(row.symbol)
-            .font(.title3.black())
+            .font(.title3.weight(.black))
           Text(row.sector ?? row.session ?? "—")
             .font(.caption2)
             .foregroundStyle(MOETheme.muted)

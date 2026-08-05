@@ -18,7 +18,7 @@ struct OrdersView: View {
               VStack(alignment: .leading, spacing: 12) {
                 HStack {
                   Text(position.symbol ?? "—")
-                    .font(.title3.black())
+                    .font(.title3.weight(.black))
                   Spacer()
                   Text(position.accountType ?? "—")
                     .font(.caption.bold())
