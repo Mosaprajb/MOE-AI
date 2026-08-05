@@ -78,24 +78,18 @@ enum KeychainStore {
 
   private static func validate(_ status: OSStatus) throws {
     guard status != errSecSuccess else { return }
-    if status == errSecPasscodeNotSet {
-      throw KeychainError.devicePasscodeRequired
-    }
     throw KeychainError.unhandledStatus(status)
   }
 }
 
 enum KeychainError: LocalizedError, Equatable {
   case invalidData
-  case devicePasscodeRequired
   case unhandledStatus(OSStatus)
 
   var errorDescription: String? {
     switch self {
     case .invalidData:
       return "تعذر قراءة بيانات Keychain."
-    case .devicePasscodeRequired:
-      return "يلزم تفعيل رمز قفل الآيفون قبل حفظ رمز MOE-AI في Keychain."
     case let .unhandledStatus(status):
       let message = SecCopyErrorMessageString(status, nil) as String? ?? "OSStatus \(status)"
       return "تعذر الوصول إلى Keychain: \(message)"
