@@ -114,9 +114,14 @@ async function sha256Hex(value: string): Promise<string> {
     .join('');
 }
 
+async function runPushSchemaStatement(env: MobileEnv, sql: string): Promise<void> {
+  if (!env.DB) throw new Error('D1 DB binding is required for mobile push registration');
+  await env.DB.prepare(sql).run();
+}
+
 export async function ensureMobilePushSchema(env: MobileEnv): Promise<void> {
   if (!env.DB) throw new Error('D1 DB binding is required for mobile push registration');
-  await env.DB.exec(`
+  await runPushSchemaStatement(env, `
     CREATE TABLE IF NOT EXISTS mobile_push_devices (
       id TEXT PRIMARY KEY,
       token TEXT NOT NULL,
@@ -131,9 +136,13 @@ export async function ensureMobilePushSchema(env: MobileEnv): Promise<void> {
       last_success_at TEXT,
       last_failure_at TEXT,
       failure_reason TEXT
-    );
+    )
+  `);
+  await runPushSchemaStatement(env, `
     CREATE INDEX IF NOT EXISTS idx_mobile_push_devices_active
-      ON mobile_push_devices(active, environment, bundle_id);
+      ON mobile_push_devices(active, environment, bundle_id)
+  `);
+  await runPushSchemaStatement(env, `
     CREATE TABLE IF NOT EXISTS mobile_push_events (
       id TEXT PRIMARY KEY,
       device_id TEXT,
@@ -143,9 +152,11 @@ export async function ensureMobilePushSchema(env: MobileEnv): Promise<void> {
       apns_id TEXT,
       reason TEXT,
       created_at TEXT NOT NULL
-    );
+    )
+  `);
+  await runPushSchemaStatement(env, `
     CREATE INDEX IF NOT EXISTS idx_mobile_push_events_created
-      ON mobile_push_events(created_at DESC);
+      ON mobile_push_events(created_at DESC)
   `);
 }
 
