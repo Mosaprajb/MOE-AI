@@ -9,6 +9,7 @@ on:
       - "worker/src/index.ts"
       - "worker/migrations/0003_mobile_native_api.sql"
       - "worker/test/mobile-*.test.mjs"
+      - "worker/test/mobile-local-e2e.mjs"
       - "worker/package.json"
       - "worker/wrangler.toml"
       - ".github/workflows/mobile-worker.yml"
@@ -58,6 +59,39 @@ jobs:
       - name: Run mobile session, APNs, and route integration tests
         working-directory: worker
         run: pnpm run test:mobile
+
+      - name: Apply local D1 migrations
+        working-directory: worker
+        run: pnpm exec wrangler d1 migrations apply moe-ai --local --yes
+
+      - name: Run local Worker HTTP contract
+        working-directory: worker
+        shell: bash
+        env:
+          MOE_LOCAL_CONTROL_PIN: "246810"
+        run: |
+          set -euo pipefail
+          cat > .dev.vars <<'EOF'
+          MOE_MOBILE_CONTROL_PIN=246810
+          MOE_MOBILE_SESSION_SECRET=mobile-ci-session-secret-0123456789abcdef0123456789abcdef
+          EOF
+
+          LOG_FILE="$RUNNER_TEMP/moe-mobile-local-worker.log"
+          pnpm exec wrangler dev --local --ip 127.0.0.1 --port 8787 > "$LOG_FILE" 2>&1 &
+          WORKER_PID=$!
+          cleanup() {
+            kill "$WORKER_PID" >/dev/null 2>&1 || true
+            wait "$WORKER_PID" >/dev/null 2>&1 || true
+            rm -f .dev.vars
+          }
+          trap cleanup EXIT
+
+          if ! MOE_LOCAL_BASE_URL=http://127.0.0.1:8787 \
+            MOE_LOCAL_CONTROL_PIN="$MOE_LOCAL_CONTROL_PIN" \
+            node test/mobile-local-e2e.mjs; then
+            cat "$LOG_FILE"
+            exit 1
+          fi
 
       - name: Wrangler dry-run
         working-directory: worker
