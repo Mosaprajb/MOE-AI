@@ -6,7 +6,7 @@ on:
       - feature/moe-core-domain-v2
     paths:
       - 'worker/src/tradingview-only-*.js'
-      - 'worker/src/sandbox-mobile-market-screener-resilient-entry.js'
+      - 'worker/src/sandbox-mobile-market-screener-resilient-entry*.js'
       - 'worker/test/tradingview-only*.test.mjs'
       - 'worker/test/sandbox-runtime-pilot-observability.test.mjs'
       - 'wrangler.sandbox.jsonc'
@@ -42,7 +42,7 @@ jobs:
 
       - name: Validate TradingView source syntax
         run: |
-          for file in worker/src/tradingview-only-*.js worker/src/sandbox-mobile-market-screener-resilient-entry.js; do
+          for file in worker/src/tradingview-only-*.js worker/src/sandbox-mobile-market-screener-resilient-entry*.js; do
             node --check "$file"
           done
 
@@ -58,6 +58,7 @@ jobs:
           const { readFileSync } = require('node:fs');
           const config = JSON.parse(readFileSync('wrangler.sandbox.jsonc', 'utf8'));
           const entry = readFileSync('worker/src/sandbox-mobile-market-screener-resilient-entry.js', 'utf8');
+          const deployedEntry = readFileSync('worker/src/sandbox-mobile-market-screener-resilient-entry-v2.js', 'utf8');
           const broker = readFileSync('worker/src/tradingview-only-broker.js', 'utf8');
           const pnl = readFileSync('worker/src/tradingview-only-pnl-control-patch.js', 'utf8');
 
@@ -76,7 +77,7 @@ jobs:
           };
 
           if (config.main !== 'worker/src/sandbox-mobile-market-screener-resilient-entry.js') {
-            throw new Error(`Unexpected Sandbox entry: ${config.main}`);
+            throw new Error(`Unexpected base Sandbox entry: ${config.main}`);
           }
           for (const [key, value] of Object.entries(expected)) {
             if (config.vars?.[key] !== value) throw new Error(`${key} must remain ${value}`);
@@ -86,7 +87,16 @@ jobs:
             'tradingview-only-pnl-control-patch.js',
             'tradingViewPnlControlPatch',
           ]) {
-            if (!entry.includes(token)) throw new Error(`Deployment entry missing ${token}`);
+            if (!entry.includes(token)) throw new Error(`Base deployment entry missing ${token}`);
+          }
+          for (const token of [
+            'sandbox-mobile-market-screener-resilient-entry.js',
+            '/mobile/pnl-control-v2.js',
+            'application/javascript; charset=utf-8',
+            'INLINE_PNL_SCRIPT_PATTERN',
+            'externalizePnlClient',
+          ]) {
+            if (!deployedEntry.includes(token)) throw new Error(`External P&L entry missing ${token}`);
           }
           for (const token of ['dayPnl', 'realizedPnl', 'unrealizedPnl', 'pnlSource']) {
             if (!broker.includes(token)) throw new Error(`Broker summary missing ${token}`);
@@ -95,23 +105,35 @@ jobs:
             if (!pnl.includes(token)) throw new Error(`P&L control patch missing ${token}`);
           }
           console.log(JSON.stringify({
-            sandboxEntry: config.main,
+            sandboxBaseEntry: config.main,
+            deployedEntry: 'worker/src/sandbox-mobile-market-screener-resilient-entry-v2.js',
             tradingViewOnly: true,
             scannerExecutionEnabled: false,
             liveTradingLocked: true,
             brokerPnlEnabled: true,
             pnlControlsEnabled: true,
+            pnlClientDelivery: 'EXTERNAL_JAVASCRIPT_ASSET',
           }, null, 2));
           NODE
 
+      - name: Prepare exact deployment config
+        run: |
+          node <<'NODE'
+          const { readFileSync, writeFileSync } = require('node:fs');
+          const config = JSON.parse(readFileSync('wrangler.sandbox.jsonc', 'utf8'));
+          config.main = 'worker/src/sandbox-mobile-market-screener-resilient-entry-v2.js';
+          writeFileSync('wrangler.sandbox.deploy.jsonc', `${JSON.stringify(config, null, 2)}\n`);
+          console.log(`Prepared ${config.main}`);
+          NODE
+
       - name: Build Cloudflare Worker
-        run: npx wrangler deploy --dry-run --config wrangler.sandbox.jsonc
+        run: npx wrangler deploy --dry-run --config wrangler.sandbox.deploy.jsonc
 
       - name: Deploy Cloudflare Sandbox Worker
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-        run: npx wrangler deploy --config wrangler.sandbox.jsonc
+        run: npx wrangler deploy --config wrangler.sandbox.deploy.jsonc
 
       - name: Verify deployed TradingView mobile control
         env:
@@ -164,12 +186,24 @@ jobs:
           await retry('mobile JavaScript assets', async () => {
             const bootResponse = await fetch(`${origin}/mobile/boot-v4.js?t=${Date.now()}`, { cache: 'no-store' });
             const clientResponse = await fetch(`${origin}/mobile/client-v4.js?t=${Date.now()}`, { cache: 'no-store' });
-            const [boot, client] = await Promise.all([bootResponse.text(), clientResponse.text()]);
-            if (!bootResponse.ok || !clientResponse.ok) {
-              throw new Error(`Asset HTTP status: boot=${bootResponse.status}, client=${clientResponse.status}`);
+            const pnlResponse = await fetch(`${origin}/mobile/pnl-control-v2.js?t=${Date.now()}`, { cache: 'no-store' });
+            const [boot, client, pnl] = await Promise.all([
+              bootResponse.text(),
+              clientResponse.text(),
+              pnlResponse.text(),
+            ]);
+            if (!bootResponse.ok || !clientResponse.ok || !pnlResponse.ok) {
+              throw new Error(`Asset HTTP status: boot=${bootResponse.status}, client=${clientResponse.status}, pnl=${pnlResponse.status}`);
             }
             if (!boot.includes('loadStatus')) throw new Error('Mobile boot asset is incomplete');
             if (!client.includes('__MOE_MAIN_CLIENT_READY__')) throw new Error('Mobile client asset is incomplete');
+            if (!pnl.includes('__MOE_PNL_CONTROL_V1__') || !pnl.includes('function render')) {
+              throw new Error('External P&L client asset is incomplete');
+            }
+            if (!String(pnlResponse.headers.get('content-type') || '').includes('application/javascript')) {
+              throw new Error('External P&L client has the wrong content type');
+            }
+            if (/<script/i.test(pnl)) throw new Error('External P&L asset must not contain HTML script tags');
           });
 
           await retry('webhook authentication barrier', async () => {
@@ -200,6 +234,7 @@ jobs:
             deployed: true,
             authenticationProtected: true,
             mobileAssetsHealthy: true,
+            pnlExternalAssetHealthy: true,
             webhookSecretRequired: true,
             legacyExecutionBlocked: true,
           }, null, 2));
