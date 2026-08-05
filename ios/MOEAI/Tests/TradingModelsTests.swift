@@ -140,4 +140,63 @@ final class TradingModelsTests: XCTestCase {
     XCTAssertFalse(report.contains("session-secret"))
     XCTAssertFalse(report.contains(longToken))
   }
+
+  func testPushNavigationParserUsesTrustedDeepLinkAndNormalizesSymbol() throws {
+    let userInfo: [AnyHashable: Any] = [
+      "aps": ["alert": ["title": "MOE-AI"]],
+      "moe": [
+        "type": "POSITION_OPEN_SUBMITTED",
+        "symbol": "aapl",
+        "deepLink": "moeai://positions/aapl",
+      ],
+    ]
+
+    let destination = try XCTUnwrap(
+      PushNavigationParser.destination(from: userInfo)
+    )
+
+    XCTAssertEqual(destination.tab, .positions)
+    XCTAssertEqual(destination.symbol, "AAPL")
+    XCTAssertEqual(destination.notificationType, "POSITION_OPEN_SUBMITTED")
+  }
+
+  func testPushNavigationParserRoutesRejectedOrderToActivity() throws {
+    let userInfo: [AnyHashable: Any] = [
+      "moe": [
+        "type": "TRADINGVIEW_ORDER_REJECTED",
+        "symbol": "NVDA",
+      ],
+    ]
+
+    let destination = try XCTUnwrap(
+      PushNavigationParser.destination(from: userInfo)
+    )
+
+    XCTAssertEqual(destination.tab, .activity)
+    XCTAssertEqual(destination.symbol, "NVDA")
+  }
+
+  func testPushNavigationParserNeverTreatsExternalURLAsAnAppRoute() throws {
+    let userInfo: [AnyHashable: Any] = [
+      "moe": [
+        "type": "TEST",
+        "deepLink": "https://example.com/phishing",
+      ],
+    ]
+
+    let destination = try XCTUnwrap(
+      PushNavigationParser.destination(from: userInfo)
+    )
+
+    XCTAssertEqual(destination.tab, .settings)
+    XCTAssertEqual(destination.deepLink, "https://example.com/phishing")
+  }
+
+  func testPushNavigationParserIgnoresUnrelatedPayloads() {
+    let userInfo: [AnyHashable: Any] = [
+      "aps": ["alert": ["title": "System"]],
+    ]
+
+    XCTAssertNil(PushNavigationParser.destination(from: userInfo))
+  }
 }

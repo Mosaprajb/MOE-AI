@@ -3,23 +3,29 @@ import SwiftUI
 struct MainTabView: View {
   @EnvironmentObject private var model: AppModel
   @EnvironmentObject private var network: NetworkMonitor
+  @EnvironmentObject private var notifications: NotificationManager
 
   var body: some View {
-    TabView {
+    TabView(selection: $notifications.selectedTab) {
       NavigationStack { DashboardView() }
         .tabItem { Label("الرئيسية", systemImage: "square.grid.2x2.fill") }
+        .tag(MainTab.dashboard)
 
       NavigationStack { ScannerView() }
         .tabItem { Label("الماسح", systemImage: "waveform.path.ecg") }
+        .tag(MainTab.scanner)
 
       NavigationStack { PositionsView() }
         .tabItem { Label("المراكز", systemImage: "chart.line.uptrend.xyaxis") }
+        .tag(MainTab.positions)
 
       NavigationStack { ActivityView() }
         .tabItem { Label("النشاط", systemImage: "bolt.horizontal.circle.fill") }
+        .tag(MainTab.activity)
 
       NavigationStack { SettingsView() }
         .tabItem { Label("الإعدادات", systemImage: "gearshape.fill") }
+        .tag(MainTab.settings)
     }
     .tint(MOETheme.accent)
     .safeAreaInset(edge: .top, spacing: 0) {
@@ -47,6 +53,12 @@ struct MainTabView: View {
         } else {
           await model.refreshStatus(silently: true)
         }
+      }
+    }
+    .onChange(of: notifications.lastOpenedNotificationAt) { _, openedAt in
+      guard openedAt != nil, network.snapshot.isConnected else { return }
+      Task {
+        await model.refreshStatus(silently: true)
       }
     }
     .alert(
