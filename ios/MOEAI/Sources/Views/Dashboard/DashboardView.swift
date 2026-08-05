@@ -42,7 +42,7 @@ struct DashboardView: View {
     HStack {
       VStack(alignment: .leading, spacing: 4) {
         Text("MOE-AI")
-          .font(.largeTitle.black())
+          .font(.largeTitle.weight(.black))
         Text("Trading Control Center")
           .foregroundStyle(MOETheme.muted)
       }
