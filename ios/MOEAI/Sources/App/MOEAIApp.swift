@@ -6,6 +6,7 @@ struct MOEAIApp: App {
   @StateObject private var session = SessionStore()
   @StateObject private var model = AppModel()
   @StateObject private var notifications = NotificationManager.shared
+  @StateObject private var network = NetworkMonitor()
   @Environment(\.scenePhase) private var scenePhase
   @State private var backgroundedAt: Date?
   @State private var privacyShieldVisible = false
@@ -16,6 +17,7 @@ struct MOEAIApp: App {
         .environmentObject(session)
         .environmentObject(model)
         .environmentObject(notifications)
+        .environmentObject(network)
         .preferredColorScheme(.dark)
         .overlay {
           if privacyShieldVisible {

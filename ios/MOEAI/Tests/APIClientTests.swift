@@ -48,7 +48,16 @@ final class APIClientTests: XCTestCase {
     )
 
     let status = try await client.status()
+    let diagnostics = await client.diagnosticsSnapshot()
+
     XCTAssertEqual(status.mode, "TRADINGVIEW_ONLY")
+    XCTAssertEqual(diagnostics.method, "GET")
+    XCTAssertEqual(diagnostics.path, "/api/tradingview/status")
+    XCTAssertEqual(diagnostics.statusCode, 200)
+    XCTAssertEqual(diagnostics.attempts, 1)
+    XCTAssertEqual(diagnostics.outcome, "success")
+    XCTAssertFalse((diagnostics.requestID ?? "").isEmpty)
+    XCTAssertNotNil(diagnostics.completedAt)
   }
 
   func testUnauthorizedResponseMapsToUnauthorizedError() async throws {
@@ -75,6 +84,11 @@ final class APIClientTests: XCTestCase {
     } catch let error as APIError {
       XCTAssertEqual(error, .unauthorized)
     }
+
+    let diagnostics = await client.diagnosticsSnapshot()
+    XCTAssertEqual(diagnostics.statusCode, 401)
+    XCTAssertEqual(diagnostics.outcome, "unauthorized")
+    XCTAssertEqual(diagnostics.attempts, 1)
   }
 
   func testIdempotentGetRetriesTransientServerFailure() async throws {
@@ -103,8 +117,13 @@ final class APIClientTests: XCTestCase {
     )
 
     let status = try await client.status()
+    let diagnostics = await client.diagnosticsSnapshot()
+
     XCTAssertEqual(status.mode, "TRADINGVIEW_ONLY")
     XCTAssertEqual(attempts, 2)
+    XCTAssertEqual(diagnostics.statusCode, 200)
+    XCTAssertEqual(diagnostics.attempts, 2)
+    XCTAssertEqual(diagnostics.outcome, "success")
   }
 
   func testMutationIsNotRetriedAfterServerFailure() async throws {
@@ -135,7 +154,12 @@ final class APIClientTests: XCTestCase {
       XCTAssertEqual(error, .server(statusCode: 503, message: "Temporary unavailable"))
     }
 
+    let diagnostics = await client.diagnosticsSnapshot()
     XCTAssertEqual(attempts, 1)
+    XCTAssertEqual(diagnostics.method, "POST")
+    XCTAssertEqual(diagnostics.statusCode, 503)
+    XCTAssertEqual(diagnostics.attempts, 1)
+    XCTAssertEqual(diagnostics.outcome, "server-error")
   }
 }
 

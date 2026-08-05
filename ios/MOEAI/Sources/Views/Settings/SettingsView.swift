@@ -1,16 +1,21 @@
 import SwiftUI
+import UIKit
 import UserNotifications
 
 struct SettingsView: View {
   @EnvironmentObject private var model: AppModel
   @EnvironmentObject private var session: SessionStore
   @EnvironmentObject private var notifications: NotificationManager
+  @EnvironmentObject private var network: NetworkMonitor
 
   @State private var serverURL = ""
   @State private var liveConfirmation = ""
   @State private var showLiveConfirmation = false
   @State private var showActivateKillSwitch = false
   @State private var showClearKillSwitch = false
+  @State private var showDiagnostics = false
+  @State private var isPreparingDiagnostics = false
+  @State private var diagnosticsReport = ""
 
   private var receptionEnabled: Bool {
     model.status.runtime?.receptionEnabled == true
@@ -27,6 +32,7 @@ struct SettingsView: View {
       safetySection
       notificationsSection
       securitySection
+      diagnosticsSection
       applicationSection
     }
     .scrollContentBackground(.hidden)
@@ -34,6 +40,33 @@ struct SettingsView: View {
     .foregroundStyle(.white)
     .navigationTitle("الإعدادات")
     .onAppear { serverURL = session.baseURLText }
+    .sheet(isPresented: $showDiagnostics) {
+      NavigationStack {
+        ScrollView {
+          Text(diagnosticsReport)
+            .font(.caption.monospaced())
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .textSelection(.enabled)
+            .padding()
+        }
+        .background(AppBackground())
+        .foregroundStyle(.white)
+        .navigationTitle("تقرير التشخيص")
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+          ToolbarItem(placement: .topBarLeading) {
+            Button("إغلاق") { showDiagnostics = false }
+          }
+          ToolbarItem(placement: .topBarTrailing) {
+            ShareLink(item: diagnosticsReport) {
+              Image(systemName: "square.and.arrow.up")
+            }
+            .accessibilityLabel("مشاركة تقرير التشخيص")
+          }
+        }
+      }
+      .preferredColorScheme(.dark)
+    }
     .alert("تفعيل الحساب الحقيقي", isPresented: $showLiveConfirmation) {
       TextField("اكتب CONFIRM", text: $liveConfirmation)
         .textInputAutocapitalization(.characters)
@@ -89,9 +122,19 @@ struct SettingsView: View {
         }
       }
 
+      LabeledContent("الشبكة", value: network.snapshot.statusText)
+      LabeledContent("نوع الاتصال", value: network.snapshot.detailsText)
       LabeledContent("الوضع", value: model.status.mode ?? "—")
       LabeledContent("المصدر", value: model.status.executionSource ?? "—")
       LabeledContent("آخر تحديث", value: model.lastRefresh?.formatted(date: .omitted, time: .shortened) ?? "—")
+
+      if model.consecutiveRequestFailures > 0 {
+        LabeledContent(
+          "إخفاقات متتالية",
+          value: "\(model.consecutiveRequestFailures)"
+        )
+        .foregroundStyle(MOETheme.warning)
+      }
 
       if let error = session.errorMessage {
         Text(error)
@@ -136,7 +179,7 @@ struct SettingsView: View {
         }
         .buttonStyle(.borderedProminent)
         .tint(receptionEnabled ? MOETheme.negative : MOETheme.accent)
-        .disabled(model.pendingAction != nil)
+        .disabled(model.pendingAction != nil || !network.snapshot.isConnected)
       }
 
       HStack {
@@ -156,7 +199,7 @@ struct SettingsView: View {
         }
         .buttonStyle(.bordered)
         .tint(killSwitchActive ? MOETheme.warning : MOETheme.negative)
-        .disabled(model.pendingAction != nil)
+        .disabled(model.pendingAction != nil || !network.snapshot.isConnected)
       }
     }
   }
@@ -174,7 +217,7 @@ struct SettingsView: View {
           }
         }
       }
-      .disabled(notifications.isRegistering)
+      .disabled(notifications.isRegistering || !network.snapshot.isConnected)
 
       Button("اختبار إشعار محلي") {
         notifications.scheduleLocalTest()
@@ -182,18 +225,13 @@ struct SettingsView: View {
       .disabled(notifications.authorizationStatus != .authorized)
 
       if notifications.registrationSucceeded {
-        Label("تم تسجيل APNs Token في Worker", systemImage: "checkmark.circle.fill")
+        Label("تم تسجيل الجهاز في Worker", systemImage: "checkmark.circle.fill")
           .font(.footnote)
           .foregroundStyle(MOETheme.positive)
       }
 
-      if let token = notifications.deviceToken {
-        LabeledContent("APNs Token") {
-          Text(token)
-            .font(.caption2.monospaced())
-            .lineLimit(1)
-            .truncationMode(.middle)
-        }
+      if notifications.deviceToken != nil {
+        LabeledContent("APNs Token", value: "متوفر ومحجوب للحماية")
       }
 
       if let error = notifications.errorMessage {
@@ -216,6 +254,30 @@ struct SettingsView: View {
     }
   }
 
+  private var diagnosticsSection: some View {
+    Section("التشخيص والدعم") {
+      LabeledContent("حالة الشبكة", value: network.snapshot.statusText)
+      LabeledContent("آخر طلب API", value: model.lastRefresh?.formatted(date: .omitted, time: .shortened) ?? "—")
+
+      Button {
+        Task { await prepareDiagnosticsReport() }
+      } label: {
+        HStack {
+          Label("إنشاء تقرير تشخيص آمن", systemImage: "stethoscope")
+          Spacer()
+          if isPreparingDiagnostics {
+            ProgressView()
+          }
+        }
+      }
+      .disabled(isPreparingDiagnostics)
+
+      Text("لا يتضمن التقرير PIN أو Cookies أو APNs Token أو مفاتيح Apple أو Webull أو Cloudflare.")
+        .font(.footnote)
+        .foregroundStyle(MOETheme.muted)
+    }
+  }
+
   private var applicationSection: some View {
     Section("التطبيق") {
       LabeledContent("الواجهة", value: "SwiftUI Native")
@@ -234,5 +296,156 @@ struct SettingsView: View {
     case .ephemeral: return "مؤقت للتطبيق"
     @unknown default: return "غير معروف"
     }
+  }
+
+  @MainActor
+  private func prepareDiagnosticsReport() async {
+    isPreparingDiagnostics = true
+    let apiDiagnostics = await APIClient.shared.diagnosticsSnapshot()
+
+    diagnosticsReport = SupportDiagnostics.makeReport(
+      generatedAt: Date(),
+      appVersion: appVersionDescription,
+      bundleIdentifier: Bundle.main.bundleIdentifier ?? "unknown",
+      systemVersion: "\(UIDevice.current.systemName) \(UIDevice.current.systemVersion)",
+      deviceModel: UIDevice.current.model,
+      network: network.snapshot,
+      workerURLText: session.baseURLText,
+      authenticated: session.isAuthenticated,
+      selectedAccount: model.selectedAccount,
+      mode: model.status.mode,
+      executionSource: model.status.executionSource,
+      lastRefresh: model.lastRefresh,
+      lastErrorAt: model.lastErrorAt,
+      requestFailureCount: model.consecutiveRequestFailures,
+      modelError: model.lastErrorMessage,
+      sessionError: session.errorMessage,
+      notificationStatus: notificationStatusText,
+      pushRegistered: notifications.registrationSucceeded,
+      pushTokenAvailable: notifications.deviceToken != nil,
+      pushError: notifications.errorMessage,
+      apiDiagnostics: apiDiagnostics
+    )
+
+    isPreparingDiagnostics = false
+    showDiagnostics = true
+  }
+}
+
+enum SupportDiagnostics {
+  static func makeReport(
+    generatedAt: Date,
+    appVersion: String,
+    bundleIdentifier: String,
+    systemVersion: String,
+    deviceModel: String,
+    network: NetworkSnapshot,
+    workerURLText: String,
+    authenticated: Bool,
+    selectedAccount: String,
+    mode: String?,
+    executionSource: String?,
+    lastRefresh: Date?,
+    lastErrorAt: Date?,
+    requestFailureCount: Int,
+    modelError: String?,
+    sessionError: String?,
+    notificationStatus: String,
+    pushRegistered: Bool,
+    pushTokenAvailable: Bool,
+    pushError: String?,
+    apiDiagnostics: APIRequestDiagnostics
+  ) -> String {
+    let formatter = ISO8601DateFormatter()
+    formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+
+    func dateText(_ date: Date?) -> String {
+      guard let date else { return "none" }
+      return formatter.string(from: date)
+    }
+
+    let lines = [
+      "MOE-AI Support Diagnostics",
+      "generated_at=\(dateText(generatedAt))",
+      "app_version=\(sanitized(appVersion))",
+      "bundle_id=\(sanitized(bundleIdentifier))",
+      "system=\(sanitized(systemVersion))",
+      "device_model=\(sanitized(deviceModel))",
+      "network_status=\(network.statusText)",
+      "network_interface=\(sanitized(network.interfaceName))",
+      "network_expensive=\(network.isExpensive)",
+      "network_constrained=\(network.isConstrained)",
+      "network_updated_at=\(dateText(network.updatedAt))",
+      "worker_endpoint=\(workerEndpointSummary(workerURLText))",
+      "authenticated=\(authenticated)",
+      "selected_account=\(sanitized(selectedAccount))",
+      "worker_mode=\(sanitized(mode))",
+      "execution_source=\(sanitized(executionSource))",
+      "last_refresh=\(dateText(lastRefresh))",
+      "last_error_at=\(dateText(lastErrorAt))",
+      "consecutive_request_failures=\(requestFailureCount)",
+      "last_model_error=\(sanitized(modelError))",
+      "last_session_error=\(sanitized(sessionError))",
+      "notification_authorization=\(sanitized(notificationStatus))",
+      "push_registered=\(pushRegistered)",
+      "push_token_available=\(pushTokenAvailable)",
+      "last_push_error=\(sanitized(pushError))",
+      "api_request_id=\(sanitized(apiDiagnostics.requestID))",
+      "api_method=\(sanitized(apiDiagnostics.method))",
+      "api_path=\(sanitized(apiDiagnostics.path))",
+      "api_status_code=\(apiDiagnostics.statusCode.map(String.init) ?? "none")",
+      "api_attempts=\(apiDiagnostics.attempts)",
+      "api_outcome=\(sanitized(apiDiagnostics.outcome))",
+      "api_completed_at=\(dateText(apiDiagnostics.completedAt))",
+      "security_note=PIN, cookies, APNs device tokens, Apple keys, Webull keys, and Cloudflare secrets are excluded."
+    ]
+
+    return lines.joined(separator: "\n")
+  }
+
+  static func workerEndpointSummary(_ value: String) -> String {
+    guard let url = AppConfiguration.normalizedURL(from: value),
+      let components = URLComponents(url: url, resolvingAgainstBaseURL: false),
+      let scheme = components.scheme,
+      let host = components.host
+    else {
+      return "invalid"
+    }
+
+    let port = components.port.map { ":\($0)" } ?? ""
+    return "\(scheme)://\(host)\(port)"
+  }
+
+  static func sanitized(_ value: String?) -> String {
+    guard var output = value?.trimmingCharacters(in: .whitespacesAndNewlines),
+      !output.isEmpty
+    else {
+      return "none"
+    }
+
+    let replacements: [(pattern: String, template: String)] = [
+      (#"(?i)\b(authorization|cookie|set-cookie|pin|secret|token|api[_-]?key)\b\s*[:=]\s*[^\n,;]+"#, "$1=<redacted>"),
+      (#"(?i)\bbearer\s+[A-Za-z0-9._~+/=-]+"#, "Bearer <redacted>"),
+      (#"\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b"#, "<redacted-jwt>"),
+      (#"\b[A-Fa-f0-9]{32,}\b"#, "<redacted-hex>")
+    ]
+
+    for replacement in replacements {
+      guard let expression = try? NSRegularExpression(
+        pattern: replacement.pattern,
+        options: []
+      ) else {
+        continue
+      }
+      let range = NSRange(output.startIndex..<output.endIndex, in: output)
+      output = expression.stringByReplacingMatches(
+        in: output,
+        options: [],
+        range: range,
+        withTemplate: replacement.template
+      )
+    }
+
+    return output.replacingOccurrences(of: "\n", with: " ")
   }
 }

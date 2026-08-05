@@ -9,6 +9,9 @@ final class AppModel: ObservableObject {
   @Published private(set) var isRefreshingStatus = false
   @Published private(set) var isLoadingScanner = false
   @Published private(set) var pendingAction: String?
+  @Published private(set) var lastErrorMessage: String?
+  @Published private(set) var lastErrorAt: Date?
+  @Published private(set) var consecutiveRequestFailures = 0
   @Published var errorMessage: String?
   @Published var lastRefresh: Date?
   @Published var selectedAccount: String {
@@ -48,6 +51,7 @@ final class AppModel: ObservableObject {
       status = newStatus
       scannerRows = newScanner.safeRows
       lastRefresh = Date()
+      markSuccess()
     } catch {
       handle(error)
     }
@@ -62,8 +66,9 @@ final class AppModel: ObservableObject {
     do {
       status = try await APIClient.shared.status()
       lastRefresh = Date()
+      markSuccess()
     } catch {
-      if !silently { handle(error) }
+      handle(error, presentToUser: !silently)
     }
   }
 
@@ -79,6 +84,7 @@ final class AppModel: ObservableObject {
         throw APIError.server(statusCode: 502, message: response.error ?? "تعذر تحميل الماسح.")
       }
       scannerRows = response.safeRows
+      markSuccess()
     } catch {
       handle(error)
     }
@@ -139,6 +145,9 @@ final class AppModel: ObservableObject {
     scannerRows = []
     errorMessage = nil
     lastRefresh = nil
+    lastErrorMessage = nil
+    lastErrorAt = nil
+    consecutiveRequestFailures = 0
     pendingAction = nil
   }
 
@@ -153,12 +162,23 @@ final class AppModel: ObservableObject {
 
     do {
       try await operation()
+      markSuccess()
     } catch {
       handle(error)
     }
   }
 
-  private func handle(_ error: Error) {
-    errorMessage = error.localizedDescription
+  private func markSuccess() {
+    consecutiveRequestFailures = 0
+  }
+
+  private func handle(_ error: Error, presentToUser: Bool = true) {
+    let message = error.localizedDescription
+    lastErrorMessage = message
+    lastErrorAt = Date()
+    consecutiveRequestFailures += 1
+    if presentToUser {
+      errorMessage = message
+    }
   }
 }

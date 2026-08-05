@@ -89,4 +89,55 @@ final class TradingModelsTests: XCTestCase {
     XCTAssertEqual(response.safeRows.first?.symbol, "NVDA")
     XCTAssertEqual(response.safeRows.first?.price, 145.22)
   }
+
+  func testSupportDiagnosticsRedactsSecretsAndWorkerPath() {
+    let longToken = String(repeating: "a1", count: 32)
+    let report = SupportDiagnostics.makeReport(
+      generatedAt: Date(timeIntervalSince1970: 0),
+      appVersion: "1.0 (1)",
+      bundleIdentifier: "com.moerand.moeai",
+      systemVersion: "iOS 17.0",
+      deviceModel: "iPhone",
+      network: NetworkSnapshot(
+        isConnected: true,
+        interfaceName: "Wi-Fi",
+        isExpensive: false,
+        isConstrained: false,
+        updatedAt: Date(timeIntervalSince1970: 0)
+      ),
+      workerURLText: "https://user:password@example.com/private/path?token=super-secret",
+      authenticated: true,
+      selectedAccount: "DEMO",
+      mode: "TRADINGVIEW_ONLY",
+      executionSource: "TRADINGVIEW_WEBHOOK",
+      lastRefresh: Date(timeIntervalSince1970: 0),
+      lastErrorAt: Date(timeIntervalSince1970: 1),
+      requestFailureCount: 2,
+      modelError: "Authorization: Bearer secret-value",
+      sessionError: "cookie=session-secret",
+      notificationStatus: "مفعّل",
+      pushRegistered: true,
+      pushTokenAvailable: true,
+      pushError: "APNs token: \(longToken)",
+      apiDiagnostics: APIRequestDiagnostics(
+        requestID: "request-123",
+        method: "GET",
+        path: "/api/tradingview/status",
+        statusCode: 503,
+        attempts: 2,
+        outcome: "server-error",
+        completedAt: Date(timeIntervalSince1970: 2)
+      )
+    )
+
+    XCTAssertTrue(report.contains("worker_endpoint=https://example.com"))
+    XCTAssertTrue(report.contains("api_request_id=request-123"))
+    XCTAssertTrue(report.contains("<redacted>"))
+    XCTAssertFalse(report.contains("/private/path"))
+    XCTAssertFalse(report.contains("password"))
+    XCTAssertFalse(report.contains("super-secret"))
+    XCTAssertFalse(report.contains("secret-value"))
+    XCTAssertFalse(report.contains("session-secret"))
+    XCTAssertFalse(report.contains(longToken))
+  }
 }
