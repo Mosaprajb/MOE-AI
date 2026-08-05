@@ -50,7 +50,10 @@ function base64UrlToBytes(value: string): Uint8Array {
   return Uint8Array.from(binary, char => char.charCodeAt(0));
 }
 
-async function importHmacKey(secret: string, usages: KeyUsage[]): Promise<CryptoKey> {
+async function importHmacKey(
+  secret: string,
+  usages: Array<'sign' | 'verify'>,
+): Promise<CryptoKey> {
   return crypto.subtle.importKey(
     'raw',
     encoder.encode(secret),
