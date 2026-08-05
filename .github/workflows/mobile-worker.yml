@@ -62,7 +62,7 @@ jobs:
 
       - name: Apply local D1 migrations
         working-directory: worker
-        run: pnpm exec wrangler d1 migrations apply moe-ai --local --yes
+        run: pnpm exec wrangler d1 migrations apply moe-ai --local
 
       - name: Run local Worker HTTP contract
         working-directory: worker
