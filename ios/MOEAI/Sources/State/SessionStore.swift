@@ -143,6 +143,14 @@ final class SessionStore: ObservableObject {
     return true
   }
 
+  /// Removes sensitive trading data from the screen without deleting the saved
+  /// PIN or changing the configured Worker URL. Face ID/PIN is required again.
+  func lockForPrivacy() {
+    guard isAuthenticated else { return }
+    isAuthenticated = false
+    errorMessage = nil
+  }
+
   func signOut() {
     HTTPCookieStorage.shared.removeCookies(since: .distantPast)
     isAuthenticated = false

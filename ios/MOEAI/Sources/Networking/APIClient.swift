@@ -7,13 +7,16 @@ actor APIClient {
   private let session: URLSession
   private let decoder: JSONDecoder
   private let encoder: JSONEncoder
+  private let retryDelaysNanoseconds: [UInt64]
 
   init(
     baseURL: URL = AppConfiguration.normalizedURL(from: AppConfiguration.storedWorkerURL)
       ?? URL(string: AppConfiguration.defaultWorkerURL)!,
-    session: URLSession? = nil
+    session: URLSession? = nil,
+    retryDelaysNanoseconds: [UInt64] = [250_000_000, 750_000_000]
   ) {
     self.baseURL = baseURL
+    self.retryDelaysNanoseconds = retryDelaysNanoseconds
 
     let decoder = JSONDecoder()
     self.decoder = decoder
@@ -165,7 +168,8 @@ actor APIClient {
   ) async throws -> Response {
     try await execute(
       request: makeRequest(path: path, method: method, query: query, body: nil),
-      responseType: Response.self
+      responseType: Response.self,
+      allowsRetry: method == "GET"
     )
   }
 
@@ -184,7 +188,8 @@ actor APIClient {
 
     return try await execute(
       request: makeRequest(path: path, method: method, query: query, body: bodyData),
-      responseType: Response.self
+      responseType: Response.self,
+      allowsRetry: false
     )
   }
 
@@ -201,6 +206,8 @@ actor APIClient {
     request.cachePolicy = .reloadIgnoringLocalCacheData
     request.setValue("application/json", forHTTPHeaderField: "Accept")
     request.setValue("1", forHTTPHeaderField: "x-moe-mobile-client")
+    request.setValue(UUID().uuidString, forHTTPHeaderField: "x-moe-request-id")
+    request.setValue("no-store", forHTTPHeaderField: "Cache-Control")
     if body != nil {
       request.setValue("application/json", forHTTPHeaderField: "Content-Type")
     }
@@ -209,39 +216,69 @@ actor APIClient {
 
   private func execute<Response: Decodable>(
     request: URLRequest,
-    responseType: Response.Type
+    responseType: Response.Type,
+    allowsRetry: Bool
   ) async throws -> Response {
-    let data: Data
-    let response: URLResponse
+    let retryCount = allowsRetry ? retryDelaysNanoseconds.count : 0
+    let maximumAttempts = retryCount + 1
 
-    do {
-      (data, response) = try await session.data(for: request)
-    } catch {
-      throw APIError.transport(error.localizedDescription)
+    for attempt in 0..<maximumAttempts {
+      let data: Data
+      let response: URLResponse
+
+      do {
+        (data, response) = try await session.data(for: request)
+      } catch {
+        if allowsRetry,
+          attempt < retryCount,
+          Self.isRetryableTransportError(error)
+        {
+          await waitBeforeRetry(attempt: attempt)
+          continue
+        }
+        throw APIError.transport(error.localizedDescription)
+      }
+
+      guard let httpResponse = response as? HTTPURLResponse else {
+        throw APIError.invalidResponse
+      }
+
+      if httpResponse.statusCode == 401 {
+        NotificationCenter.default.post(name: .moeSessionExpired, object: nil)
+        throw APIError.unauthorized
+      }
+
+      guard (200...299).contains(httpResponse.statusCode) else {
+        if allowsRetry,
+          attempt < retryCount,
+          Self.isRetryableStatusCode(httpResponse.statusCode)
+        {
+          await waitBeforeRetry(attempt: attempt)
+          continue
+        }
+
+        let envelope = try? decoder.decode(APIEnvelope.self, from: data)
+        let message = envelope?.error
+          ?? envelope?.message
+          ?? HTTPURLResponse.localizedString(forStatusCode: httpResponse.statusCode)
+        throw APIError.server(statusCode: httpResponse.statusCode, message: message)
+      }
+
+      do {
+        return try decoder.decode(responseType, from: data)
+      } catch {
+        throw APIError.decoding(Self.describeDecodingError(error))
+      }
     }
 
-    guard let httpResponse = response as? HTTPURLResponse else {
-      throw APIError.invalidResponse
-    }
+    throw APIError.invalidResponse
+  }
 
-    if httpResponse.statusCode == 401 {
-      NotificationCenter.default.post(name: .moeSessionExpired, object: nil)
-      throw APIError.unauthorized
-    }
-
-    guard (200...299).contains(httpResponse.statusCode) else {
-      let envelope = try? decoder.decode(APIEnvelope.self, from: data)
-      let message = envelope?.error
-        ?? envelope?.message
-        ?? HTTPURLResponse.localizedString(forStatusCode: httpResponse.statusCode)
-      throw APIError.server(statusCode: httpResponse.statusCode, message: message)
-    }
-
-    do {
-      return try decoder.decode(responseType, from: data)
-    } catch {
-      throw APIError.decoding(Self.describeDecodingError(error))
-    }
+  private func waitBeforeRetry(attempt: Int) async {
+    guard retryDelaysNanoseconds.indices.contains(attempt) else { return }
+    let delay = retryDelaysNanoseconds[attempt]
+    guard delay > 0 else { return }
+    try? await Task.sleep(nanoseconds: delay)
   }
 
   static func endpointURL(
@@ -259,6 +296,25 @@ actor APIClient {
     }
     guard let url = components.url else { throw APIError.invalidBaseURL }
     return url
+  }
+
+  private static func isRetryableStatusCode(_ statusCode: Int) -> Bool {
+    [408, 429, 500, 502, 503, 504].contains(statusCode)
+  }
+
+  private static func isRetryableTransportError(_ error: Error) -> Bool {
+    guard let urlError = error as? URLError else { return false }
+    switch urlError.code {
+    case .timedOut,
+      .networkConnectionLost,
+      .cannotConnectToHost,
+      .cannotFindHost,
+      .dnsLookupFailed,
+      .notConnectedToInternet:
+      return true
+    default:
+      return false
+    }
   }
 
   private static func describeDecodingError(_ error: Error) -> String {

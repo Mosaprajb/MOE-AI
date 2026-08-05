@@ -22,9 +22,11 @@ final class APIClientTests: XCTestCase {
     XCTAssertEqual(URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?.first?.value, "VOLUME")
   }
 
-  func testStatusRequestAddsNativeClientHeader() async throws {
+  func testStatusRequestAddsNativeClientAndCorrelationHeaders() async throws {
     URLProtocolStub.handler = { request in
       XCTAssertEqual(request.value(forHTTPHeaderField: "x-moe-mobile-client"), "1")
+      XCTAssertFalse((request.value(forHTTPHeaderField: "x-moe-request-id") ?? "").isEmpty)
+      XCTAssertEqual(request.value(forHTTPHeaderField: "Cache-Control"), "no-store")
       XCTAssertEqual(request.httpMethod, "GET")
       XCTAssertEqual(request.url?.path, "/api/tradingview/status")
 
@@ -73,6 +75,67 @@ final class APIClientTests: XCTestCase {
     } catch let error as APIError {
       XCTAssertEqual(error, .unauthorized)
     }
+  }
+
+  func testIdempotentGetRetriesTransientServerFailure() async throws {
+    var attempts = 0
+    URLProtocolStub.handler = { request in
+      attempts += 1
+      let statusCode = attempts == 1 ? 503 : 200
+      let payload = statusCode == 200
+        ? Data(#"{"ok":true,"mode":"TRADINGVIEW_ONLY"}"#.utf8)
+        : Data(#"{"ok":false,"error":"Temporary unavailable"}"#.utf8)
+      let response = HTTPURLResponse(
+        url: try XCTUnwrap(request.url),
+        statusCode: statusCode,
+        httpVersion: nil,
+        headerFields: ["Content-Type": "application/json"]
+      )!
+      return (response, payload)
+    }
+
+    let configuration = URLSessionConfiguration.ephemeral
+    configuration.protocolClasses = [URLProtocolStub.self]
+    let client = APIClient(
+      baseURL: URL(string: "https://example.com")!,
+      session: URLSession(configuration: configuration),
+      retryDelaysNanoseconds: [0]
+    )
+
+    let status = try await client.status()
+    XCTAssertEqual(status.mode, "TRADINGVIEW_ONLY")
+    XCTAssertEqual(attempts, 2)
+  }
+
+  func testMutationIsNotRetriedAfterServerFailure() async throws {
+    var attempts = 0
+    URLProtocolStub.handler = { request in
+      attempts += 1
+      let response = HTTPURLResponse(
+        url: try XCTUnwrap(request.url),
+        statusCode: 503,
+        httpVersion: nil,
+        headerFields: ["Content-Type": "application/json"]
+      )!
+      return (response, Data(#"{"ok":false,"error":"Temporary unavailable"}"#.utf8))
+    }
+
+    let configuration = URLSessionConfiguration.ephemeral
+    configuration.protocolClasses = [URLProtocolStub.self]
+    let client = APIClient(
+      baseURL: URL(string: "https://example.com")!,
+      session: URLSession(configuration: configuration),
+      retryDelaysNanoseconds: [0, 0]
+    )
+
+    do {
+      _ = try await client.login(pin: "1234")
+      XCTFail("Expected server error")
+    } catch let error as APIError {
+      XCTAssertEqual(error, .server(statusCode: 503, message: "Temporary unavailable"))
+    }
+
+    XCTAssertEqual(attempts, 1)
   }
 }
 

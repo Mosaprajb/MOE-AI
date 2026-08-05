@@ -23,7 +23,7 @@ jobs:
   build-and-test:
     name: Build and test MOEAI
     runs-on: macos-15
-    timeout-minutes: 30
+    timeout-minutes: 35
 
     steps:
       - name: Checkout
@@ -77,6 +77,20 @@ jobs:
             clean test \
             | tee "$RUNNER_TEMP/moeai-xcodebuild.log"
 
+      - name: Run Xcode static analyzer
+        shell: bash
+        run: |
+          set -euo pipefail
+          xcodebuild \
+            -project ios/MOEAI/MOEAI.xcodeproj \
+            -scheme MOEAI \
+            -configuration Debug \
+            -destination "generic/platform=iOS Simulator" \
+            -derivedDataPath "$RUNNER_TEMP/MOEAI-AnalyzeDerivedData" \
+            CODE_SIGNING_ALLOWED=NO \
+            analyze \
+            | tee "$RUNNER_TEMP/moeai-analyze.log"
+
       - name: Build Release for simulator
         shell: bash
         run: |
@@ -98,6 +112,7 @@ jobs:
           name: moeai-xcode-logs
           path: |
             ${{ runner.temp }}/moeai-xcodebuild.log
+            ${{ runner.temp }}/moeai-analyze.log
             ${{ runner.temp }}/moeai-release-build.log
           if-no-files-found: ignore
           retention-days: 7
