@@ -1,7 +1,7 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "moerand-alerts-sandbox",
-  "main": "worker/src/sandbox-mobile-account-balances-entry.js",
+  "main": "worker/src/sandbox-mobile-market-screener-resilient-entry.js",
   "compatibility_date": "2026-07-22",
   "observability": {
     "enabled": true,
@@ -15,16 +15,17 @@
       "head_sampling_rate": 1
     }
   },
-  "triggers": { "crons": ["* * * * *"] },
   "durable_objects": {
     "bindings": [
       { "name": "ALERT_COORDINATOR", "class_name": "AlertCoordinator" },
-      { "name": "SIMULATION_DRIVER", "class_name": "SimulationDriver" }
+      { "name": "SIMULATION_DRIVER", "class_name": "SimulationDriver" },
+      { "name": "TRADINGVIEW_POSITION", "class_name": "TradingViewPositionCoordinator" }
     ]
   },
   "exports": {
     "AlertCoordinator": { "type": "durable-object", "storage": "sqlite" },
-    "SimulationDriver": { "type": "durable-object", "storage": "sqlite" }
+    "SimulationDriver": { "type": "durable-object", "storage": "sqlite" },
+    "TradingViewPositionCoordinator": { "type": "durable-object", "storage": "sqlite" }
   },
   "secrets": {
     "required": [
@@ -43,6 +44,8 @@
     "APP_URL": "https://mosaprajb.github.io/MOE-AI/",
     "MOE_RUNTIME_ENVIRONMENT": "SANDBOX_PILOT",
     "MOE_MOBILE_DASHBOARD_ENABLED": "true",
+    "MOE_MARKET_PLATFORM_ENABLED": "true",
+    "MOE_FRED_MACRO_ENABLED": "false",
     "MOE_MOBILE_SESSION_TTL_MINUTES": "10",
     "MOE_MOBILE_MAX_CASH_ALLOCATION_PERCENT": "100",
     "MOE_MOBILE_MAX_MARGIN_ALLOCATION_PERCENT": "100",
@@ -70,8 +73,10 @@
     "MOERAND_CLEAN_BREAKOUT_LEN": "20",
     "MOERAND_CLEAN_MIN_RVOL": "1.2",
     "MOERAND_CLEAN_RVOL_PERIOD": "20",
+    "MOERAND_CLEAN_KEY_VALUE": "1",
     "MOERAND_CLEAN_ATR_PERIOD": "2",
     "MOERAND_CLEAN_ATR_MULT": "1.0",
+    "MOERAND_CLEAN_USE_HEIKIN_ASHI": "false",
     "MOERAND_CLEAN_ENABLE_BREAKEVEN": "true",
     "MOERAND_CLEAN_SESSION_WINDOW": "0930-1600",
     "MOERAND_CLEAN_SESSION_TIMEZONE": "America/New_York",
@@ -92,8 +97,8 @@
     "WEBULL_API_BASE_URL": "https://api.sandbox.webull.com",
     "WEBULL_SANDBOX_ENABLED": "true",
     "WEBULL_SANDBOX_ORDER_SUBMISSION": "true",
-    "WEBULL_AUTO_SUBMIT_SANDBOX": "true",
-    "WEBULL_AUTOMATION_ARMED": "true",
+    "WEBULL_AUTO_SUBMIT_SANDBOX": "false",
+    "WEBULL_AUTOMATION_ARMED": "false",
     "WEBULL_PROTECTED_ORDERS": "true",
     "WEBULL_READ_ONLY_SYNC": "true",
     "WEBULL_MAX_QUANTITY": "1",
@@ -116,7 +121,11 @@
     "MOE_MAX_SECTOR_EXPOSURE_PERCENT": "35",
     "MOE_MAX_OPEN_RISK_PERCENT": "0.5",
     "MOE_PORTFOLIO_ACCOUNT_STALE_SECONDS": "120",
-    "AUTO_SCANNER_ENABLED": "true",
+    "MOE_TRADINGVIEW_ONLY": "true",
+    "MOE_TRADINGVIEW_LIVE_ENABLED": "false",
+    "MOE_TRADINGVIEW_MONITOR_INTERVAL_SECONDS": "5",
+    "MOE_TRADINGVIEW_SESSION_TTL_SECONDS": "43200",
+    "AUTO_SCANNER_ENABLED": "false",
     "AUTO_SCANNER_TRADING_HOURS": "AUTO",
     "AUTO_SCANNER_OVERNIGHT_ENABLED": "false",
     "AUTO_SCANNER_ALLOW_DELAYED_OVERNIGHT_SANDBOX": "false",
@@ -133,7 +142,7 @@
     "AUTO_SCANNER_MAX_DRIFT_CORE_PERCENT": "1.00",
     "AUTO_SCANNER_MAX_DRIFT_EXTENDED_PERCENT": "0.75",
     "AUTO_SCANNER_MAX_DRIFT_NIGHT_PERCENT": "0.25",
-    "SMART_SCANNER_SCHEDULER_ENABLED": "true",
+    "SMART_SCANNER_SCHEDULER_ENABLED": "false",
     "SMART_SCANNER_PREMARKET_INTERVAL_SECONDS": "60",
     "SMART_SCANNER_OPEN_INTERVAL_SECONDS": "20",
     "SMART_SCANNER_LUNCH_INTERVAL_SECONDS": "60",

@@ -8,32 +8,39 @@ const directory = dirname(fileURLToPath(import.meta.url));
 const root = join(directory, '..', '..');
 const monitorSource = readFileSync(join(root, 'worker/src/mobile-scanner-monitor.js'), 'utf8');
 const visibleUiSource = readFileSync(join(root, 'worker/src/mobile-scanner-visible-ui.js'), 'utf8');
+const brokerGateSource = readFileSync(join(root, 'worker/src/mobile-paper-broker-gate.js'), 'utf8');
 const entrySource = readFileSync(join(root, 'worker/src/sandbox-mobile-account-balances-entry.js'), 'utf8');
 
 test('mobile scanner monitor is wired into the deployed Sandbox entry', () => {
   assert.match(entrySource, /from '\.\/mobile-scanner-monitor\.js'/);
   assert.match(entrySource, /from '\.\/mobile-scanner-visible-ui\.js'/);
+  assert.match(entrySource, /from '\.\/mobile-paper-broker-gate\.js'/);
   assert.match(entrySource, /pathname === MOBILE_SCANNER_MONITOR_PATH/);
   assert.match(entrySource, /handleMobileScannerMonitor\(request, env\)/);
   assert.match(entrySource, /enhanceMobileScannerVisibleUi\(repaired, request\)/);
-  assert.match(entrySource, /repairVisibleScannerDomInsertion\(enhanced, request\)/);
+  assert.match(entrySource, /enhanceMobilePaperBrokerGateUi\(enhanced, request\)/);
+  assert.match(entrySource, /repairVisibleScannerDomInsertion\(brokerGated, request\)/);
 });
 
-test('visible scanner runtime repairs nested DOM insertion before the page is returned', () => {
-  assert.match(entrySource, /stack\?card\.insertBefore\(panel,stack\):chips\.insertAdjacentElement\('afterend',panel\);/);
-  assert.match(entrySource, /chips\.insertAdjacentElement\('afterend',panel\);/);
-  assert.match(entrySource, /body\.insertAdjacentElement\('afterbegin',holder\.firstElementChild\);/);
-  assert.match(entrySource, /list\.insertAdjacentElement\('beforebegin',tools\);/);
-  assert.match(entrySource, /x-moe-mobile-scanner-dom-fix/);
-  assert.match(entrySource, /moe-mobile-scanner-dom-insertion-fixed/);
+test('visible scanner UI uses valid direct DOM insertion', () => {
+  assert.match(visibleUiSource, /chips\.insertAdjacentElement\('afterend',makeMonitor\('main'\)\)/);
+  assert.match(visibleUiSource, /body\.insertAdjacentElement\('afterbegin',makeMonitor\('scanner'\)\)/);
+  assert.match(visibleUiSource, /list\.insertAdjacentElement\('beforebegin',tools\)/);
+  assert.equal(visibleUiSource.includes('card.insertBefore(panel,stack)'), false);
+});
+
+test('embedded visible scanner browser script parses successfully', () => {
+  const match = visibleUiSource.match(/const VISIBLE_UI_SCRIPT = String\.raw`[\s\S]*?<script[^>]*>\n([\s\S]*?)\n<\/script>`;/);
+  assert.ok(match, 'embedded visible scanner script was not found');
+  assert.doesNotThrow(() => new Function(match[1]));
 });
 
 test('visible mobile scanner UI exposes live quote, protected prices, readiness, refresh, and clear controls', () => {
   for (const token of [
     'moe-mobile-scanner-visible-ui',
     'data-moe-monitor-location',
-    "monitorMarkup('main')",
-    "monitorMarkup('scanner')",
+    "makeMonitor('main')",
+    "makeMonitor('scanner')",
     'Selected symbol live monitor',
     'data-moe-monitor-refresh',
     'data-moe-monitor-field',
@@ -44,6 +51,7 @@ test('visible mobile scanner UI exposes live quote, protected prices, readiness,
     'Clear old',
     'Old activity cleared from this screen',
     'No executable setup yet',
+    'Scanner stopped. Press Start trading',
   ]) {
     assert.equal(visibleUiSource.includes(token), true, `missing visible mobile scanner UI token: ${token}`);
   }
@@ -57,6 +65,50 @@ test('visible mobile scanner UI exposes live quote, protected prices, readiness,
   assert.equal(visibleUiSource.includes("percent>=90?'var(--green)':percent>=60?'var(--amber)':'var(--red)'"), true);
   assert.match(visibleUiSource, /#chips \[data-rm\]/);
   assert.match(visibleUiSource, /MutationObserver/);
+});
+
+test('stopped scanner hides executable plan and old activity', () => {
+  assert.match(entrySource, /normalizeMonitorReadiness\(response, env\)/);
+  assert.match(entrySource, /normalizeActivityWhenStopped\(response, env\)/);
+  assert.match(entrySource, /plan: null/);
+  assert.match(entrySource, /Scanner stopped — press Start trading/);
+  assert.match(entrySource, /events: \[waiting\]/);
+  assert.match(entrySource, /scannerArmed: false/);
+  assert.match(entrySource, /x-moe-mobile-scanner-gate/);
+  assert.match(entrySource, /x-moe-mobile-activity-gate/);
+});
+
+test('offline Paper broker fails closed before scanner cycles can continue', () => {
+  assert.match(brokerGateSource, /getWebullAccountSnapshot/);
+  assert.match(brokerGateSource, /updateMobileDashboardRuntime\(\{ armed: false \}, actor\)/);
+  assert.match(brokerGateSource, /PAPER_BROKER_OFFLINE/);
+  assert.match(brokerGateSource, /Trading was not started/);
+  assert.match(entrySource, /mobilePaperArmIntent\(request\)/);
+  assert.match(entrySource, /paperBrokerOfflineStartResponse\(safety\.broker\)/);
+  assert.match(entrySource, /normalizeMobileHealthForPaperBroker/);
+  assert.match(entrySource, /MOBILE_PAPER_BROKER_OFFLINE/);
+  assert.match(entrySource, /MOBILE_SCHEDULE_BROKER_GATE/);
+  assert.match(entrySource, /return baseWorker\.scheduled\(controller, env, ctx\)/);
+});
+
+test('mobile Start button is disabled and click-blocked while Paper broker is offline', () => {
+  const match = brokerGateSource.match(/const BROKER_GATE_UI_SCRIPT = String\.raw`[\s\S]*?<script[^>]*>\n([\s\S]*?)\n<\/script>`;/);
+  assert.ok(match, 'embedded Paper broker gate script was not found');
+  assert.doesNotThrow(() => new Function(match[1]));
+
+  for (const token of [
+    'moe-mobile-paper-broker-gate',
+    'Paper broker offline',
+    'Trading cannot start until the Paper account reconnects',
+    "start.dataset.brokerGate='offline'",
+    'start.disabled=true',
+    'event.stopImmediatePropagation()',
+    "headers:{accept:'application/json','x-moe-mobile-client':'1'}",
+    'refreshGate(true)',
+  ]) {
+    assert.equal(brokerGateSource.includes(token), true, `missing Paper broker gate token: ${token}`);
+  }
+  assert.match(brokerGateSource, /setInterval\(function\(\)\{if\(!document\.hidden\)refreshGate\(false\);\},5000\)/);
 });
 
 test('mobile scanner monitor reads Alpaca market data and returns an estimated protected plan', () => {
@@ -84,4 +136,6 @@ test('mobile scanner monitor remains same-origin, read-only, and cannot unlock L
   assert.equal(monitorSource.includes("WEBULL_LIVE_AUTOMATION_ARMED: 'true'"), false);
   assert.equal(visibleUiSource.includes('placeWebullSandboxOrder'), false);
   assert.equal(visibleUiSource.includes('placeWebullLiveOrder'), false);
+  assert.equal(brokerGateSource.includes('placeWebullSandboxOrder'), false);
+  assert.equal(brokerGateSource.includes('placeWebullLiveOrder'), false);
 });

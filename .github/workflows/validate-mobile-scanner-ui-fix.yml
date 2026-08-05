@@ -1,0 +1,182 @@
+name: Validate Mobile Scanner UI Fix
+
+on:
+  pull_request:
+    paths:
+      - 'worker/src/tradingview-only-dashboard-mobile.js'
+      - 'worker/src/tradingview-only-mobile-entry.js'
+      - 'worker/src/tradingview-only-safari-auth-entry.js'
+      - 'worker/src/tradingview-only-runtime-reliable.js'
+      - 'worker/src/sandbox-mobile-market-screener-resilient-entry.js'
+      - 'worker/test/tradingview-only-reliability-mobile.test.mjs'
+      - 'wrangler.sandbox.jsonc'
+      - '.github/workflows/validate-mobile-scanner-ui-fix.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: validate-mobile-tradingview-dashboard
+  cancel-in-progress: true
+
+jobs:
+  test-deploy-verify:
+    name: Test, deploy, and verify TradingView mobile dashboard
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - name: Checkout exact PR commit
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      - name: Install locked dependencies
+        run: npm ci
+
+      - name: Validate mobile source syntax
+        run: |
+          node --check worker/src/tradingview-only-dashboard-mobile.js
+          node --check worker/src/tradingview-only-mobile-entry.js
+          node --check worker/src/tradingview-only-safari-auth-entry.js
+          node --check worker/src/tradingview-only-runtime-reliable.js
+          node --check worker/src/sandbox-mobile-market-screener-resilient-entry.js
+
+      - name: Test Safari dashboard controls
+        run: node --test --test-concurrency=1 worker/test/tradingview-only-reliability-mobile.test.mjs
+
+      - name: Run complete Worker suite
+        run: npm run test:worker
+
+      - name: Confirm Sandbox deployment safety
+        run: |
+          node <<'NODE'
+          const { readFileSync } = require('node:fs');
+          const config = JSON.parse(readFileSync('wrangler.sandbox.jsonc', 'utf8'));
+          const entry = readFileSync('worker/src/sandbox-mobile-market-screener-resilient-entry.js', 'utf8');
+          const mobile = readFileSync('worker/src/tradingview-only-mobile-entry.js', 'utf8');
+          const dashboard = readFileSync('worker/src/tradingview-only-dashboard-mobile.js', 'utf8');
+          const expected = {
+            MOE_SANDBOX_PILOT_ENABLED: 'false',
+            MOE_LIVE_MODE_UNLOCKED: 'false',
+            MOE_LIVE_EXECUTION_IMPLEMENTED: 'false',
+            WEBULL_LIVE_TRADING: 'false',
+            WEBULL_LIVE_ORDER_SUBMISSION: 'false',
+            WEBULL_LIVE_AUTOMATION_ARMED: 'false',
+            WEBULL_LIVE_KILL_SWITCH: 'true',
+          };
+          if (config.main !== 'worker/src/sandbox-mobile-market-screener-resilient-entry.js') {
+            throw new Error(`Unexpected Sandbox entry: ${config.main}`);
+          }
+          if (!entry.includes("from './tradingview-only-safari-auth-entry.js'")) {
+            throw new Error('Sandbox entry does not delegate to the Safari-safe TradingView worker');
+          }
+          for (const [key, value] of Object.entries(expected)) {
+            if (config.vars?.[key] !== value) throw new Error(`${key} must remain ${value}`);
+          }
+          for (const token of [
+            'moe-mobile-browser-runtime-v7',
+            'var __name = window.__name',
+            'moe-mobile-royal-theme-v7',
+            'touch-action:manipulation',
+          ]) if (!entry.includes(token)) throw new Error(`Safari compatibility layer missing ${token}`);
+          for (const token of [
+            "NATIVE_LOGIN_PATH = '/mobile/unlock'",
+            'SameSite=Lax',
+            '/api/tradingview/refresh',
+            '/api/tradingview/repair',
+            '/api/tradingview/position/close',
+          ]) if (!mobile.includes(token)) throw new Error(`Mobile entry missing ${token}`);
+          for (const token of [
+            'id="saveSettings"',
+            'id="receptionToggle"',
+            'id="killButton"',
+            'class="bottomnav"',
+            'Open Scanner · research only',
+          ]) if (!dashboard.includes(token)) throw new Error(`Dashboard control missing ${token}`);
+          console.log(JSON.stringify({
+            sandboxEntry: config.main,
+            safariControlsVerified: true,
+            royalThemeVerified: true,
+            tradingViewOnly: true,
+            liveLocked: true,
+          }, null, 2));
+          NODE
+
+      - name: Build Cloudflare Worker
+        run: npx wrangler deploy --dry-run --config wrangler.sandbox.jsonc
+
+      - name: Deploy Cloudflare Sandbox Worker
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: npx wrangler deploy --config wrangler.sandbox.jsonc
+
+      - name: Verify deployed TradingView mobile dashboard
+        env:
+          MOBILE_URL: https://moerand-alerts-sandbox.mosaprajb.workers.dev/mobile
+          STATUS_URL: https://moerand-alerts-sandbox.mosaprajb.workers.dev/api/tradingview/status
+          SCANNER_URL: https://moerand-alerts-sandbox.mosaprajb.workers.dev/scanner
+        run: |
+          node <<'NODE'
+          const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+          async function retry(label, operation) {
+            let lastError;
+            for (let attempt = 1; attempt <= 12; attempt += 1) {
+              try { return await operation(); }
+              catch (error) {
+                lastError = error;
+                console.log(`${label} attempt ${attempt}: ${error.message}`);
+                await wait(5000);
+              }
+            }
+            throw lastError;
+          }
+
+          const html = await retry('TradingView mobile dashboard', async () => {
+            const response = await fetch(`${process.env.MOBILE_URL}?ui-v7=${Date.now()}`, { cache: 'no-store' });
+            if (!response.ok) throw new Error(`HTTP ${response.status}`);
+            return response.text();
+          });
+          for (const token of [
+            'id="moe-mobile-browser-runtime-v7"',
+            'var __name = window.__name',
+            'id="moe-mobile-royal-theme-v7"',
+            'id="moe-safari-login-patch"',
+            'id="saveSettings"',
+            'id="receptionToggle"',
+            'id="killButton"',
+            'class="bottomnav"',
+            'Open Scanner · research only',
+          ]) if (!html.includes(token)) throw new Error(`Mobile dashboard missing ${token}`);
+
+          await retry('TradingView status route', async () => {
+            const response = await fetch(`${process.env.STATUS_URL}?t=${Date.now()}`, {
+              cache: 'no-store',
+              headers: { 'x-moe-mobile-client': '1', accept: 'application/json' },
+            });
+            if (![200, 401, 403].includes(response.status)) throw new Error(`HTTP ${response.status}`);
+            const type = String(response.headers.get('content-type') || '').toLowerCase();
+            if (!type.includes('application/json')) throw new Error(`Unexpected content type: ${type}`);
+            return true;
+          });
+
+          await retry('research scanner route', async () => {
+            const response = await fetch(`${process.env.SCANNER_URL}?t=${Date.now()}`, { cache: 'no-store' });
+            if (response.status === 404 || response.status >= 500) throw new Error(`HTTP ${response.status}`);
+            return true;
+          });
+
+          console.log(JSON.stringify({
+            deployed: true,
+            safariRuntime: true,
+            controlsPresent: true,
+            royalBlueVioletTheme: true,
+            settingsRouteReachable: true,
+            researchScannerRouteReachable: true,
+            liveTradingLocked: true,
+          }, null, 2));
+          NODE

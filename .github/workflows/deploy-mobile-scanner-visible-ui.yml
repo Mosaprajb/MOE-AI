@@ -1,27 +1,32 @@
-name: Deploy Mobile Scanner Visible UI
+name: Deploy TradingView Mobile Control
 
 on:
   push:
     branches:
       - feature/moe-core-domain-v2
     paths:
-      - 'worker/src/mobile-scanner-visible-ui.js'
-      - 'worker/src/sandbox-mobile-account-balances-entry.js'
-      - 'worker/test/mobile-scanner-monitor-contract.test.mjs'
+      - 'worker/src/tradingview-only-*.js'
+      - 'worker/src/sandbox-mobile-market-screener-resilient-entry*.js'
+      - 'worker/test/tradingview-only*.test.mjs'
+      - 'worker/test/sandbox-runtime-pilot-observability.test.mjs'
+      - 'wrangler.sandbox.jsonc'
+      - 'package.json'
+      - 'package-lock.json'
       - '.github/workflows/deploy-mobile-scanner-visible-ui.yml'
+  workflow_dispatch:
 
 permissions:
   contents: read
 
 concurrency:
-  group: deploy-mobile-scanner-visible-ui
-  cancel-in-progress: false
+  group: deploy-tradingview-mobile-control
+  cancel-in-progress: true
 
 jobs:
   test-deploy-verify:
-    name: Test, deploy, and verify visible mobile scanner UI
+    name: Test, deploy, and verify TradingView mobile control
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 35
     steps:
       - name: Checkout exact commit
         uses: actions/checkout@v4
@@ -35,25 +40,28 @@ jobs:
       - name: Install locked dependencies
         run: npm ci
 
-      - name: Validate visible scanner source
-        run: node --check worker/src/mobile-scanner-visible-ui.js
-
-      - name: Test mobile scanner UI contract
-        run: node --test --test-concurrency=1 worker/test/mobile-scanner-monitor-contract.test.mjs
-
-      - name: Test Sandbox entry and Live safety chain
+      - name: Validate TradingView source syntax
         run: |
-          node --test --test-concurrency=1 worker/test/sandbox-simulation-mode.test.mjs
-          node --test --test-concurrency=1 worker/test/sandbox-runtime-pilot-observability.test.mjs
+          for file in worker/src/tradingview-only-*.js worker/src/sandbox-mobile-market-screener-resilient-entry*.js; do
+            node --check "$file"
+          done
+
+      - name: Test TradingView execution and mobile contracts
+        run: node --test --test-concurrency=1 worker/test/tradingview-only*.test.mjs
 
       - name: Run complete Worker suite
         run: npm run test:worker
 
-      - name: Confirm Sandbox deployment safety
+      - name: Confirm TradingView-only Sandbox safety
         run: |
           node <<'NODE'
           const { readFileSync } = require('node:fs');
           const config = JSON.parse(readFileSync('wrangler.sandbox.jsonc', 'utf8'));
+          const entry = readFileSync('worker/src/sandbox-mobile-market-screener-resilient-entry.js', 'utf8');
+          const deployedEntry = readFileSync('worker/src/sandbox-mobile-market-screener-resilient-entry-v2.js', 'utf8');
+          const broker = readFileSync('worker/src/tradingview-only-broker.js', 'utf8');
+          const pnl = readFileSync('worker/src/tradingview-only-pnl-control-patch.js', 'utf8');
+
           const expected = {
             MOE_SANDBOX_PILOT_ENABLED: 'false',
             MOE_LIVE_MODE_UNLOCKED: 'false',
@@ -62,32 +70,78 @@ jobs:
             WEBULL_LIVE_ORDER_SUBMISSION: 'false',
             WEBULL_LIVE_AUTOMATION_ARMED: 'false',
             WEBULL_LIVE_KILL_SWITCH: 'true',
+            MOE_TRADINGVIEW_ONLY: 'true',
+            MOE_TRADINGVIEW_LIVE_ENABLED: 'false',
+            AUTO_SCANNER_ENABLED: 'false',
+            SMART_SCANNER_SCHEDULER_ENABLED: 'false',
           };
-          if (config.main !== 'worker/src/sandbox-mobile-account-balances-entry.js') {
-            throw new Error(`Unexpected Sandbox entry: ${config.main}`);
+
+          if (config.main !== 'worker/src/sandbox-mobile-market-screener-resilient-entry.js') {
+            throw new Error(`Unexpected base Sandbox entry: ${config.main}`);
           }
           for (const [key, value] of Object.entries(expected)) {
             if (config.vars?.[key] !== value) throw new Error(`${key} must remain ${value}`);
           }
-          console.log(JSON.stringify({ sandboxEntry: config.main, ...expected }, null, 2));
+          for (const token of [
+            'tradingview-only-safari-auth-entry.js',
+            'tradingview-only-pnl-control-patch.js',
+            'tradingViewPnlControlPatch',
+          ]) {
+            if (!entry.includes(token)) throw new Error(`Base deployment entry missing ${token}`);
+          }
+          for (const token of [
+            'sandbox-mobile-market-screener-resilient-entry.js',
+            '/mobile/pnl-control-v2.js',
+            'application/javascript; charset=utf-8',
+            'INLINE_PNL_SCRIPT_PATTERN',
+            'externalizePnlClient',
+          ]) {
+            if (!deployedEntry.includes(token)) throw new Error(`External P&L entry missing ${token}`);
+          }
+          for (const token of ['dayPnl', 'realizedPnl', 'unrealizedPnl', 'pnlSource']) {
+            if (!broker.includes(token)) throw new Error(`Broker summary missing ${token}`);
+          }
+          for (const token of ['moe-pnl-control-style-v1', 'moe-pnl-control-script-v1', 'P&L', 'Run checks']) {
+            if (!pnl.includes(token)) throw new Error(`P&L control patch missing ${token}`);
+          }
+          console.log(JSON.stringify({
+            sandboxBaseEntry: config.main,
+            deployedEntry: 'worker/src/sandbox-mobile-market-screener-resilient-entry-v2.js',
+            tradingViewOnly: true,
+            scannerExecutionEnabled: false,
+            liveTradingLocked: true,
+            brokerPnlEnabled: true,
+            pnlControlsEnabled: true,
+            pnlClientDelivery: 'EXTERNAL_JAVASCRIPT_ASSET',
+          }, null, 2));
+          NODE
+
+      - name: Prepare exact deployment config
+        run: |
+          node <<'NODE'
+          const { readFileSync, writeFileSync } = require('node:fs');
+          const config = JSON.parse(readFileSync('wrangler.sandbox.jsonc', 'utf8'));
+          config.main = 'worker/src/sandbox-mobile-market-screener-resilient-entry-v2.js';
+          writeFileSync('wrangler.sandbox.deploy.jsonc', `${JSON.stringify(config, null, 2)}\n`);
+          console.log(`Prepared ${config.main}`);
           NODE
 
       - name: Build Cloudflare Worker
-        run: npx wrangler deploy --dry-run --config wrangler.sandbox.jsonc
+        run: npx wrangler deploy --dry-run --config wrangler.sandbox.deploy.jsonc
 
       - name: Deploy Cloudflare Sandbox Worker
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-        run: npx wrangler deploy --config wrangler.sandbox.jsonc
+        run: npx wrangler deploy --config wrangler.sandbox.deploy.jsonc
 
-      - name: Verify deployed visible scanner UI
+      - name: Verify deployed TradingView mobile control
         env:
-          MOBILE_URL: https://moerand-alerts-sandbox.mosaprajb.workers.dev/m
-          MONITOR_URL: https://moerand-alerts-sandbox.mosaprajb.workers.dev/api/scanner/monitor?symbol=SPY
+          WORKER_ORIGIN: https://moerand-alerts-sandbox.mosaprajb.workers.dev
         run: |
           node <<'NODE'
-          const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+          const origin = process.env.WORKER_ORIGIN;
+          const wait = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
 
           async function retry(label, operation) {
             let lastError;
@@ -96,66 +150,92 @@ jobs:
                 return await operation();
               } catch (error) {
                 lastError = error;
-                console.log(`${label} attempt ${attempt} failed: ${error.message}`);
+                console.log(`${label} attempt ${attempt}: ${error.message}`);
                 await wait(5000);
               }
             }
-            throw lastError || new Error(`${label} unavailable`);
+            throw lastError;
           }
 
-          const html = await retry('mobile dashboard', async () => {
-            const response = await fetch(`${process.env.MOBILE_URL}?visible-scanner=${Date.now()}`, { cache: 'no-store' });
-            if (!response.ok) throw new Error(`HTTP ${response.status}`);
-            return response.text();
+          await retry('protected mobile route', async () => {
+            const response = await fetch(`${origin}/m?t=${Date.now()}`, {
+              cache: 'no-store',
+              redirect: 'manual',
+            });
+            if (![301, 302, 303, 307, 308].includes(response.status)) {
+              throw new Error(`Expected authentication redirect, received HTTP ${response.status}`);
+            }
+            const location = response.headers.get('location') || '';
+            if (!location.includes('/mobile/login-v2')) {
+              throw new Error(`Unexpected authentication destination: ${location}`);
+            }
           });
 
-          for (const token of [
-            'id="moe-mobile-scanner-visible-ui"',
-            'data-moe-monitor-location',
-            "monitorMarkup('main')",
-            "monitorMarkup('scanner')",
-            'Selected symbol live monitor',
-            'data-moe-monitor-refresh',
-            'data-moe-monitor-field="price"',
-            'data-moe-monitor-field="entry"',
-            'data-moe-monitor-field="exit"',
-            'data-moe-monitor-field="stop"',
-            'moeActivityRefreshVisible',
-            'moeActivityClearVisible',
-            'Clear old',
-          ]) {
-            if (!html.includes(token)) throw new Error(`Mobile dashboard missing ${token}`);
-          }
+          await retry('standalone login page', async () => {
+            const response = await fetch(`${origin}/mobile/login-v2?t=${Date.now()}`, { cache: 'no-store' });
+            const html = await response.text();
+            if (!response.ok) throw new Error(`HTTP ${response.status}`);
+            for (const token of ['MOE-AI', '/mobile/unlock', 'الرمز السري']) {
+              if (!html.includes(token)) throw new Error(`Login page missing ${token}`);
+            }
+            if (!String(response.headers.get('cache-control') || '').includes('no-store')) {
+              throw new Error('Login page must remain non-cacheable');
+            }
+          });
 
-          const monitor = await retry('scanner monitor API', async () => {
-            const response = await fetch(`${process.env.MONITOR_URL}&t=${Date.now()}`, {
+          await retry('mobile JavaScript assets', async () => {
+            const bootResponse = await fetch(`${origin}/mobile/boot-v4.js?t=${Date.now()}`, { cache: 'no-store' });
+            const clientResponse = await fetch(`${origin}/mobile/client-v4.js?t=${Date.now()}`, { cache: 'no-store' });
+            const pnlResponse = await fetch(`${origin}/mobile/pnl-control-v2.js?t=${Date.now()}`, { cache: 'no-store' });
+            const [boot, client, pnl] = await Promise.all([
+              bootResponse.text(),
+              clientResponse.text(),
+              pnlResponse.text(),
+            ]);
+            if (!bootResponse.ok || !clientResponse.ok || !pnlResponse.ok) {
+              throw new Error(`Asset HTTP status: boot=${bootResponse.status}, client=${clientResponse.status}, pnl=${pnlResponse.status}`);
+            }
+            if (!boot.includes('loadStatus')) throw new Error('Mobile boot asset is incomplete');
+            if (!client.includes('__MOE_MAIN_CLIENT_READY__')) throw new Error('Mobile client asset is incomplete');
+            if (!pnl.includes('__MOE_PNL_CONTROL_V1__') || !pnl.includes('function render')) {
+              throw new Error('External P&L client asset is incomplete');
+            }
+            if (!String(pnlResponse.headers.get('content-type') || '').includes('application/javascript')) {
+              throw new Error('External P&L client has the wrong content type');
+            }
+            if (/<script/i.test(pnl)) throw new Error('External P&L asset must not contain HTML script tags');
+          });
+
+          await retry('webhook authentication barrier', async () => {
+            const response = await fetch(`${origin}/api/tradingview/signal?t=${Date.now()}`, {
+              method: 'POST',
               cache: 'no-store',
-              headers: { 'x-moe-mobile-client': '1', accept: 'application/json' },
+              headers: { 'content-type': 'application/json' },
+              body: JSON.stringify({ ticker: 'AAPL', signal: 'BUY', price: 1 }),
             });
             const payload = await response.json().catch(() => ({}));
-            if (!response.ok) throw new Error(`HTTP ${response.status}: ${payload.error || 'unknown error'}`);
-            return payload;
+            if (response.status !== 401 || payload.ok !== false) {
+              throw new Error(`Unauthorized webhook was not rejected: HTTP ${response.status}`);
+            }
           });
 
-          if (monitor.ok !== true || monitor.symbol !== 'SPY') throw new Error('Scanner monitor response is invalid');
-          if (!monitor.quote || !Object.hasOwn(monitor.quote, 'price')) throw new Error('Live quote field is missing');
-          if (!monitor.readiness || !Number.isFinite(Number(monitor.readiness.percent))) throw new Error('Readiness percent is missing');
-          if (!monitor.safety?.liveTradingLocked || monitor.safety?.liveFundsUsed !== false) {
-            throw new Error('Live safety lock changed unexpectedly');
-          }
+          await retry('legacy execution barrier', async () => {
+            const response = await fetch(`${origin}/api/tradingview/webull-preview?t=${Date.now()}`, {
+              cache: 'no-store',
+              redirect: 'manual',
+            });
+            const payload = await response.json().catch(() => ({}));
+            if (response.status !== 410 || payload.blocked !== true) {
+              throw new Error(`Legacy execution path is not blocked: HTTP ${response.status}`);
+            }
+          });
 
           console.log(JSON.stringify({
             deployed: true,
-            visibleOnMainSymbolsCard: true,
-            visibleInScannerHistory: true,
-            activityRefresh: true,
-            activityClear: true,
-            symbol: monitor.symbol,
-            livePrice: monitor.quote.price,
-            entryPrice: monitor.plan?.entryPrice ?? null,
-            exitPrice: monitor.plan?.exitPrice ?? null,
-            stopLossPrice: monitor.plan?.stopLossPrice ?? null,
-            readinessPercent: monitor.readiness.percent,
-            liveTradingLocked: true,
+            authenticationProtected: true,
+            mobileAssetsHealthy: true,
+            pnlExternalAssetHealthy: true,
+            webhookSecretRequired: true,
+            legacyExecutionBlocked: true,
           }, null, 2));
           NODE
