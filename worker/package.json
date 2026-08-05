@@ -2,12 +2,13 @@
   "name": "@workspace/moe-worker",
   "version": "1.0.0",
   "private": true,
+  "type": "module",
   "scripts": {
     "dev": "wrangler dev src/index.ts --local",
     "deploy": "wrangler deploy",
     "deploy:sandbox": "wrangler deploy --env sandbox",
     "type-check": "tsc --noEmit",
-    "test:mobile": "node --experimental-strip-types --test test/mobile-*.test.mjs",
+    "test:mobile": "pnpm --dir ../scripts exec tsx --test ../worker/test/mobile-*.test.mjs",
     "validate:mobile": "pnpm run type-check && pnpm run test:mobile && wrangler deploy --dry-run",
     "db:migrate": "wrangler d1 execute moe-db --file=src/db/schema.sql"
   },
