@@ -25,7 +25,7 @@ concurrency:
 jobs:
   build-sign-upload:
     name: Build, sign, and upload MOEAI
-    runs-on: macos-15
+    runs-on: macos-26
     timeout-minutes: 45
 
     env:
