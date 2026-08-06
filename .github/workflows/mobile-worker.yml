@@ -116,3 +116,5 @@ jobs:
         if: always()
         working-directory: worker
         run: rm -f wrangler.mobile-ci.toml .dev.vars
+
+# CI revalidation after GitHub Actions outage.
