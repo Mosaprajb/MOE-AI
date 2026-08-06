@@ -122,8 +122,11 @@ function validateDurableObjectExport(item) {
   if (!/^[A-Za-z_$][\w$]*$/.test(item.name)) {
     throw new Error(`Cloudflare returned an invalid Durable Object class name: ${item.name}`);
   }
-  if (item.state !== "created" && item.state !== "expecting-transfer") {
-    throw new Error(`Unsupported live Durable Object state for ${item.name}: ${item.state}`);
+  if (item.state !== "created") {
+    throw new Error(
+      `Refusing to deploy ${workerName}: Durable Object ${item.name} is in lifecycle state ${item.state}. ` +
+      "Transfer lifecycle entries require an explicit reviewed configuration.",
+    );
   }
   if (item.storage !== "sqlite" && item.storage !== "legacy-kv") {
     throw new Error(`Cloudflare did not return a valid storage backend for ${item.name}`);
@@ -156,10 +159,9 @@ export function buildSandboxExportsConfig(deployedScript, sourceEntry) {
     validateDurableObjectExport(item);
   }
 
-  const tables = liveDurableObjects.map((item) => {
-    const stateLine = item.state === "expecting-transfer" ? '\nstate = "expecting-transfer"' : "";
-    return `[env.sandbox.exports.${item.name}]\ntype = "durable-object"\nstorage = "${item.storage}"${stateLine}`;
-  }).join("\n\n");
+  const tables = liveDurableObjects.map((item) => (
+    `[env.sandbox.exports.${item.name}]\ntype = "durable-object"\nstorage = "${item.storage}"`
+  )).join("\n\n");
 
   return {
     inline: "",
