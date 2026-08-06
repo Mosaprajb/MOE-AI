@@ -1,0 +1,285 @@
+name: iOS TestFlight Upload
+
+on:
+  workflow_dispatch:
+    inputs:
+      upload_to_testflight:
+        description: Upload the signed IPA to App Store Connect and TestFlight
+        required: true
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ios-testflight-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build-sign-upload:
+    name: Build, sign, and upload MOEAI
+    runs-on: macos-15
+    timeout-minutes: 45
+
+    env:
+      BUNDLE_ID: com.moerand.moeai
+      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+      IOS_DISTRIBUTION_P12_BASE64: ${{ secrets.IOS_DISTRIBUTION_P12_BASE64 }}
+      IOS_DISTRIBUTION_P12_PASSWORD: ${{ secrets.IOS_DISTRIBUTION_P12_PASSWORD }}
+      IOS_PROVISIONING_PROFILE_BASE64: ${{ secrets.IOS_PROVISIONING_PROFILE_BASE64 }}
+      APP_STORE_CONNECT_API_KEY_P8_BASE64: ${{ secrets.APP_STORE_CONNECT_API_KEY_P8_BASE64 }}
+      APP_STORE_CONNECT_API_KEY_ID: ${{ secrets.APP_STORE_CONNECT_API_KEY_ID }}
+      APP_STORE_CONNECT_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Show Xcode version
+        run: xcodebuild -version
+
+      - name: Validate required secrets
+        shell: bash
+        run: |
+          set -euo pipefail
+          required=(
+            APPLE_TEAM_ID
+            IOS_DISTRIBUTION_P12_BASE64
+            IOS_DISTRIBUTION_P12_PASSWORD
+            IOS_PROVISIONING_PROFILE_BASE64
+            APP_STORE_CONNECT_API_KEY_P8_BASE64
+            APP_STORE_CONNECT_API_KEY_ID
+            APP_STORE_CONNECT_ISSUER_ID
+          )
+          missing=()
+          for name in "${required[@]}"; do
+            if [[ -z "${!name:-}" ]]; then
+              missing+=("$name")
+            fi
+          done
+          if (( ${#missing[@]} > 0 )); then
+            printf 'Missing repository secrets: %s\n' "${missing[*]}" >&2
+            exit 1
+          fi
+
+      - name: Validate project files
+        run: ios/MOEAI/scripts/validate-project.sh
+
+      - name: Install signing certificate and provisioning profile
+        id: signing
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          P12_PATH="$RUNNER_TEMP/moeai-distribution.p12"
+          PROFILE_SOURCE="$RUNNER_TEMP/moeai-app-store.mobileprovision"
+          PROFILE_PLIST="$RUNNER_TEMP/moeai-profile.plist"
+          KEYCHAIN_PATH="$RUNNER_TEMP/moeai-signing.keychain-db"
+          KEYCHAIN_PASSWORD="$(openssl rand -hex 24)"
+
+          echo "::add-mask::$KEYCHAIN_PASSWORD"
+          printf '%s' "$IOS_DISTRIBUTION_P12_BASE64" | base64 -D > "$P12_PATH"
+          printf '%s' "$IOS_PROVISIONING_PROFILE_BASE64" | base64 -D > "$PROFILE_SOURCE"
+
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security import "$P12_PATH" \
+            -P "$IOS_DISTRIBUTION_P12_PASSWORD" \
+            -A \
+            -t cert \
+            -f pkcs12 \
+            -k "$KEYCHAIN_PATH"
+          security set-key-partition-list \
+            -S apple-tool:,apple: \
+            -s \
+            -k "$KEYCHAIN_PASSWORD" \
+            "$KEYCHAIN_PATH"
+          security list-keychains -d user -s \
+            "$KEYCHAIN_PATH" \
+            "$HOME/Library/Keychains/login.keychain-db"
+
+          security cms -D -i "$PROFILE_SOURCE" > "$PROFILE_PLIST"
+          PROFILE_UUID="$(/usr/libexec/PlistBuddy -c 'Print :UUID' "$PROFILE_PLIST")"
+          PROFILE_NAME="$(/usr/libexec/PlistBuddy -c 'Print :Name' "$PROFILE_PLIST")"
+          PROFILE_TEAM_ID="$(/usr/libexec/PlistBuddy -c 'Print :TeamIdentifier:0' "$PROFILE_PLIST")"
+          PROFILE_APP_IDENTIFIER="$(/usr/libexec/PlistBuddy -c 'Print :Entitlements:application-identifier' "$PROFILE_PLIST")"
+
+          if [[ "$PROFILE_TEAM_ID" != "$APPLE_TEAM_ID" ]]; then
+            echo "Provisioning profile Team ID does not match APPLE_TEAM_ID." >&2
+            exit 1
+          fi
+          if [[ "$PROFILE_APP_IDENTIFIER" != "$APPLE_TEAM_ID.$BUNDLE_ID" ]]; then
+            echo "Provisioning profile does not match $BUNDLE_ID." >&2
+            exit 1
+          fi
+
+          PROFILE_DIRECTORY="$HOME/Library/MobileDevice/Provisioning Profiles"
+          mkdir -p "$PROFILE_DIRECTORY"
+          PROFILE_INSTALLED="$PROFILE_DIRECTORY/$PROFILE_UUID.mobileprovision"
+          cp "$PROFILE_SOURCE" "$PROFILE_INSTALLED"
+
+          echo "profile_uuid=$PROFILE_UUID" >> "$GITHUB_OUTPUT"
+          echo "profile_name=$PROFILE_NAME" >> "$GITHUB_OUTPUT"
+          echo "KEYCHAIN_PATH=$KEYCHAIN_PATH" >> "$GITHUB_ENV"
+          echo "PROFILE_INSTALLED=$PROFILE_INSTALLED" >> "$GITHUB_ENV"
+
+          security find-identity -v -p codesigning "$KEYCHAIN_PATH"
+          echo "Installed provisioning profile: $PROFILE_NAME"
+
+      - name: Archive signed app
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          ARCHIVE_PATH="$RUNNER_TEMP/MOEAI.xcarchive"
+          BUILD_NUMBER="$GITHUB_RUN_NUMBER.$GITHUB_RUN_ATTEMPT"
+          echo "ARCHIVE_PATH=$ARCHIVE_PATH" >> "$GITHUB_ENV"
+          echo "BUILD_NUMBER=$BUILD_NUMBER" >> "$GITHUB_ENV"
+
+          xcodebuild \
+            -project ios/MOEAI/MOEAI.xcodeproj \
+            -scheme MOEAI \
+            -configuration Release \
+            -destination 'generic/platform=iOS' \
+            -archivePath "$ARCHIVE_PATH" \
+            DEVELOPMENT_TEAM="$APPLE_TEAM_ID" \
+            CODE_SIGN_STYLE=Manual \
+            CODE_SIGN_IDENTITY='Apple Distribution' \
+            PROVISIONING_PROFILE_SPECIFIER='${{ steps.signing.outputs.profile_name }}' \
+            PRODUCT_BUNDLE_IDENTIFIER="$BUNDLE_ID" \
+            MARKETING_VERSION=1.0 \
+            CURRENT_PROJECT_VERSION="$BUILD_NUMBER" \
+            clean archive \
+            | tee "$RUNNER_TEMP/moeai-archive.log"
+
+      - name: Export signed IPA
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          EXPORT_PATH="$RUNNER_TEMP/MOEAI-Export"
+          EXPORT_OPTIONS="$RUNNER_TEMP/ExportOptions.plist"
+          mkdir -p "$EXPORT_PATH"
+
+          cat > "$EXPORT_OPTIONS" <<PLIST
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>method</key>
+            <string>app-store-connect</string>
+            <key>teamID</key>
+            <string>${APPLE_TEAM_ID}</string>
+            <key>signingStyle</key>
+            <string>manual</string>
+            <key>signingCertificate</key>
+            <string>Apple Distribution</string>
+            <key>provisioningProfiles</key>
+            <dict>
+              <key>${BUNDLE_ID}</key>
+              <string>${{ steps.signing.outputs.profile_uuid }}</string>
+            </dict>
+            <key>manageAppVersionAndBuildNumber</key>
+            <false/>
+            <key>uploadSymbols</key>
+            <true/>
+          </dict>
+          </plist>
+          PLIST
+
+          xcodebuild \
+            -exportArchive \
+            -archivePath "$ARCHIVE_PATH" \
+            -exportPath "$EXPORT_PATH" \
+            -exportOptionsPlist "$EXPORT_OPTIONS" \
+            | tee "$RUNNER_TEMP/moeai-export.log"
+
+          IPA_PATH="$(find "$EXPORT_PATH" -maxdepth 1 -name '*.ipa' -print -quit)"
+          if [[ -z "$IPA_PATH" ]]; then
+            echo 'No IPA was produced.' >&2
+            exit 1
+          fi
+          echo "IPA_PATH=$IPA_PATH" >> "$GITHUB_ENV"
+          ls -lh "$IPA_PATH"
+
+      - name: Install App Store Connect API key
+        shell: bash
+        run: |
+          set -euo pipefail
+          API_KEY_DIRECTORY="$HOME/.appstoreconnect/private_keys"
+          API_KEY_PATH="$API_KEY_DIRECTORY/AuthKey_${APP_STORE_CONNECT_API_KEY_ID}.p8"
+          mkdir -p "$API_KEY_DIRECTORY"
+          printf '%s' "$APP_STORE_CONNECT_API_KEY_P8_BASE64" | base64 -D > "$API_KEY_PATH"
+          chmod 600 "$API_KEY_PATH"
+          echo "API_KEY_PATH=$API_KEY_PATH" >> "$GITHUB_ENV"
+
+      - name: Validate IPA with App Store Connect
+        shell: bash
+        run: |
+          set -euo pipefail
+          xcrun altool \
+            --validate-app \
+            -f "$IPA_PATH" \
+            -t ios \
+            --apiKey "$APP_STORE_CONNECT_API_KEY_ID" \
+            --apiIssuer "$APP_STORE_CONNECT_ISSUER_ID" \
+            --output-format json \
+            | tee "$RUNNER_TEMP/moeai-validation.log"
+
+      - name: Upload IPA to TestFlight
+        if: ${{ inputs.upload_to_testflight }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          xcrun altool \
+            --upload-app \
+            -f "$IPA_PATH" \
+            -t ios \
+            --apiKey "$APP_STORE_CONNECT_API_KEY_ID" \
+            --apiIssuer "$APP_STORE_CONNECT_ISSUER_ID" \
+            --output-format json \
+            | tee "$RUNNER_TEMP/moeai-upload.log"
+
+      - name: Upload IPA artifact
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: MOEAI-${{ env.BUILD_NUMBER }}
+          path: ${{ env.IPA_PATH }}
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload Xcode logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: moeai-testflight-logs-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/moeai-archive.log
+            ${{ runner.temp }}/moeai-export.log
+            ${{ runner.temp }}/moeai-validation.log
+            ${{ runner.temp }}/moeai-upload.log
+          if-no-files-found: ignore
+          retention-days: 7
+
+      - name: Remove temporary signing material
+        if: always()
+        shell: bash
+        run: |
+          set +e
+          if [[ -n "${KEYCHAIN_PATH:-}" ]]; then
+            security delete-keychain "$KEYCHAIN_PATH"
+          fi
+          if [[ -n "${PROFILE_INSTALLED:-}" ]]; then
+            rm -f "$PROFILE_INSTALLED"
+          fi
+          if [[ -n "${API_KEY_PATH:-}" ]]; then
+            rm -f "$API_KEY_PATH"
+          fi
+          rm -f \
+            "$RUNNER_TEMP/moeai-distribution.p12" \
+            "$RUNNER_TEMP/moeai-app-store.mobileprovision" \
+            "$RUNNER_TEMP/moeai-profile.plist" \
+            "$RUNNER_TEMP/ExportOptions.plist"
