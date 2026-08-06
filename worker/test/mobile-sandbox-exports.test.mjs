@@ -76,3 +76,13 @@ test("deployment stops before omitting a live remote Durable Object class", () =
     /Refusing to deploy.*AlertCoordinator.*destroy data/,
   );
 });
+
+test("transfer lifecycle entries stop before deployment", () => {
+  assert.throws(
+    () => buildSandboxExportsConfig(
+      { exports: { IncomingCoordinator: { type: "durable-object", state: "expecting-transfer", storage: "sqlite" } } },
+      "export class IncomingCoordinator {}",
+    ),
+    /Transfer lifecycle entries require an explicit reviewed configuration/,
+  );
+});
