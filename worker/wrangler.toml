@@ -55,3 +55,35 @@ MOE_MOBILE_LIVE_CONTROL_ENABLED = "false"
 APNS_ENABLED          = "false"
 APNS_BUNDLE_ID        = "com.moerand.moeai"
 ALLOWED_ORIGINS       = "https://moerand-alerts.mosaprajb.workers.dev,https://moe-ai.replit.app,https://*.replit.dev,https://*.replit.app,http://127.0.0.1"
+
+# Named Sandbox environment. Bindings and vars are intentionally declared again
+# because Wrangler does not inherit them into named environments.
+# Wrangler 4.45+ provisions isolated KV and D1 resources for ID-less bindings.
+[env.sandbox]
+name = "moerand-alerts-sandbox"
+
+[[env.sandbox.kv_namespaces]]
+binding = "CONFIG"
+
+[[env.sandbox.d1_databases]]
+binding = "DB"
+migrations_dir = "migrations"
+
+[env.sandbox.vars]
+WORKER_VERSION      = "6.2.0-sandbox"
+RISK_PCT              = "5"
+SCANNER_TP_PCT        = "1.5"
+SCANNER_TRAIL_PCT     = "1.0"
+SCANNER_HARD_STOP_PCT = "1.5"
+SCANNER_PRICE_MIN     = "10"
+SCANNER_PRICE_MAX     = "100"
+MAX_OPEN_POSITIONS    = "4"
+MAX_DAILY_TRADES      = "8"
+MAX_DAILY_LOSS_PCT    = "2"
+MAX_OPEN_RISK_PCT     = "2"
+MAX_PORTFOLIO_HEAT    = "6"
+MOE_MOBILE_SESSION_TTL_SECONDS = "28800"
+MOE_MOBILE_LIVE_CONTROL_ENABLED = "false"
+APNS_ENABLED          = "false"
+APNS_BUNDLE_ID        = "com.moerand.moeai"
+ALLOWED_ORIGINS       = "https://moerand-alerts-sandbox.mosaprajb.workers.dev,https://moerand-alerts.mosaprajb.workers.dev,https://moe-ai.replit.app,https://*.replit.dev,https://*.replit.app,http://127.0.0.1"
