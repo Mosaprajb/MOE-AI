@@ -98,9 +98,36 @@ export function collectSourceExportNames(source) {
   return names;
 }
 
+function isExportsMap(value) {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+export function resolveDeployedExportsMap(deployedScript) {
+  const candidates = [
+    ["exports", deployedScript?.exports],
+    ["script_runtime.exports", deployedScript?.script_runtime?.exports],
+    ["scriptRuntime.exports", deployedScript?.scriptRuntime?.exports],
+    ["result.script_runtime.exports", deployedScript?.result?.script_runtime?.exports],
+  ];
+
+  for (const [source, value] of candidates) {
+    if (isExportsMap(value) && Object.keys(value).length > 0) {
+      return { source, exportsMap: value };
+    }
+  }
+
+  for (const [source, value] of candidates) {
+    if (isExportsMap(value)) {
+      return { source, exportsMap: value };
+    }
+  }
+
+  return { source: "unavailable", exportsMap: null };
+}
+
 export function getLiveDurableObjectExports(deployedScript) {
-  const exportsMap = deployedScript?.exports;
-  if (!exportsMap || typeof exportsMap !== "object" || Array.isArray(exportsMap)) {
+  const { exportsMap } = resolveDeployedExportsMap(deployedScript);
+  if (!exportsMap) {
     return [];
   }
 
@@ -134,12 +161,22 @@ function validateDurableObjectExport(item) {
 }
 
 export function buildSandboxExportsConfig(deployedScript, sourceEntry) {
+  const { source: exportsSource, exportsMap } = resolveDeployedExportsMap(deployedScript);
   const liveDurableObjects = getLiveDurableObjectExports(deployedScript);
+
+  if (deployedScript && !exportsMap) {
+    throw new Error(
+      `Refusing to deploy ${workerName}: Cloudflare returned deployed Worker metadata without an exports map. ` +
+      "The existing Durable Object lifecycle cannot be reconciled safely.",
+    );
+  }
+
   if (liveDurableObjects.length === 0) {
     return {
       inline: "exports = {}",
       tables: "",
       preservedNames: [],
+      exportsSource,
     };
   }
 
@@ -167,6 +204,7 @@ export function buildSandboxExportsConfig(deployedScript, sourceEntry) {
     inline: "",
     tables,
     preservedNames: liveDurableObjects.map((item) => item.name),
+    exportsSource,
   };
 }
 
@@ -216,6 +254,7 @@ export function resolveSandboxLifecycleConfig(config, deployedScript, sourceEntr
   return {
     config: resolved,
     preservedNames: exportsConfig.preservedNames,
+    exportsSource: exportsConfig.exportsSource,
   };
 }
 
@@ -333,6 +372,7 @@ async function main() {
   ]);
 
   const lifecycle = resolveSandboxLifecycleConfig(sourceConfig, deployedScript, sourceEntry);
+  console.log(`Using deployed exports metadata from: ${lifecycle.exportsSource}`);
   if (lifecycle.preservedNames.length > 0) {
     console.log(`Preserving live Sandbox Durable Object exports: ${lifecycle.preservedNames.join(", ")}`);
   } else {
