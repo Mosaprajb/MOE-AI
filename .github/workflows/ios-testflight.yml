@@ -1,6 +1,12 @@
 name: iOS TestFlight Upload
 
 on:
+  push:
+    branches:
+      - agent/ios-testflight-upload
+    paths:
+      - "ios/**"
+      - ".github/workflows/ios-testflight.yml"
   workflow_dispatch:
     inputs:
       upload_to_testflight:
@@ -229,7 +235,7 @@ jobs:
             | tee "$RUNNER_TEMP/moeai-validation.log"
 
       - name: Upload IPA to TestFlight
-        if: ${{ inputs.upload_to_testflight }}
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.upload_to_testflight }}
         shell: bash
         run: |
           set -euo pipefail
