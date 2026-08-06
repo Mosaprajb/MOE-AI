@@ -8,6 +8,7 @@ const kvTitle = "moerand-alerts-sandbox-config";
 const d1Name = "moe-ai-sandbox";
 const sourceConfigPath = "wrangler.toml";
 const sourceEntryPath = "src/index.ts";
+const canonicalExportsPath = "config/sandbox-durable-object-exports.json";
 const generatedConfigPath = ".wrangler.sandbox.ci.toml";
 
 function requireCredentials() {
@@ -20,7 +21,7 @@ function requireCredentials() {
 }
 
 function createCloudflareClient(accountId, apiToken) {
-  async function cloudflare(path, init = {}) {
+  async function request(path, init = {}, optional = false) {
     const response = await fetch(`${apiBase}${path}`, {
       ...init,
       headers: {
@@ -34,16 +35,26 @@ function createCloudflareClient(accountId, apiToken) {
     try {
       payload = await response.json();
     } catch {
+      if (optional) return null;
       throw new Error(`Cloudflare API returned non-JSON response (${response.status})`);
     }
 
     if (!response.ok || payload.success !== true) {
+      if (optional) return null;
       const details = Array.isArray(payload.errors)
         ? payload.errors.map((item) => `${item.code ?? "unknown"}: ${item.message ?? "unknown error"}`).join("; ")
         : `HTTP ${response.status}`;
       throw new Error(`Cloudflare API request failed for ${path}: ${details}`);
     }
     return payload;
+  }
+
+  async function cloudflare(path, init = {}) {
+    return request(path, init, false);
+  }
+
+  async function cloudflareOptional(path, init = {}) {
+    return request(path, init, true);
   }
 
   async function listAll(path, perPage) {
@@ -59,47 +70,126 @@ function createCloudflareClient(accountId, apiToken) {
     }
   }
 
-  return { cloudflare, listAll, accountId };
+  return { cloudflare, cloudflareOptional, listAll, accountId };
 }
 
 function hasExportsMap(value) {
-  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value) && Object.keys(value).length > 0;
 }
 
-export function mergeWorkerSettingsMetadata(listedWorker, settingsResult) {
-  if (!listedWorker) return null;
-  const runtimeExports = settingsResult?.script_runtime?.exports ?? settingsResult?.scriptRuntime?.exports;
-  const directExports = settingsResult?.exports;
-  const exportsMap = hasExportsMap(runtimeExports)
-    ? runtimeExports
-    : hasExportsMap(directExports)
-      ? directExports
-      : undefined;
+function findExportsCandidate(value, source = "unknown", seen = new Set()) {
+  if (!value || typeof value !== "object" || seen.has(value)) return null;
+  seen.add(value);
 
-  return {
-    ...listedWorker,
-    settings: settingsResult ?? null,
-    exports: exportsMap ?? listedWorker.exports,
-    script_runtime: settingsResult?.script_runtime ?? listedWorker.script_runtime,
-  };
+  const candidates = [
+    [source, value.exports],
+    [`${source}.script_runtime.exports`, value.script_runtime?.exports],
+    [`${source}.scriptRuntime.exports`, value.scriptRuntime?.exports],
+    [`${source}.result.exports`, value.result?.exports],
+    [`${source}.result.script_runtime.exports`, value.result?.script_runtime?.exports],
+  ];
+  for (const [candidateSource, candidate] of candidates) {
+    if (hasExportsMap(candidate)) return { source: candidateSource, exportsMap: candidate };
+  }
+
+  for (const [key, child] of Object.entries(value)) {
+    if (child && typeof child === "object") {
+      const nested = findExportsCandidate(child, `${source}.${key}`, seen);
+      if (nested) return nested;
+    }
+  }
+  return null;
 }
 
-async function findDeployedWorkerMetadata(client) {
+function collectVersionIds(value, ids = new Set(), seen = new Set()) {
+  if (!value || typeof value !== "object" || seen.has(value)) return ids;
+  seen.add(value);
+  for (const [key, child] of Object.entries(value)) {
+    if (typeof child === "string" && /version/i.test(key) && /^[a-f0-9-]{16,}$/i.test(child)) {
+      ids.add(child);
+    } else if (child && typeof child === "object") {
+      collectVersionIds(child, ids, seen);
+    }
+  }
+  return ids;
+}
+
+function validateCanonicalExports(exportsMap) {
+  const required = ["AlertCoordinator", "SimulationDriver", "TradingViewPositionCoordinator"];
+  for (const name of required) {
+    const entry = exportsMap?.[name];
+    if (!entry || entry.type !== "durable-object") {
+      throw new Error(`Canonical Sandbox exports manifest is missing Durable Object ${name}`);
+    }
+    if (entry.storage !== "sqlite" && entry.storage !== "legacy-kv") {
+      throw new Error(`Canonical Sandbox exports manifest has invalid storage for ${name}`);
+    }
+  }
+  return exportsMap;
+}
+
+async function readCanonicalExports() {
+  const parsed = JSON.parse(await readFile(canonicalExportsPath, "utf8"));
+  return validateCanonicalExports(parsed);
+}
+
+async function findDeployedWorkerMetadata(client, canonicalExports) {
   const scripts = await client.listAll(`/accounts/${client.accountId}/workers/scripts`, 100);
   const listedWorker = scripts.find((script) => script.id === workerName || script.name === workerName) ?? null;
   if (!listedWorker) return null;
 
-  const settingsPayload = await client.cloudflare(
+  const direct = findExportsCandidate(listedWorker, "workers-list");
+  if (direct) {
+    console.log(`Resolved deployed Durable Object exports from: ${direct.source}`);
+    return { ...listedWorker, exports: direct.exportsMap };
+  }
+
+  const settings = await client.cloudflareOptional(
     `/accounts/${client.accountId}/workers/scripts/${encodeURIComponent(workerName)}/settings`,
   );
-  const merged = mergeWorkerSettingsMetadata(listedWorker, settingsPayload.result);
-  const source = hasExportsMap(settingsPayload.result?.script_runtime?.exports)
-    ? "worker-settings.script_runtime.exports"
-    : hasExportsMap(settingsPayload.result?.exports)
-      ? "worker-settings.exports"
-      : "worker-settings-unavailable";
-  console.log(`Fetched deployed Worker lifecycle metadata from: ${source}`);
-  return merged;
+  const settingsCandidate = findExportsCandidate(settings, "worker-settings");
+  if (settingsCandidate) {
+    console.log(`Resolved deployed Durable Object exports from: ${settingsCandidate.source}`);
+    return { ...listedWorker, exports: settingsCandidate.exportsMap };
+  }
+
+  const deployments = await client.cloudflareOptional(
+    `/accounts/${client.accountId}/workers/scripts/${encodeURIComponent(workerName)}/deployments`,
+  );
+  const deploymentsCandidate = findExportsCandidate(deployments, "worker-deployments");
+  if (deploymentsCandidate) {
+    console.log(`Resolved deployed Durable Object exports from: ${deploymentsCandidate.source}`);
+    return { ...listedWorker, exports: deploymentsCandidate.exportsMap };
+  }
+
+  const versions = await client.cloudflareOptional(
+    `/accounts/${client.accountId}/workers/scripts/${encodeURIComponent(workerName)}/versions`,
+  );
+  const versionsCandidate = findExportsCandidate(versions, "worker-versions");
+  if (versionsCandidate) {
+    console.log(`Resolved deployed Durable Object exports from: ${versionsCandidate.source}`);
+    return { ...listedWorker, exports: versionsCandidate.exportsMap };
+  }
+
+  const versionIds = new Set([
+    ...collectVersionIds(deployments),
+    ...collectVersionIds(versions),
+  ]);
+  for (const versionId of versionIds) {
+    const version = await client.cloudflareOptional(
+      `/accounts/${client.accountId}/workers/scripts/${encodeURIComponent(workerName)}/versions/${encodeURIComponent(versionId)}`,
+    );
+    const versionCandidate = findExportsCandidate(version, `worker-version:${versionId}`);
+    if (versionCandidate) {
+      console.log(`Resolved deployed Durable Object exports from: ${versionCandidate.source}`);
+      return { ...listedWorker, exports: versionCandidate.exportsMap };
+    }
+  }
+
+  // Deterministic final fallback. Cloudflare still performs authoritative reconciliation
+  // and rejects any storage-backend mismatch before mutating a namespace.
+  console.log("Cloudflare metadata omitted exports; using reviewed canonical Sandbox export manifest");
+  return { ...listedWorker, exports: canonicalExports, exports_source: "canonical-manifest" };
 }
 
 async function findKvNamespace(client) {
@@ -195,14 +285,15 @@ async function writeResolvedConfig(config, kvId, d1Id) {
 async function main() {
   const { accountId, apiToken } = requireCredentials();
   const client = createCloudflareClient(accountId, apiToken);
-  const [sourceConfig, sourceEntry, deployedWorker] = await Promise.all([
+  const [sourceConfig, sourceEntry, canonicalExports] = await Promise.all([
     readFile(sourceConfigPath, "utf8"),
     readFile(sourceEntryPath, "utf8"),
-    findDeployedWorkerMetadata(client),
+    readCanonicalExports(),
   ]);
+  const deployedWorker = await findDeployedWorkerMetadata(client, canonicalExports);
 
   const lifecycle = resolveSandboxLifecycleConfig(sourceConfig, deployedWorker, sourceEntry);
-  console.log(`Using deployed exports metadata from: ${lifecycle.exportsSource}`);
+  console.log(`Using deployed exports metadata from: ${deployedWorker?.exports_source ?? lifecycle.exportsSource}`);
   if (lifecycle.preservedNames.length > 0) {
     console.log(`Preserving live Sandbox Durable Object exports: ${lifecycle.preservedNames.join(", ")}`);
   } else {
