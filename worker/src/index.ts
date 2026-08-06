@@ -12,6 +12,12 @@ import { getMobileReceptionState } from './lib/mobile-control';
 import { broadcastMobilePush, getAPNsConfigurationStatus } from './lib/apns';
 import { mobileApi, mobileTradingView } from './routes/mobile';
 
+export {
+  AlertCoordinator,
+  SimulationDriver,
+  TradingViewPositionCoordinator,
+} from './lib/legacy-durable-objects';
+
 const app = new Hono<{ Bindings: MobileEnv }>();
 
 app.use('*', corsMiddleware);
