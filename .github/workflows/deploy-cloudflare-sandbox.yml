@@ -84,6 +84,9 @@ jobs:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
 
+      - name: Verify deployed safety policy
+        run: node scripts/verify-deployment-safety.mjs "$DEPLOY_ENV"
+
       - name: Remove generated Wrangler config
         if: always()
         run: rm -f ".wrangler.${DEPLOY_ENV}.ci.toml"

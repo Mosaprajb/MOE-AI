@@ -37,7 +37,7 @@
         }
       ],
       "vars": {
-        "WORKER_VERSION": "6.2.0",
+        "WORKER_VERSION": "6.3.0-live-read-only",
         "RISK_PCT": "5",
         "SCANNER_TP_PCT": "1.5",
         "SCANNER_TRAIL_PCT": "1.0",
@@ -51,6 +51,16 @@
         "MAX_PORTFOLIO_HEAT": "6",
         "MOE_MOBILE_SESSION_TTL_SECONDS": "28800",
         "MOE_MOBILE_LIVE_CONTROL_ENABLED": "false",
+        "MOE_DEPLOYMENT_ENV": "production",
+        "MOE_EXECUTION_POLICY": "live-read-only",
+        "MOE_LIVE_READ_ONLY": "true",
+        "MOE_LIVE_EXECUTION_IMPLEMENTED": "false",
+        "MOE_LIVE_WEBHOOK_EXECUTION_ENABLED": "false",
+        "MOE_LIVE_SESSION_TTL_MINUTES": "15",
+        "WEBULL_LIVE_TRADING": "false",
+        "WEBULL_LIVE_ORDER_SUBMISSION": "false",
+        "WEBULL_LIVE_AUTOMATION_ARMED": "false",
+        "WEBULL_LIVE_KILL_SWITCH": "true",
         "APNS_ENABLED": "false",
         "APNS_BUNDLE_ID": "com.moerand.moeai",
         "ALLOWED_ORIGINS": "https://moerand-alerts.mosaprajb.workers.dev,https://moe-ai.replit.app,https://*.replit.dev,https://*.replit.app,http://127.0.0.1"
@@ -70,7 +80,7 @@
         }
       ],
       "vars": {
-        "WORKER_VERSION": "6.2.0-staging",
+        "WORKER_VERSION": "6.3.0-staging-live-blocked",
         "RISK_PCT": "5",
         "SCANNER_TP_PCT": "1.5",
         "SCANNER_TRAIL_PCT": "1.0",
@@ -84,6 +94,16 @@
         "MAX_PORTFOLIO_HEAT": "6",
         "MOE_MOBILE_SESSION_TTL_SECONDS": "28800",
         "MOE_MOBILE_LIVE_CONTROL_ENABLED": "false",
+        "MOE_DEPLOYMENT_ENV": "staging",
+        "MOE_EXECUTION_POLICY": "sandbox-only",
+        "MOE_LIVE_READ_ONLY": "true",
+        "MOE_LIVE_EXECUTION_IMPLEMENTED": "false",
+        "MOE_LIVE_WEBHOOK_EXECUTION_ENABLED": "false",
+        "MOE_LIVE_SESSION_TTL_MINUTES": "15",
+        "WEBULL_LIVE_TRADING": "false",
+        "WEBULL_LIVE_ORDER_SUBMISSION": "false",
+        "WEBULL_LIVE_AUTOMATION_ARMED": "false",
+        "WEBULL_LIVE_KILL_SWITCH": "true",
         "APNS_ENABLED": "false",
         "APNS_BUNDLE_ID": "com.moerand.moeai",
         "ALLOWED_ORIGINS": "https://moerand-alerts-staging.mosaprajb.workers.dev,https://moerand-alerts.mosaprajb.workers.dev,https://moe-ai.replit.app,https://*.replit.dev,https://*.replit.app,http://127.0.0.1"
@@ -103,7 +123,7 @@
         }
       ],
       "vars": {
-        "WORKER_VERSION": "6.2.0-sandbox",
+        "WORKER_VERSION": "6.3.0-sandbox-live-blocked",
         "RISK_PCT": "5",
         "SCANNER_TP_PCT": "1.5",
         "SCANNER_TRAIL_PCT": "1.0",
@@ -117,6 +137,16 @@
         "MAX_PORTFOLIO_HEAT": "6",
         "MOE_MOBILE_SESSION_TTL_SECONDS": "28800",
         "MOE_MOBILE_LIVE_CONTROL_ENABLED": "false",
+        "MOE_DEPLOYMENT_ENV": "sandbox",
+        "MOE_EXECUTION_POLICY": "sandbox-only",
+        "MOE_LIVE_READ_ONLY": "true",
+        "MOE_LIVE_EXECUTION_IMPLEMENTED": "false",
+        "MOE_LIVE_WEBHOOK_EXECUTION_ENABLED": "false",
+        "MOE_LIVE_SESSION_TTL_MINUTES": "15",
+        "WEBULL_LIVE_TRADING": "false",
+        "WEBULL_LIVE_ORDER_SUBMISSION": "false",
+        "WEBULL_LIVE_AUTOMATION_ARMED": "false",
+        "WEBULL_LIVE_KILL_SWITCH": "true",
         "APNS_ENABLED": "false",
         "APNS_BUNDLE_ID": "com.moerand.moeai",
         "ALLOWED_ORIGINS": "https://moerand-alerts-sandbox.mosaprajb.workers.dev,https://moerand-alerts.mosaprajb.workers.dev,https://moe-ai.replit.app,https://*.replit.dev,https://*.replit.app,http://127.0.0.1"
