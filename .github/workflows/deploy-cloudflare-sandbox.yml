@@ -54,7 +54,7 @@ jobs:
         run: pnpm run test:mobile
 
       - name: Resolve isolated Sandbox resources
-        run: node scripts/prepare-sandbox-config.mjs
+        run: node scripts/prepare-sandbox-config-from-settings.mjs
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
