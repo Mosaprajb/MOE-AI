@@ -4,29 +4,66 @@ on:
   push:
     branches: [develop, staging]
     paths:
-      - 'worker/**'
+      - "worker/**"
+      - ".github/workflows/deploy-cloudflare-sandbox.yml"
   workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-cloudflare-sandbox
+  cancel-in-progress: false
 
 jobs:
   deploy-sandbox:
-    name: Deploy Worker (Sandbox env)
+    name: Deploy Worker (isolated Sandbox env)
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     defaults:
       run:
         working-directory: worker
+
     steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up pnpm 10
+        uses: pnpm/action-setup@v4
         with:
-          version: 10
-      - uses: actions/setup-node@v4
+          version: 10.33.4
+          run_install: false
+
+      - name: Set up Node 22
+        uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
           cache: pnpm
           cache-dependency-path: worker/pnpm-lock.yaml
-      - run: pnpm install --frozen-lockfile
-      - name: Deploy Sandbox Worker
-        run: pnpm deploy:sandbox
+
+      - name: Install Worker dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Type-check Worker
+        run: pnpm run type-check
+
+      - name: Run mobile Worker tests
+        run: pnpm run test:mobile
+
+      - name: Provision isolated Sandbox bindings and deploy
+        run: pnpm dlx wrangler@4.45.0 deploy --env sandbox
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+
+      - name: Apply Sandbox D1 migrations
+        run: pnpm dlx wrangler@4.45.0 d1 migrations apply DB --remote --env sandbox
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+
+      - name: Redeploy after migrations
+        run: pnpm dlx wrangler@4.45.0 deploy --env sandbox
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
