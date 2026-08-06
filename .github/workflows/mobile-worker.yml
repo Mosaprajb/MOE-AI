@@ -1,6 +1,7 @@
 name: Mobile Worker Integration
 
 on:
+  workflow_dispatch:
   pull_request:
     paths:
       - "worker/src/lib/mobile-*.ts"
@@ -17,7 +18,7 @@ on:
       - ".github/workflows/mobile-worker.yml"
   push:
     branches:
-      - "agent/mobile-worker-integration"
+      - "agent/**"
     paths:
       - "worker/**"
       - ".github/workflows/mobile-worker.yml"
