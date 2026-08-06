@@ -1,0 +1,17 @@
+{
+  "AlertCoordinator": {
+    "type": "durable-object",
+    "storage": "sqlite",
+    "state": "created"
+  },
+  "SimulationDriver": {
+    "type": "durable-object",
+    "storage": "sqlite",
+    "state": "created"
+  },
+  "TradingViewPositionCoordinator": {
+    "type": "durable-object",
+    "storage": "sqlite",
+    "state": "created"
+  }
+}
