@@ -7,6 +7,7 @@ import {
   verifyLiveSession,
 } from '../lib/live-control';
 import type { LiveControlEnv } from '../lib/live-policy';
+import { setKillSwitch, setTradingMode } from '../lib/risk';
 
 const liveControl = new Hono<{ Bindings: LiveControlEnv }>();
 
@@ -70,11 +71,22 @@ liveControl.post('/unlock', async c => {
   });
 });
 
-liveControl.post('/lock', c => c.json({
-  ok: true,
-  mode: 'SANDBOX',
-  sessionActive: false,
-  clientMustDiscardSessionToken: true,
-}));
+liveControl.post('/lock', async c => {
+  await Promise.all([
+    setKillSwitch(c.env, true),
+    setTradingMode(c.env, 'SANDBOX'),
+  ]);
+  console.log(JSON.stringify({
+    event: 'LIVE_CONTROL_LOCKED',
+    build: LIVE_CONTROL_BUILD_ID,
+  }));
+  return c.json({
+    ok: true,
+    mode: 'SANDBOX',
+    killSwitch: true,
+    sessionActive: false,
+    clientMustDiscardSessionToken: true,
+  });
+});
 
 export { liveControl };

@@ -73,6 +73,7 @@ test('Committed Wrangler environments remain read-only and fail closed', () => {
 test('Execution paths and deploy workflows use the central safety policy', () => {
   const index = readFileSync(join(workerRoot, 'src/index.ts'), 'utf8');
   const trading = readFileSync(join(workerRoot, 'src/routes/trading.ts'), 'utf8');
+  const liveControl = readFileSync(join(workerRoot, 'src/routes/live-control.ts'), 'utf8');
   const sandboxWorkflow = readFileSync(join(workerRoot, '../.github/workflows/deploy-cloudflare-sandbox.yml'), 'utf8');
   const productionWorkflow = readFileSync(join(workerRoot, '../.github/workflows/deploy-cloudflare-worker.yml'), 'utf8');
   assert.match(index, /LIVE_WEBHOOK_EXECUTION_BLOCKED/u);
@@ -80,6 +81,9 @@ test('Execution paths and deploy workflows use the central safety policy', () =>
   assert.match(index, /authorizeLiveControl/u);
   assert.match(trading, /authorizeLiveExecution/u);
   assert.match(trading, /storedMode/u);
+  assert.match(liveControl, /setKillSwitch\(c\.env, true\)/u);
+  assert.match(liveControl, /setTradingMode\(c\.env, 'SANDBOX'\)/u);
+  assert.match(liveControl, /LIVE_CONTROL_LOCKED/u);
   assert.match(sandboxWorkflow, /verify-deployment-safety\.mjs/u);
   assert.match(productionWorkflow, /verify-deployment-safety\.mjs/u);
 });
