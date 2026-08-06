@@ -27,7 +27,12 @@ export interface StaticLivePolicy {
   executionImplemented: boolean;
   webhookExecutionEnabled: boolean;
   liveCredentialsConfigured: boolean;
+  liveBrokerCredentialsConfigured: boolean;
+  liveControlSecretsConfigured: boolean;
+  observationAllowed: boolean;
   missingSecrets: string[];
+  brokerMissingSecrets: string[];
+  controlMissingSecrets: string[];
   blockers: LivePolicyBlocker[];
   webhookBlockers: LivePolicyBlocker[];
   webhookSecretConfigured: boolean;
@@ -50,6 +55,15 @@ function addBlocker(
   }
 }
 
+function missingSecrets(
+  env: LiveControlEnv,
+  names: Array<keyof LiveControlEnv>,
+): string[] {
+  return names
+    .filter(name => !String(env[name] ?? '').trim())
+    .map(String);
+}
+
 export function getStaticLivePolicy(env: LiveControlEnv): StaticLivePolicy {
   const blockers: LivePolicyBlocker[] = [];
   const deploymentEnvironment = String(env.MOE_DEPLOYMENT_ENV ?? 'unknown').trim().toLowerCase();
@@ -58,6 +72,23 @@ export function getStaticLivePolicy(env: LiveControlEnv): StaticLivePolicy {
     || isEnabled(env.MOE_LIVE_READ_ONLY);
   const executionImplemented = isEnabled(env.MOE_LIVE_EXECUTION_IMPLEMENTED);
   const webhookExecutionEnabled = isEnabled(env.MOE_LIVE_WEBHOOK_EXECUTION_ENABLED);
+
+  const brokerMissingSecrets = missingSecrets(env, [
+    'WEBULL_LIVE_APP_KEY',
+    'WEBULL_LIVE_APP_SECRET',
+    'WEBULL_LIVE_ACCESS_TOKEN',
+    'WEBULL_LIVE_ACCOUNT_ID',
+  ]);
+  const controlMissingSecrets = missingSecrets(env, [
+    'MOE_LIVE_TRADING_PIN',
+    'MOE_LIVE_SESSION_SECRET',
+  ]);
+  const allMissingSecrets = [...brokerMissingSecrets, ...controlMissingSecrets];
+  const liveBrokerCredentialsConfigured = brokerMissingSecrets.length === 0;
+  const liveControlSecretsConfigured = controlMissingSecrets.length === 0;
+  const liveCredentialsConfigured = allMissingSecrets.length === 0;
+  const observationAllowed = deploymentEnvironment === 'production'
+    && liveBrokerCredentialsConfigured;
 
   if (deploymentEnvironment !== 'production') {
     addBlocker(
@@ -103,23 +134,11 @@ export function getStaticLivePolicy(env: LiveControlEnv): StaticLivePolicy {
       'The committed Live kill switch is active or not explicitly disabled.',
     );
   }
-
-  const requiredSecrets: Array<keyof LiveControlEnv> = [
-    'WEBULL_LIVE_APP_KEY',
-    'WEBULL_LIVE_APP_SECRET',
-    'WEBULL_LIVE_ACCESS_TOKEN',
-    'WEBULL_LIVE_ACCOUNT_ID',
-    'MOE_LIVE_TRADING_PIN',
-    'MOE_LIVE_SESSION_SECRET',
-  ];
-  const missingSecrets = requiredSecrets
-    .filter(name => !String(env[name] ?? '').trim())
-    .map(String);
-  if (missingSecrets.length > 0) {
+  if (allMissingSecrets.length > 0) {
     addBlocker(
       blockers,
       'LIVE_SECRETS_MISSING',
-      `Missing required Live secrets: ${missingSecrets.join(', ')}.`,
+      `Missing required Live secrets: ${allMissingSecrets.join(', ')}.`,
     );
   }
 
@@ -140,14 +159,20 @@ export function getStaticLivePolicy(env: LiveControlEnv): StaticLivePolicy {
       'MOE_WEBHOOK_SECRET is required for TradingView Live execution.',
     );
   }
+
   return {
     deploymentEnvironment,
     executionPolicy,
     readOnly,
     executionImplemented,
     webhookExecutionEnabled,
-    liveCredentialsConfigured: missingSecrets.length === 0,
-    missingSecrets,
+    liveCredentialsConfigured,
+    liveBrokerCredentialsConfigured,
+    liveControlSecretsConfigured,
+    observationAllowed,
+    missingSecrets: allMissingSecrets,
+    brokerMissingSecrets,
+    controlMissingSecrets,
     blockers,
     webhookBlockers,
     webhookSecretConfigured,

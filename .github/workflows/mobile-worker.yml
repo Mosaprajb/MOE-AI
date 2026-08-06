@@ -5,7 +5,11 @@ on:
     paths:
       - "worker/src/lib/mobile-*.ts"
       - "worker/src/lib/apns.ts"
+      - "worker/src/lib/live-control.ts"
+      - "worker/src/lib/live-policy.ts"
+      - "worker/src/lib/live-session.ts"
       - "worker/src/routes/mobile.ts"
+      - "worker/src/routes/live-control.ts"
       - "worker/src/index.ts"
       - "worker/migrations/0003_mobile_native_api.sql"
       - "worker/test/mobile-*.test.mjs"
@@ -14,12 +18,19 @@ on:
       - "worker/package.json"
       - "worker/pnpm-lock.yaml"
       - "worker/wrangler.jsonc"
+      - "artifacts/trading-bot/src/App.tsx"
+      - "artifacts/trading-bot/src/lib/liveControl.ts"
+      - "artifacts/trading-bot/package.json"
+      - "pnpm-lock.yaml"
+      - "pnpm-workspace.yaml"
       - ".github/workflows/mobile-worker.yml"
   push:
     branches:
-      - "agent/mobile-worker-integration"
+      - "agent/**"
     paths:
       - "worker/**"
+      - "artifacts/trading-bot/src/App.tsx"
+      - "artifacts/trading-bot/src/lib/liveControl.ts"
       - ".github/workflows/mobile-worker.yml"
 
 permissions:
@@ -36,7 +47,7 @@ jobs:
   validate:
     name: Validate native mobile Worker API
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 25
 
     steps:
       - name: Checkout
@@ -53,6 +64,12 @@ jobs:
         with:
           node-version: 22
 
+      - name: Repair and install dashboard workspace scope
+        run: pnpm --filter @workspace/trading-bot... install --no-frozen-lockfile
+
+      - name: Type-check Live dashboard controls
+        run: pnpm --filter @workspace/trading-bot typecheck
+
       - name: Install Worker dependencies
         working-directory: worker
         run: pnpm install --frozen-lockfile
@@ -61,7 +78,7 @@ jobs:
         working-directory: worker
         run: pnpm run type-check
 
-      - name: Run mobile session, APNs, route, and Wrangler source tests
+      - name: Run mobile session, Live control, APNs, route, and Wrangler tests
         working-directory: worker
         run: pnpm run test:mobile
 
