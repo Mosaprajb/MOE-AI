@@ -5,6 +5,8 @@ export interface Env {
   CONFIG?: KVNamespace;
   // D1 (optional until database is created)
   DB?: D1Database;
+  // Durable Object used only for active stepped trailing-stop positions.
+  TRAILING_STOP_COORDINATOR?: DurableObjectNamespace;
   // API base URLs (optional — falls back to defaults)
   WEBULL_LIVE_API_BASE_URL?:   string;
   WEBULL_SANDBOX_API_BASE_URL?:string;
@@ -93,7 +95,14 @@ export interface ScannerPosition {
 
 export type TradingMode = 'SANDBOX' | 'LIVE';
 export type OrderSide   = 'BUY' | 'SELL';
-export type OrderType   = 'MARKET' | 'LIMIT' | 'STOP' | 'STOP_LIMIT';
+export type OrderType   =
+  | 'MARKET'
+  | 'LIMIT'
+  | 'STOP'
+  | 'STOP_LIMIT'
+  | 'STOP_LOSS'
+  | 'STOP_LOSS_LIMIT'
+  | 'TRAILING_STOP_LOSS';
 export type SignalType  =
   | 'BUY NOW' | 'BUY AGAIN' | 'SELL NOW'
   | 'HOLD'    | 'WAIT'      | 'WARMING UP' | 'WATCH NOW';
@@ -204,7 +213,7 @@ export interface SafetyGates {
 }
 
 // TradingView webhook payload. Account selection, sizing limits, trading windows,
-// and TIF are server-owned settings; an alert cannot override them.
+// TIF, and exit protection are server-owned settings; an alert cannot override them.
 export interface TVWebhookPayload {
   secret?:    string;
   symbol:     string;
