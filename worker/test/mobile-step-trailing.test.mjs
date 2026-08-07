@@ -2,7 +2,10 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
-import { workerDirectory } from '../scripts/generate-wrangler-config.mjs';
+import {
+  parseJsonc,
+  workerDirectory,
+} from '../scripts/generate-wrangler-config.mjs';
 
 async function source(path) {
   return readFile(resolve(workerDirectory, path), 'utf8');
@@ -41,9 +44,7 @@ test('custom step trailing activates from entry lock and advances by configurabl
 });
 
 test('step trailing is a dedicated bound Durable Object and Live safety flags stay fail closed', async () => {
-  const config = JSON.parse(
-    (await source('wrangler.jsonc')).replace(/\/\/.*$/gm, ''),
-  );
+  const config = parseJsonc(await source('wrangler.jsonc'));
 
   assert.deepEqual(config.exports.StepTrailingCoordinator, {
     type: 'durable-object',
