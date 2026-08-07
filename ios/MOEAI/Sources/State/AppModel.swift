@@ -89,7 +89,7 @@ final class AppModel: ObservableObject {
       async let statusRequest = APIClient.shared.status()
       async let scannerRequest = APIClient.shared.screener()
 
-      let (newStatus, newScanner) = try await (statusRequest, newScanner: scannerRequest)
+      let (newStatus, newScanner) = try await (statusRequest, scannerRequest)
       status = newStatus
       scannerRows = newScanner.safeRows
       lastRefresh = Date()
