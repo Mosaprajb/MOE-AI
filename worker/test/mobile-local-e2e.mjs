@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 
 const baseURL = process.env.MOE_LOCAL_BASE_URL ?? 'http://127.0.0.1:8787';
 const pin = process.env.MOE_LOCAL_CONTROL_PIN ?? '246810';
+const webhookSecret = process.env.MOE_LOCAL_WEBHOOK_SECRET ?? 'mobile-ci-webhook-secret';
 
 async function waitForWorker(timeoutMs = 60_000) {
   const startedAt = Date.now();
@@ -73,7 +74,7 @@ const liveReception = await jsonRequest('/api/tradingview/reception', {
   }),
 });
 assert.equal(liveReception.response.status, 423);
-assert.match(liveReception.payload.error, /disabled/i);
+assert.match(liveReception.payload.error, /blocked by the server policy/i);
 
 const pushRegistration = await jsonRequest('/api/mobile/push/register', {
   method: 'POST',
@@ -105,7 +106,12 @@ assert.equal(disableReception.payload.runtime.receptionEnabled, false);
 
 const blockedWebhook = await jsonRequest('/api/tradingview/webhook', {
   method: 'POST',
-  body: JSON.stringify({ symbol: 'AAPL', action: 'buy' }),
+  body: JSON.stringify({
+    secret: webhookSecret,
+    symbol: 'AAPL',
+    action: 'buy',
+    price: 180,
+  }),
 });
 assert.equal(blockedWebhook.response.status, 423);
 assert.equal(blockedWebhook.payload.code, 'TRADINGVIEW_RECEPTION_DISABLED');
@@ -126,7 +132,7 @@ console.log(JSON.stringify({
     'Live mobile control failed closed',
     'APNs token registered locally',
     'APNs sending remained disabled',
-    'mobile reception disabled TradingView webhook before order logic',
+    'authenticated TradingView webhook was blocked while reception was disabled',
     'logout cleared the client cookie',
   ],
 }));

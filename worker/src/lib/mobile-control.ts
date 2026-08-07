@@ -1,7 +1,7 @@
 import type { TradingMode } from './types';
 import type { MobileEnv } from './mobile-env';
 
-const RECEPTION_KEY = 'mobile:tradingview-reception';
+const LEGACY_RECEPTION_KEY = 'mobile:tradingview-reception';
 
 export interface MobileReceptionState {
   enabled: boolean;
@@ -9,21 +9,59 @@ export interface MobileReceptionState {
   updatedAt: string;
 }
 
-export async function getMobileReceptionState(env: MobileEnv): Promise<MobileReceptionState> {
-  const fallback: MobileReceptionState = {
-    enabled: true,
-    accountType: 'DEMO',
+function accountTypeFrom(value: TradingMode | 'DEMO' | 'LIVE'): 'DEMO' | 'LIVE' {
+  return value === 'LIVE' ? 'LIVE' : 'DEMO';
+}
+
+function receptionKey(accountType: 'DEMO' | 'LIVE'): string {
+  return `mobile:tradingview-reception:${accountType}`;
+}
+
+function fallbackState(accountType: 'DEMO' | 'LIVE'): MobileReceptionState {
+  return {
+    // Reception must be explicitly enabled after account-specific sizing and
+    // trading-session controls are configured.
+    enabled: false,
+    accountType,
     updatedAt: new Date(0).toISOString(),
   };
+}
+
+export async function getMobileReceptionState(
+  env: MobileEnv,
+  modeOrAccount: TradingMode | 'DEMO' | 'LIVE' = 'DEMO',
+): Promise<MobileReceptionState> {
+  const accountType = accountTypeFrom(modeOrAccount);
+  const fallback = fallbackState(accountType);
   if (!env.CONFIG) return fallback;
   try {
-    const saved = await env.CONFIG.get(RECEPTION_KEY, 'json') as Partial<MobileReceptionState> | null;
-    if (!saved) return fallback;
-    return {
-      enabled: saved.enabled !== false,
-      accountType: saved.accountType === 'LIVE' ? 'LIVE' : 'DEMO',
-      updatedAt: typeof saved.updatedAt === 'string' ? saved.updatedAt : fallback.updatedAt,
-    };
+    const saved = await env.CONFIG.get(
+      receptionKey(accountType),
+      'json',
+    ) as Partial<MobileReceptionState> | null;
+    if (saved) {
+      return {
+        enabled: saved.enabled === true,
+        accountType,
+        updatedAt: typeof saved.updatedAt === 'string' ? saved.updatedAt : fallback.updatedAt,
+      };
+    }
+
+    // Preserve the legacy Paper state only. Live never inherits Paper state.
+    if (accountType === 'DEMO') {
+      const legacy = await env.CONFIG.get(
+        LEGACY_RECEPTION_KEY,
+        'json',
+      ) as Partial<MobileReceptionState> | null;
+      if (legacy?.accountType !== 'LIVE') {
+        return {
+          enabled: legacy?.enabled === true,
+          accountType: 'DEMO',
+          updatedAt: typeof legacy?.updatedAt === 'string' ? legacy.updatedAt : fallback.updatedAt,
+        };
+      }
+    }
+    return fallback;
   } catch {
     return fallback;
   }
@@ -40,8 +78,23 @@ export async function setMobileReceptionState(
     accountType,
     updatedAt: new Date().toISOString(),
   };
-  await env.CONFIG.put(RECEPTION_KEY, JSON.stringify(state));
+  await env.CONFIG.put(receptionKey(accountType), JSON.stringify(state));
   return state;
+}
+
+export async function disableAllMobileReception(env: MobileEnv): Promise<void> {
+  if (!env.CONFIG) return;
+  const timestamp = new Date().toISOString();
+  await Promise.all([
+    env.CONFIG.put(
+      receptionKey('DEMO'),
+      JSON.stringify({ enabled: false, accountType: 'DEMO', updatedAt: timestamp }),
+    ),
+    env.CONFIG.put(
+      receptionKey('LIVE'),
+      JSON.stringify({ enabled: false, accountType: 'LIVE', updatedAt: timestamp }),
+    ),
+  ]);
 }
 
 export function mobileAccountTypeForMode(mode: TradingMode): 'DEMO' | 'LIVE' {

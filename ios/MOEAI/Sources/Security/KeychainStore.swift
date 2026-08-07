@@ -9,32 +9,38 @@ enum KeychainStore {
       throw KeychainError.invalidData
     }
 
-    let query: [String: Any] = [
-      kSecClass as String: kSecClassGenericPassword,
-      kSecAttrService as String: service,
-      kSecAttrAccount as String: account,
-    ]
-
+    let query = baseQuery(account: account)
     SecItemDelete(query as CFDictionary)
 
     var attributes = query
     attributes[kSecValueData as String] = data
-    attributes[kSecAttrAccessible as String] = kSecAttrAccessibleWhenUnlockedThisDeviceOnly
+    attributes[kSecAttrAccessible as String] = kSecAttrAccessibleWhenPasscodeSetThisDeviceOnly
 
     let status = SecItemAdd(attributes as CFDictionary, nil)
-    guard status == errSecSuccess else {
-      throw KeychainError.unhandledStatus(status)
+    try validate(status)
+  }
+
+  static func contains(account: String) throws -> Bool {
+    var query = baseQuery(account: account)
+    query[kSecReturnAttributes as String] = true
+    query[kSecMatchLimit as String] = kSecMatchLimitOne
+
+    let status = SecItemCopyMatching(query as CFDictionary, nil)
+    switch status {
+    case errSecSuccess:
+      return true
+    case errSecItemNotFound:
+      return false
+    default:
+      try validate(status)
+      return false
     }
   }
 
   static func read(account: String) throws -> String? {
-    let query: [String: Any] = [
-      kSecClass as String: kSecClassGenericPassword,
-      kSecAttrService as String: service,
-      kSecAttrAccount as String: account,
-      kSecReturnData as String: true,
-      kSecMatchLimit as String: kSecMatchLimitOne,
-    ]
+    var query = baseQuery(account: account)
+    query[kSecReturnData as String] = true
+    query[kSecMatchLimit as String] = kSecMatchLimitOne
 
     var result: CFTypeRef?
     let status = SecItemCopyMatching(query as CFDictionary, &result)
@@ -43,9 +49,7 @@ enum KeychainStore {
       return nil
     }
 
-    guard status == errSecSuccess else {
-      throw KeychainError.unhandledStatus(status)
-    }
+    try validate(status)
 
     guard let data = result as? Data,
       let value = String(data: data, encoding: .utf8)
@@ -57,16 +61,24 @@ enum KeychainStore {
   }
 
   static func delete(account: String) throws {
-    let query: [String: Any] = [
+    let status = SecItemDelete(baseQuery(account: account) as CFDictionary)
+    guard status == errSecSuccess || status == errSecItemNotFound else {
+      try validate(status)
+      return
+    }
+  }
+
+  private static func baseQuery(account: String) -> [String: Any] {
+    [
       kSecClass as String: kSecClassGenericPassword,
       kSecAttrService as String: service,
       kSecAttrAccount as String: account,
     ]
+  }
 
-    let status = SecItemDelete(query as CFDictionary)
-    guard status == errSecSuccess || status == errSecItemNotFound else {
-      throw KeychainError.unhandledStatus(status)
-    }
+  private static func validate(_ status: OSStatus) throws {
+    guard status != errSecSuccess else { return }
+    throw KeychainError.unhandledStatus(status)
   }
 }
 

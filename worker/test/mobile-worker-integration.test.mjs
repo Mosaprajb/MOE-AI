@@ -66,6 +66,7 @@ function createEnv(overrides = {}) {
     MOE_MOBILE_CONTROL_PIN: '246810',
     MOE_MOBILE_SESSION_SECRET: 's'.repeat(48),
     MOE_MOBILE_LIVE_CONTROL_ENABLED: 'false',
+    MOE_WEBHOOK_SECRET: 'test-webhook-secret',
     APNS_ENABLED: 'false',
     APNS_BUNDLE_ID: 'com.moerand.moeai',
     ...overrides,
@@ -87,7 +88,6 @@ async function login(env) {
   assert.ok(cookie);
   return cookie.split(';', 1)[0];
 }
-
 
 
 test('mobile status requires an authenticated cookie', async () => {
@@ -129,7 +129,7 @@ test('Live reception remains blocked unless the dedicated server gate is enabled
     env,
   );
   assert.equal(response.status, 423);
-  assert.match((await response.json()).error, /disabled/u);
+  assert.match((await response.json()).error, /blocked by the server policy/u);
 });
 
 test('push registration accepts a valid iOS token while APNs sending remains disabled', async () => {
@@ -161,11 +161,16 @@ test('push registration accepts a valid iOS token while APNs sending remains dis
   assert.match((await testResponse.json()).error, /disabled/u);
 });
 
-test('disabled mobile reception blocks TradingView webhook execution before order logic', async () => {
+test('disabled mobile reception blocks authenticated TradingView webhook before order logic', async () => {
   const env = createEnv();
-  await env.CONFIG.put('mobile:tradingview-reception', JSON.stringify({
+  await env.CONFIG.put('mobile:tradingview-reception:DEMO', JSON.stringify({
     enabled: false,
     accountType: 'DEMO',
+    updatedAt: new Date().toISOString(),
+  }));
+  await env.CONFIG.put('mobile:tradingview-reception:LIVE', JSON.stringify({
+    enabled: false,
+    accountType: 'LIVE',
     updatedAt: new Date().toISOString(),
   }));
   const response = await app.request(
@@ -173,7 +178,12 @@ test('disabled mobile reception blocks TradingView webhook execution before orde
     {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ symbol: 'AAPL', action: 'buy' }),
+      body: JSON.stringify({
+        secret: 'test-webhook-secret',
+        symbol: 'AAPL',
+        action: 'buy',
+        price: 180,
+      }),
     },
     env,
   );

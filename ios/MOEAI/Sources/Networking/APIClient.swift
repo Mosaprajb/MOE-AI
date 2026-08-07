@@ -1,5 +1,25 @@
 import Foundation
 
+struct APIRequestDiagnostics: Equatable, Sendable {
+  var requestID: String?
+  var method: String?
+  var path: String?
+  var statusCode: Int?
+  var attempts: Int
+  var outcome: String?
+  var completedAt: Date?
+
+  static let empty = APIRequestDiagnostics(
+    requestID: nil,
+    method: nil,
+    path: nil,
+    statusCode: nil,
+    attempts: 0,
+    outcome: nil,
+    completedAt: nil
+  )
+}
+
 actor APIClient {
   static let shared = APIClient()
 
@@ -8,6 +28,7 @@ actor APIClient {
   private let decoder: JSONDecoder
   private let encoder: JSONEncoder
   private let retryDelaysNanoseconds: [UInt64]
+  private var diagnostics = APIRequestDiagnostics.empty
 
   init(
     baseURL: URL = AppConfiguration.normalizedURL(from: AppConfiguration.storedWorkerURL)
@@ -41,6 +62,10 @@ actor APIClient {
 
   func updateBaseURL(_ url: URL) {
     baseURL = url
+  }
+
+  func diagnosticsSnapshot() -> APIRequestDiagnostics {
+    diagnostics
   }
 
   func login(pin: String) async throws -> SessionResponse {
@@ -105,6 +130,60 @@ actor APIClient {
       body: Payload(
         enabled: enabled,
         accountType: accountType,
+        confirmation: confirmation
+      )
+    )
+  }
+
+  func tradingControl(mode: String) async throws -> TradingControlStatus {
+    let normalized = mode.uppercased() == "LIVE" ? "LIVE" : "SANDBOX"
+    return try await send(
+      path: "/api/mobile/trading-control/\(normalized)",
+      method: "GET"
+    )
+  }
+
+  func saveTradingControl(
+    mode: String,
+    payload: TradingControlSettingsPayload
+  ) async throws -> TradingControlSettingsResponse {
+    let normalized = mode.uppercased() == "LIVE" ? "LIVE" : "SANDBOX"
+    return try await send(
+      path: "/api/mobile/trading-control/\(normalized)/settings",
+      method: "POST",
+      body: payload
+    )
+  }
+
+  func previewTradingControl(
+    mode: String,
+    symbol: String,
+    price: Double,
+    side: String = "BUY"
+  ) async throws -> TradingControlPreview {
+    let normalized = mode.uppercased() == "LIVE" ? "LIVE" : "SANDBOX"
+    return try await send(
+      path: "/api/mobile/trading-control/\(normalized)/preview",
+      method: "POST",
+      body: TradingControlPreviewPayload(
+        symbol: symbol,
+        price: price,
+        side: side
+      )
+    )
+  }
+
+  func setTradingControlReception(
+    mode: String,
+    enabled: Bool,
+    confirmation: String? = nil
+  ) async throws -> TradingControlReceptionResponse {
+    let normalized = mode.uppercased() == "LIVE" ? "LIVE" : "SANDBOX"
+    return try await send(
+      path: "/api/mobile/trading-control/\(normalized)/reception",
+      method: "POST",
+      body: TradingControlReceptionPayload(
+        enabled: enabled,
         confirmation: confirmation
       )
     )
@@ -221,29 +300,89 @@ actor APIClient {
   ) async throws -> Response {
     let retryCount = allowsRetry ? retryDelaysNanoseconds.count : 0
     let maximumAttempts = retryCount + 1
+    let requestID = request.value(forHTTPHeaderField: "x-moe-request-id")
+    let method = request.httpMethod
+    let path = request.url?.path
+
+    recordDiagnostics(
+      requestID: requestID,
+      method: method,
+      path: path,
+      statusCode: nil,
+      attempts: 0,
+      outcome: "started",
+      completed: false
+    )
 
     for attempt in 0..<maximumAttempts {
+      let attemptCount = attempt + 1
       let data: Data
       let response: URLResponse
 
       do {
         (data, response) = try await session.data(for: request)
       } catch {
+        if Self.isCancellation(error) {
+          recordDiagnostics(
+            requestID: requestID,
+            method: method,
+            path: path,
+            statusCode: nil,
+            attempts: attemptCount,
+            outcome: "cancelled"
+          )
+          throw CancellationError()
+        }
+
         if allowsRetry,
           attempt < retryCount,
           Self.isRetryableTransportError(error)
         {
+          recordDiagnostics(
+            requestID: requestID,
+            method: method,
+            path: path,
+            statusCode: nil,
+            attempts: attemptCount,
+            outcome: "retrying-transport",
+            completed: false
+          )
           await waitBeforeRetry(attempt: attempt)
           continue
         }
+
+        recordDiagnostics(
+          requestID: requestID,
+          method: method,
+          path: path,
+          statusCode: nil,
+          attempts: attemptCount,
+          outcome: "transport-error"
+        )
         throw APIError.transport(error.localizedDescription)
       }
 
       guard let httpResponse = response as? HTTPURLResponse else {
+        recordDiagnostics(
+          requestID: requestID,
+          method: method,
+          path: path,
+          statusCode: nil,
+          attempts: attemptCount,
+          outcome: "invalid-response"
+        )
         throw APIError.invalidResponse
       }
 
       if httpResponse.statusCode == 401 {
+        recordDiagnostics(
+          requestID: requestID,
+          method: method,
+          path: path,
+          statusCode: 401,
+          attempts: attemptCount,
+          outcome: "unauthorized"
+        )
         NotificationCenter.default.post(name: .moeSessionExpired, object: nil)
         throw APIError.unauthorized
       }
@@ -253,6 +392,15 @@ actor APIClient {
           attempt < retryCount,
           Self.isRetryableStatusCode(httpResponse.statusCode)
         {
+          recordDiagnostics(
+            requestID: requestID,
+            method: method,
+            path: path,
+            statusCode: httpResponse.statusCode,
+            attempts: attemptCount,
+            outcome: "retrying-server",
+            completed: false
+          )
           await waitBeforeRetry(attempt: attempt)
           continue
         }
@@ -261,17 +409,70 @@ actor APIClient {
         let message = envelope?.error
           ?? envelope?.message
           ?? HTTPURLResponse.localizedString(forStatusCode: httpResponse.statusCode)
+        recordDiagnostics(
+          requestID: requestID,
+          method: method,
+          path: path,
+          statusCode: httpResponse.statusCode,
+          attempts: attemptCount,
+          outcome: "server-error"
+        )
         throw APIError.server(statusCode: httpResponse.statusCode, message: message)
       }
 
       do {
-        return try decoder.decode(responseType, from: data)
+        let decoded = try decoder.decode(responseType, from: data)
+        recordDiagnostics(
+          requestID: requestID,
+          method: method,
+          path: path,
+          statusCode: httpResponse.statusCode,
+          attempts: attemptCount,
+          outcome: "success"
+        )
+        return decoded
       } catch {
+        recordDiagnostics(
+          requestID: requestID,
+          method: method,
+          path: path,
+          statusCode: httpResponse.statusCode,
+          attempts: attemptCount,
+          outcome: "decoding-error"
+        )
         throw APIError.decoding(Self.describeDecodingError(error))
       }
     }
 
+    recordDiagnostics(
+      requestID: requestID,
+      method: method,
+      path: path,
+      statusCode: nil,
+      attempts: maximumAttempts,
+      outcome: "attempts-exhausted"
+    )
     throw APIError.invalidResponse
+  }
+
+  private func recordDiagnostics(
+    requestID: String?,
+    method: String?,
+    path: String?,
+    statusCode: Int?,
+    attempts: Int,
+    outcome: String,
+    completed: Bool = true
+  ) {
+    diagnostics = APIRequestDiagnostics(
+      requestID: requestID,
+      method: method,
+      path: path,
+      statusCode: statusCode,
+      attempts: attempts,
+      outcome: outcome,
+      completedAt: completed ? Date() : nil
+    )
   }
 
   private func waitBeforeRetry(attempt: Int) async {
@@ -296,6 +497,13 @@ actor APIClient {
     }
     guard let url = components.url else { throw APIError.invalidBaseURL }
     return url
+  }
+
+  private static func isCancellation(_ error: Error) -> Bool {
+    if error is CancellationError { return true }
+    if let urlError = error as? URLError, urlError.code == .cancelled { return true }
+    let nsError = error as NSError
+    return nsError.domain == NSURLErrorDomain && nsError.code == NSURLErrorCancelled
   }
 
   private static func isRetryableStatusCode(_ statusCode: Int) -> Bool {
