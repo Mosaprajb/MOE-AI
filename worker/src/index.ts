@@ -1,5 +1,6 @@
 // MOE-AI Cloudflare Worker - TradingView -> Webull Bridge
 import { Hono } from 'hono';
+import type { Env } from './lib/types';
 import type { MobileEnv } from './lib/mobile-env';
 import type { LiveControlEnv } from './lib/live-policy';
 import { corsMiddleware } from './lib/cors';
@@ -20,13 +21,14 @@ import { broadcastMobilePush, getAPNsConfigurationStatus } from './lib/apns';
 import { mobileApi, mobileTradingView } from './routes/mobile';
 import { mobileTradingControl } from './routes/mobile-trading-control';
 
-type WorkerEnv = MobileEnv & LiveControlEnv;
+type WorkerEnv = Env & MobileEnv & LiveControlEnv;
 
 export {
   AlertCoordinator,
   SimulationDriver,
   TradingViewPositionCoordinator,
 } from './lib/legacy-durable-objects';
+export { StepTrailingCoordinator } from './lib/step-trailing-coordinator';
 
 const app = new Hono<{ Bindings: WorkerEnv }>();
 
