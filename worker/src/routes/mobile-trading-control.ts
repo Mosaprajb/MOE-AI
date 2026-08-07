@@ -41,16 +41,23 @@ function accountType(mode: TradingMode): 'DEMO' | 'LIVE' {
   return mode === 'LIVE' ? 'LIVE' : 'DEMO';
 }
 
+function effectiveNightBuyingPower(
+  account: Awaited<ReturnType<WebullClient['getAccount']>>,
+): number {
+  // Webull overnight trading does not allow margin. Cap the broker-reported
+  // night BP by available cash so MOE-AI never sizes a NIGHT order from margin.
+  return Math.max(0, Math.min(
+    Number(account.cash ?? 0),
+    Number(account.nightTradingBuyingPower ?? 0),
+  ));
+}
+
 function buyingPowerForCurrentWindow(
   account: Awaited<ReturnType<WebullClient['getAccount']>>,
 ): number {
   const window = currentTradingWindow();
   if (window.window === 'NIGHT') {
-    return account.nightTradingBuyingPower > 0
-      ? account.nightTradingBuyingPower
-      : account.overnightBuyingPower > 0
-        ? account.overnightBuyingPower
-        : account.buyingPower;
+    return effectiveNightBuyingPower(account);
   }
   if (window.window === 'EXTENDED') {
     return account.overnightBuyingPower > 0
@@ -109,7 +116,7 @@ mobileTradingControl.get('/:mode', async c => {
         buyingPower: account.buyingPower,
         intradayBuyingPower: account.dayBuyingPower,
         overnightBuyingPower: account.overnightBuyingPower,
-        nightTradingBuyingPower: account.nightTradingBuyingPower,
+        nightTradingBuyingPower: effectiveNightBuyingPower(account),
         currentSessionBuyingPower: buyingPowerForCurrentWindow(account),
         updatedAt: account.updatedAt,
       };
@@ -244,7 +251,7 @@ mobileTradingControl.post('/:mode/preview', async c => {
       timeInForce: preview.timeInForce,
       intradayBuyingPower: account.dayBuyingPower,
       overnightBuyingPower: account.overnightBuyingPower,
-      nightTradingBuyingPower: account.nightTradingBuyingPower,
+      nightTradingBuyingPower: effectiveNightBuyingPower(account),
       availableBuyingPower,
       market,
     });
