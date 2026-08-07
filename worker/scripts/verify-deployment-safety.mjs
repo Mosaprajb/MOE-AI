@@ -6,6 +6,9 @@ const DEFAULT_URLS = Object.freeze({
   production: 'https://moerand-alerts.mosaprajb.workers.dev',
 });
 
+const DEFAULT_ATTEMPTS = 30;
+const DEFAULT_RETRY_DELAY_MS = 3_000;
+
 function assertion(condition, message, details = undefined) {
   if (condition) return;
   const error = new Error(message);
@@ -13,10 +16,21 @@ function assertion(condition, message, details = undefined) {
   throw error;
 }
 
-async function getJson(fetchImpl, url) {
-  const response = await fetchImpl(url, {
+export function deploymentProbeUrl(url, attempt, timestamp = Date.now()) {
+  const probe = new URL(url);
+  probe.searchParams.set('_moe_probe', `${timestamp}-${attempt}`);
+  return probe.toString();
+}
+
+async function getJson(fetchImpl, url, attempt, timestamp) {
+  const probeUrl = deploymentProbeUrl(url, attempt, timestamp);
+  const response = await fetchImpl(probeUrl, {
     method: 'GET',
-    headers: { accept: 'application/json' },
+    headers: {
+      accept: 'application/json',
+      'cache-control': 'no-cache, no-store, max-age=0',
+      pragma: 'no-cache',
+    },
     signal: AbortSignal.timeout(15_000),
   });
   const text = await response.text();
@@ -33,12 +47,13 @@ async function getJson(fetchImpl, url) {
   return payload;
 }
 
-async function verifyDeploymentSafetyOnce({ environment, baseUrl, fetchImpl }) {
+async function verifyDeploymentSafetyOnce({ environment, baseUrl, fetchImpl, attempt }) {
   const normalizedBaseUrl = baseUrl.replace(/\/$/u, '');
+  const timestamp = Date.now();
   const [health, liveStatus, mode] = await Promise.all([
-    getJson(fetchImpl, `${normalizedBaseUrl}/api/health`),
-    getJson(fetchImpl, `${normalizedBaseUrl}/api/trading/live/status`),
-    getJson(fetchImpl, `${normalizedBaseUrl}/api/trading/mode`),
+    getJson(fetchImpl, `${normalizedBaseUrl}/api/health`, attempt, timestamp),
+    getJson(fetchImpl, `${normalizedBaseUrl}/api/trading/live/status`, attempt, timestamp),
+    getJson(fetchImpl, `${normalizedBaseUrl}/api/trading/mode`, attempt, timestamp),
   ]);
 
   assertion(health.ok === true, 'Worker health check did not report ok=true.', health);
@@ -102,8 +117,8 @@ export async function verifyDeploymentSafety({
   environment,
   baseUrl = DEFAULT_URLS[environment],
   fetchImpl = fetch,
-  attempts = 8,
-  retryDelayMs = 3_000,
+  attempts = DEFAULT_ATTEMPTS,
+  retryDelayMs = DEFAULT_RETRY_DELAY_MS,
 } = {}) {
   assertion(Object.hasOwn(DEFAULT_URLS, environment), 'Environment must be sandbox, staging, or production.');
   assertion(typeof baseUrl === 'string' && baseUrl.length > 0, 'A deployment base URL is required.');
@@ -112,7 +127,7 @@ export async function verifyDeploymentSafety({
   let lastError;
   for (let attempt = 1; attempt <= attempts; attempt += 1) {
     try {
-      return await verifyDeploymentSafetyOnce({ environment, baseUrl, fetchImpl });
+      return await verifyDeploymentSafetyOnce({ environment, baseUrl, fetchImpl, attempt });
     } catch (error) {
       lastError = error;
       if (attempt === attempts) break;
