@@ -317,35 +317,37 @@ async function executeForMode(
     let orderStatus = `${bracket.status}; BRACKET SL+TP`;
     let coordinatorWarning: string | undefined;
 
-    if (settings.trailingEnabled) {
-      try {
-        await armStepTrailingCoordinator(env, {
-          mode,
-          symbol,
-          qty,
-          signalId,
-          plannedEntryPrice: previewPrice,
-          plannedStopPrice: protectiveStop,
-          plannedTakeProfitPrice: takeProfit,
-          stopLossClientOrderId: bracket.stopLossClientOrderId,
-          takeProfitClientOrderId: bracket.takeProfitClientOrderId,
-          stopLossPct: settings.stopLossPct,
-          takeProfitPct: settings.takeProfitPct,
-          trailingEnabled: true,
-          trailingActivationCents: settings.trailingActivationCents,
-          trailingInitialLockCents: settings.trailingInitialLockCents,
-          trailingStepTriggerCents: settings.trailingStepTriggerCents,
-          trailingStepMoveCents: settings.trailingStepMoveCents,
-          timeInForce: settings.timeInForce,
-          tradingSession: market.webullSession,
-        });
-        orderStatus += '; STEP_TRAIL ARMED';
-      } catch (error) {
-        // The bracket remains live at the broker. Never remove protection merely
-        // because the optional staircase coordinator could not be armed.
-        coordinatorWarning = `Bracket submitted but step trailing was not armed: ${String(error)}`;
-        orderStatus += '; STEP_TRAIL NOT_ARMED';
-      }
+    try {
+      // The coordinator is armed for every protected BUY so SL/TP can be
+      // resynchronized to the broker's actual average fill. If custom trailing
+      // is disabled it performs only that synchronization and lifecycle cleanup.
+      await armStepTrailingCoordinator(env, {
+        mode,
+        symbol,
+        qty,
+        signalId,
+        plannedEntryPrice: previewPrice,
+        plannedStopPrice: protectiveStop,
+        plannedTakeProfitPrice: takeProfit,
+        stopLossClientOrderId: bracket.stopLossClientOrderId,
+        takeProfitClientOrderId: bracket.takeProfitClientOrderId,
+        stopLossPct: settings.stopLossPct,
+        takeProfitPct: settings.takeProfitPct,
+        trailingEnabled: settings.trailingEnabled,
+        trailingActivationCents: settings.trailingActivationCents,
+        trailingInitialLockCents: settings.trailingInitialLockCents,
+        trailingStepTriggerCents: settings.trailingStepTriggerCents,
+        trailingStepMoveCents: settings.trailingStepMoveCents,
+        timeInForce: settings.timeInForce,
+        tradingSession: market.webullSession,
+      });
+      orderStatus += '; PROTECTION_SYNC ARMED';
+      if (settings.trailingEnabled) orderStatus += '; STEP_TRAIL ARMED';
+    } catch (error) {
+      // The broker bracket remains live. Do not remove or weaken it merely
+      // because fill synchronization/staircase coordination could not be armed.
+      coordinatorWarning = `Bracket submitted but protection coordinator was not armed: ${String(error)}`;
+      orderStatus += '; PROTECTION_SYNC NOT_ARMED';
     }
 
     await persistDecision(env, {
