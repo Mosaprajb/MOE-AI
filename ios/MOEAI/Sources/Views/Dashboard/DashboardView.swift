@@ -11,6 +11,13 @@ struct DashboardView: View {
   @State private var timeInForce: TradingTimeInForceOption = .day
   @State private var shareQuantityText = ""
   @State private var maxTradeAmountText = ""
+  @State private var stopLossPctText = ""
+  @State private var takeProfitPctText = ""
+  @State private var trailingEnabled = false
+  @State private var trailingActivationCentsText = ""
+  @State private var trailingInitialLockCentsText = ""
+  @State private var trailingStepTriggerCentsText = ""
+  @State private var trailingStepMoveCentsText = ""
   @State private var previewSymbol = ""
   @State private var previewPriceText = ""
   @State private var showLiveArmConfirmation = false
@@ -266,6 +273,76 @@ struct DashboardView: View {
           .font(.caption2)
           .foregroundStyle(MOETheme.muted)
 
+        Divider().overlay(Color.white.opacity(0.08))
+
+        VStack(alignment: .leading, spacing: 10) {
+          SectionTitle(title: "Exit Protection")
+          Text("تُحفظ هذه القيم بشكل مستقل لحساب Paper وحساب Live، ويستخدمها Worker بدل أي قيم قادمة من TradingView.")
+            .font(.caption2)
+            .foregroundStyle(MOETheme.muted)
+
+          HStack(spacing: 12) {
+            tradingInput(
+              title: "Stop Loss %",
+              placeholder: "مثال 2.00",
+              text: $stopLossPctText,
+              keyboard: .decimalPad
+            )
+            tradingInput(
+              title: "Take Profit %",
+              placeholder: "مثال 2.00",
+              text: $takeProfitPctText,
+              keyboard: .decimalPad
+            )
+          }
+
+          Text("عند BUY يرسل MOE-AI أمر الدخول مع Stop Loss وTake Profit محسوبين من النسب المحفوظة كحماية مرتبطة بالصفقة.")
+            .font(.caption2)
+            .foregroundStyle(MOETheme.muted)
+
+          Toggle("Step Trailing Stop", isOn: $trailingEnabled)
+            .font(.subheadline.weight(.bold))
+            .tint(MOETheme.positive)
+
+          if trailingEnabled {
+            HStack(spacing: 12) {
+              tradingInput(
+                title: "Activate after +¢",
+                placeholder: "5",
+                text: $trailingActivationCentsText,
+                keyboard: .decimalPad
+              )
+              tradingInput(
+                title: "Initial lock +¢",
+                placeholder: "2",
+                text: $trailingInitialLockCentsText,
+                keyboard: .decimalPad
+              )
+            }
+
+            HStack(spacing: 12) {
+              tradingInput(
+                title: "Every rise ¢",
+                placeholder: "5",
+                text: $trailingStepTriggerCentsText,
+                keyboard: .decimalPad
+              )
+              tradingInput(
+                title: "Move stop +¢",
+                placeholder: "1",
+                text: $trailingStepMoveCentsText,
+                keyboard: .decimalPad
+              )
+            }
+
+            Text("مثال 5 / 2 / 5 / 1: عندما يصل أعلى سعر مُراقب إلى Entry + 5¢، يُلغى Stop Loss وTake Profit ويُوضع Stop عند Entry + 2¢. بعد كل ارتفاع إضافي 5¢ يتحرك Stop للأعلى 1¢. جميع الأرقام قابلة للتغيير لكل حساب.")
+              .font(.caption2)
+              .foregroundStyle(MOETheme.muted)
+          }
+        }
+
+        Divider().overlay(Color.white.opacity(0.08))
+
         VStack(alignment: .leading, spacing: 8) {
           Text("Time in Force")
             .font(.subheadline.weight(.bold))
@@ -389,6 +466,9 @@ struct DashboardView: View {
         selectedSessions.remove(option)
       } else {
         selectedSessions.insert(option)
+        if option == .overnight {
+          timeInForce = .day
+        }
       }
     } label: {
       HStack(spacing: 12) {
@@ -456,6 +536,8 @@ struct DashboardView: View {
       previewRow("Estimated Total", formatCurrency(model.tradingPreview?.estimatedTotal))
       previewRow("Estimated Transaction Fee", formatCurrency(model.tradingPreview?.estimatedTransactionFee))
       previewRow("Max Quantity to Buy", model.tradingPreview?.maximumQuantityToBuy.map(String.init) ?? "—")
+      previewRow("Stop Loss", formatCurrency(model.tradingPreview?.stopLossPrice))
+      previewRow("Take Profit", formatCurrency(model.tradingPreview?.takeProfitPrice))
       previewRow("Intraday BP", formatCurrency(model.tradingPreview?.intradayBuyingPower ?? control?.broker.intradayBuyingPower))
       previewRow("Overnight BP", formatCurrency(model.tradingPreview?.overnightBuyingPower ?? control?.broker.overnightBuyingPower))
       previewRow("Night Trading BP", formatCurrency(model.tradingPreview?.nightTradingBuyingPower ?? control?.broker.nightTradingBuyingPower))
@@ -545,6 +627,27 @@ struct DashboardView: View {
     !selectedSessions.isEmpty
       && (Int(shareQuantityText) ?? 0) > 0
       && parsedDouble(maxTradeAmountText) > 0
+      && parsedDouble(stopLossPctText) >= 0.1
+      && parsedDouble(takeProfitPctText) >= 0.1
+      && trailingFormIsValid
+  }
+
+  private var trailingFormIsValid: Bool {
+    guard trailingEnabled else { return true }
+    let activation = parsedDouble(trailingActivationCentsText)
+    let initialLock = parsedDouble(trailingInitialLockCentsText)
+    let trigger = parsedDouble(trailingStepTriggerCentsText)
+    let move = parsedDouble(trailingStepMoveCentsText)
+    return !trailingActivationCentsText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+      && !trailingInitialLockCentsText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+      && !trailingStepTriggerCentsText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+      && !trailingStepMoveCentsText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+      && activation > 0
+      && initialLock >= 0
+      && initialLock < activation
+      && trigger > 0
+      && move > 0
+      && move <= trigger
   }
 
   private var previewFormIsValid: Bool {
@@ -565,11 +668,18 @@ struct DashboardView: View {
     maxTradeAmountText = settings.maxTradeAmountUsd > 0
       ? String(format: "%.2f", settings.maxTradeAmountUsd)
       : ""
+    stopLossPctText = String(format: "%.2f", settings.stopLossPct)
+    takeProfitPctText = String(format: "%.2f", settings.takeProfitPct ?? 2)
+    trailingEnabled = settings.trailingEnabled ?? false
+    trailingActivationCentsText = String(format: "%.2f", settings.trailingActivationCents ?? 5)
+    trailingInitialLockCentsText = String(format: "%.2f", settings.trailingInitialLockCents ?? 2)
+    trailingStepTriggerCentsText = String(format: "%.2f", settings.trailingStepTriggerCents ?? 5)
+    trailingStepMoveCentsText = String(format: "%.2f", settings.trailingStepMoveCents ?? 1)
   }
 
   private func saveTradingControls() async {
     let authorized = await session.authorizeSensitiveAction(
-      reason: "حفظ حدود كمية الأسهم والمبلغ وجلسات استقبال TradingView",
+      reason: "حفظ حدود الصفقة وحماية Stop Loss / Take Profit وإعدادات Step Trailing",
       required: preferences.requiresAuthenticationForSensitiveActions
     )
     guard authorized else { return }
@@ -577,7 +687,14 @@ struct DashboardView: View {
       sessions: TradingSessionOption.allCases.filter(selectedSessions.contains),
       timeInForce: timeInForce,
       shareQuantity: Int(shareQuantityText) ?? 0,
-      maxTradeAmountUsd: parsedDouble(maxTradeAmountText)
+      maxTradeAmountUsd: parsedDouble(maxTradeAmountText),
+      stopLossPct: parsedDouble(stopLossPctText),
+      takeProfitPct: parsedDouble(takeProfitPctText),
+      trailingEnabled: trailingEnabled,
+      trailingActivationCents: parsedDouble(trailingActivationCentsText),
+      trailingInitialLockCents: parsedDouble(trailingInitialLockCentsText),
+      trailingStepTriggerCents: parsedDouble(trailingStepTriggerCentsText),
+      trailingStepMoveCents: parsedDouble(trailingStepMoveCentsText)
     )
     syncControlFields()
   }
