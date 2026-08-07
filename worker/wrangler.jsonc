@@ -17,7 +17,19 @@
     "TradingViewPositionCoordinator": {
       "type": "durable-object",
       "storage": "sqlite"
+    },
+    "TradeProtectionCoordinator": {
+      "type": "durable-object",
+      "storage": "sqlite"
     }
+  },
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "TRADE_PROTECTION",
+        "class_name": "TradeProtectionCoordinator"
+      }
+    ]
   },
   "env": {
     "production": {
