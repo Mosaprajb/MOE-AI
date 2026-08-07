@@ -367,11 +367,13 @@ export class TrailingStopCoordinator {
     const stopPrice = Number(managed.currentStopPrice ?? 0);
     if (!(stopPrice > 0)) throw new Error('Trailing stop price is unavailable.');
 
-    const currentStatus = await getClientOrderStatus(client, managed.stopLossClientOrderId);
+    // One realtime Order Detail lookup per stop check. This respects Webull's
+    // documented two-detail-queries-per-two-seconds limit even on activation,
+    // where TP status consumes the other detail query.
+    const previousStopId = managed.stopLossClientOrderId;
+    const currentStatus = await getClientOrderStatus(client, previousStopId);
     if (isWorkingProtectionOrder(currentStatus)) return true;
 
-    // Before creating a recovery SELL, re-check the broker position to avoid a
-    // stale stop opening a short after TP/SL closed the long between API calls.
     const positions = await client.getPositions();
     const livePosition = positions.find(item => (
       item.symbol === managed.symbol
@@ -380,44 +382,27 @@ export class TrailingStopCoordinator {
     ));
     if (!livePosition) return false;
 
-    // A fully filled stop should have removed the managed long. Treat any
-    // remaining position snapshot as stale rather than submitting another SELL.
     if (currentStatus === 'FILLED') return false;
 
     let generation = Math.max(0, managed.recoveryGeneration ?? 0);
-    let recoveryId = generation > 0
+    const currentRecoveryId = generation > 0
       ? recoveryStopClientOrderId(managed, generation)
       : '';
 
-    if (generation === 0 || managed.stopLossClientOrderId !== recoveryId) {
+    if (generation === 0 || previousStopId !== currentRecoveryId) {
       generation = Math.max(1, generation);
-      recoveryId = recoveryStopClientOrderId(managed, generation);
     } else if (currentStatus === 'CANCELLED' || currentStatus === 'FAILED') {
       generation += 1;
-      recoveryId = recoveryStopClientOrderId(managed, generation);
     }
+    const recoveryId = recoveryStopClientOrderId(managed, generation);
 
-    // Persist the intended recovery ID before broker submission. If an alarm is
-    // retried after a Worker failure, Order Detail can safely determine whether
-    // that deterministic ID is already live without relying on lagging open-order lists.
+    // Persist the placement intent before the broker call. If an alarm is
+    // retried after an execution failure, the next detail lookup targets this
+    // exact deterministic ID and will not depend on lagging Open Orders data.
     managed.recoveryGeneration = generation;
     managed.stopLossClientOrderId = recoveryId;
     managed.updatedAt = new Date().toISOString();
     await this.state.storage.put(STATE_KEY, managed);
-
-    const recoveryStatus = await getClientOrderStatus(client, recoveryId);
-    if (isWorkingProtectionOrder(recoveryStatus)) return true;
-    if (recoveryStatus === 'FILLED') return false;
-    if (recoveryStatus === 'CANCELLED' || recoveryStatus === 'FAILED') {
-      managed.recoveryGeneration = generation + 1;
-      managed.stopLossClientOrderId = recoveryStopClientOrderId(
-        managed,
-        managed.recoveryGeneration,
-      );
-      managed.updatedAt = new Date().toISOString();
-      await this.state.storage.put(STATE_KEY, managed);
-      recoveryId = managed.stopLossClientOrderId;
-    }
 
     const recoveryQuantity = Math.max(
       0,
