@@ -1,26 +1,39 @@
 // MOE-AI Trading Routes — account, positions, orders, mode, kill-switch
 import { Hono } from 'hono';
-import type { Env, TradingMode } from '../lib/types';
+import type { TradingMode } from '../lib/types';
+import type { LiveControlEnv } from '../lib/live-policy';
 import { WebullClient } from '../lib/webull';
+import {
+  authorizeLiveControl,
+  authorizeLiveExecution,
+  getLiveExecutionPolicy,
+} from '../lib/live-control';
 import {
   computeRiskState, checkLiveSafetyGates,
   getKillSwitch, setKillSwitch,
-  getTradingMode, setTradingMode,
+  setTradingMode,
 } from '../lib/risk';
 import { getTradingSettings, type TradingSettings } from './trading-settings';
 
-const trading = new Hono<{ Bindings: Env }>();
+const trading = new Hono<{ Bindings: LiveControlEnv }>();
 
-// ── Position sizing settings ───────────────────────────────────────────────────
-// Stored in the optional CONFIG KV namespace so the value set in the app is
-// shared by TradingView webhooks and survives Worker restarts.
+function liveBlockedResponse(authorization: Awaited<ReturnType<typeof authorizeLiveExecution>>) {
+  return {
+    ok: false,
+    code: authorization.code ?? 'LIVE_EXECUTION_BLOCKED',
+    error: authorization.error ?? 'Live execution is blocked.',
+    blockers: authorization.policy.blockers,
+    policy: authorization.policy,
+  };
+}
+
 const SETTINGS_KEY = 'trading:settings';
-trading.get('/settings', async (c) => {
+trading.get('/settings', async c => {
   const settings = await getTradingSettings(c.env);
   return c.json({ settings, persisted: !!c.env.CONFIG });
 });
 
-trading.post('/settings', async (c) => {
+trading.post('/settings', async c => {
   const body = await c.req.json<Partial<TradingSettings>>();
   const current = await getTradingSettings(c.env);
   const settings = {
@@ -41,36 +54,59 @@ trading.post('/settings', async (c) => {
     sessionEnd: typeof body.sessionEnd === 'string' ? body.sessionEnd : current.sessionEnd,
   };
   if (!c.env.CONFIG) {
-    return c.json({ error: 'CONFIG KV is not configured; settings cannot be saved from the app yet', settings, persisted: false }, 503);
+    return c.json({
+      error: 'CONFIG KV is not configured; settings cannot be saved from the app yet',
+      settings,
+      persisted: false,
+    }, 503);
   }
   await c.env.CONFIG.put(SETTINGS_KEY, JSON.stringify(settings));
   return c.json({ success: true, settings, persisted: true });
 });
 
-// ── Dashboard (composite: account + positions + orders) ───────────────────────
-trading.get('/:mode/dashboard', async (c) => {
-  const env  = c.env;
+// Dashboard reads are allowed in Live observation-only mode. Execution state is
+// always derived from the server policy and never from the requested URL alone.
+trading.get('/:mode/dashboard', async c => {
+  const env = c.env;
   const modeParam = (c.req.param('mode').toUpperCase() === 'LIVE' ? 'LIVE' : 'SANDBOX') as TradingMode;
-  const client    = WebullClient.fromEnv(env, modeParam);
-  const ks        = await getKillSwitch(env);
+  const client = WebullClient.fromEnv(env, modeParam);
+  const [ks, livePolicy] = await Promise.all([
+    getKillSwitch(env),
+    modeParam === 'LIVE' ? getLiveExecutionPolicy(env) : Promise.resolve(null),
+  ]);
 
   if (!client) {
     const readiness = modeParam === 'LIVE'
-      ? await checkLiveSafetyGates(env, false, 0)
-      : { ready: false, missingSecrets: ['WEBULL_SANDBOX_APP_KEY', 'WEBULL_SANDBOX_ACCESS_TOKEN', 'WEBULL_SANDBOX_ACCOUNT_ID'], gates: {} };
+      ? {
+          ...(await checkLiveSafetyGates(env, false, 0)),
+          ready: false,
+          policy: livePolicy,
+          blockers: livePolicy?.blockers ?? [],
+        }
+      : {
+          ready: false,
+          missingSecrets: [
+            'WEBULL_SANDBOX_APP_KEY',
+            'WEBULL_SANDBOX_ACCESS_TOKEN',
+            'WEBULL_SANDBOX_ACCOUNT_ID',
+          ],
+          gates: {},
+        };
 
     return c.json({
-      account:   {},
+      account: {},
       positions: [],
-      orders:    [],
+      orders: [],
       safety: {
         webullConnected: false,
-        webullMode:      'DISCONNECTED',
-        killSwitch:      ks,
-        mode:            modeParam,
+        webullMode: 'DISCONNECTED',
+        killSwitch: ks,
+        mode: modeParam,
         executionAllowed: false,
+        observationOnly: true,
       },
       readiness,
+      livePolicy,
       updatedAt: new Date().toISOString(),
     });
   }
@@ -81,32 +117,36 @@ trading.get('/:mode/dashboard', async (c) => {
     client.getOrders(),
   ]);
 
-  const acct = account.status   === 'fulfilled' ? account.value   : {};
-  const pos  = positions.status === 'fulfilled' ? positions.value : [];
-  const ord  = orders.status    === 'fulfilled' ? orders.value    : [];
+  const acct = account.status === 'fulfilled' ? account.value : {};
+  const pos = positions.status === 'fulfilled' ? positions.value : [];
+  const ord = orders.status === 'fulfilled' ? orders.value : [];
 
-  // ── Enrich positions with SL/TP from D1 ──────────────────────────────────
   if (env.DB && pos.length > 0) {
     try {
-      const syms = [...new Set(pos.map(p => p.symbol))];
-      const ph   = syms.map(() => '?').join(',');
+      const syms = [...new Set(pos.map(position => position.symbol))];
+      const placeholders = syms.map(() => '?').join(',');
       const rows = await env.DB
-        .prepare(`SELECT symbol, stop, target FROM decisions WHERE symbol IN (${ph}) AND accepted = 1 AND mode = ? GROUP BY symbol HAVING created_at = MAX(created_at)`)
+        .prepare(`SELECT symbol, stop, target FROM decisions WHERE symbol IN (${placeholders}) AND accepted = 1 AND mode = ? GROUP BY symbol HAVING created_at = MAX(created_at)`)
         .bind(...syms, modeParam)
         .all<{ symbol: string; stop: number | null; target: number | null }>();
-      const sltp = new Map(rows.results?.map(r => [r.symbol, r]) ?? []);
-      for (const p of pos) {
-        const d = sltp.get(p.symbol);
-        if (d) {
-          (p as unknown as Record<string,unknown>).stopLoss   = d.stop   ?? undefined;
-          (p as unknown as Record<string,unknown>).takeProfit = d.target ?? undefined;
+      const stops = new Map(rows.results?.map(row => [row.symbol, row]) ?? []);
+      for (const position of pos) {
+        const decision = stops.get(position.symbol);
+        if (decision) {
+          (position as unknown as Record<string, unknown>).stopLoss = decision.stop ?? undefined;
+          (position as unknown as Record<string, unknown>).takeProfit = decision.target ?? undefined;
         }
       }
-    } catch { /* D1 unavailable */ }
+    } catch {
+      // D1 is optional for observation reads.
+    }
   }
 
-  const risk = await computeRiskState(env, modeParam, pos, (acct as { accountValue?: number }).accountValue ?? 0);
-  const executionAllowed = !ks && !risk.locked;
+  const accountValue = (acct as { accountValue?: number }).accountValue ?? 0;
+  const risk = await computeRiskState(env, modeParam, pos, accountValue);
+  const executionAllowed = modeParam === 'LIVE'
+    ? Boolean(livePolicy?.executionAllowed) && !risk.locked
+    : !ks && !risk.locked;
 
   const payload: Record<string, unknown> = {
     account: acct,
@@ -114,156 +154,188 @@ trading.get('/:mode/dashboard', async (c) => {
     orders: ord,
     risk,
     safety: {
-      webullConnected:  true,
-      webullMode:       modeParam,
-      killSwitch:       ks,
-      mode:             modeParam,
+      webullConnected: true,
+      webullMode: modeParam,
+      killSwitch: ks,
+      mode: modeParam,
       executionAllowed,
-      observationOnly:  !executionAllowed,
+      observationOnly: !executionAllowed,
     },
     updatedAt: new Date().toISOString(),
   };
 
   if (modeParam === 'LIVE') {
-    const readiness = await checkLiveSafetyGates(env, pos.length > 0, (acct as { accountValue?: number }).accountValue ?? 0);
-    payload.readiness = readiness;
+    const readiness = await checkLiveSafetyGates(env, pos.length > 0, accountValue);
+    payload.readiness = {
+      ...readiness,
+      ready: readiness.ready && Boolean(livePolicy?.executionAllowed),
+      policy: livePolicy,
+      blockers: livePolicy?.blockers ?? [],
+    };
+    payload.livePolicy = livePolicy;
   }
 
   return c.json(payload);
 });
 
-// ── Individual account / positions / orders ───────────────────────────────────
-trading.get('/:mode/account', async (c) => {
-  const mode   = (c.req.param('mode').toUpperCase() === 'LIVE' ? 'LIVE' : 'SANDBOX') as TradingMode;
+trading.get('/:mode/account', async c => {
+  const mode = (c.req.param('mode').toUpperCase() === 'LIVE' ? 'LIVE' : 'SANDBOX') as TradingMode;
   const client = WebullClient.fromEnv(c.env, mode);
   if (!client) return c.json({ error: `${mode} credentials not configured` }, 503);
-  try   { return c.json(await client.getAccount()); }
-  catch (e) { return c.json({ error: String(e) }, 502); }
+  try {
+    return c.json(await client.getAccount());
+  } catch (error) {
+    return c.json({ error: String(error) }, 502);
+  }
 });
 
-trading.get('/:mode/positions', async (c) => {
-  const mode   = (c.req.param('mode').toUpperCase() === 'LIVE' ? 'LIVE' : 'SANDBOX') as TradingMode;
+trading.get('/:mode/positions', async c => {
+  const mode = (c.req.param('mode').toUpperCase() === 'LIVE' ? 'LIVE' : 'SANDBOX') as TradingMode;
   const client = WebullClient.fromEnv(c.env, mode);
   if (!client) return c.json({ data: [], error: `${mode} credentials not configured` }, 503);
   try {
     const positions = await client.getPositions();
-
-    // ── Enrich with SL/TP from D1 decisions ──────────────────────────────
-    // Webull API never returns stop-loss / take-profit; we stored them when
-    // the webhook executed the order, so look up the latest accepted decision
-    // per symbol and merge the values back.
     if (c.env.DB && positions.length > 0) {
       try {
-        const symbols  = [...new Set(positions.map(p => p.symbol))];
+        const symbols = [...new Set(positions.map(position => position.symbol))];
         const placeholders = symbols.map(() => '?').join(',');
-        const rows = await c.env.DB
-          .prepare(
-            `SELECT symbol, stop, target
-               FROM decisions
-              WHERE symbol IN (${placeholders})
-                AND accepted = 1
-                AND mode     = ?
-              GROUP BY symbol
-              HAVING created_at = MAX(created_at)`
-          )
-          .bind(...symbols, mode)
-          .all<{ symbol: string; stop: number | null; target: number | null }>();
-
-        const map = new Map<string, { stop: number | null; target: number | null }>();
-        for (const r of rows.results ?? []) map.set(r.symbol, r);
-
-        for (const pos of positions) {
-          const d = map.get(pos.symbol);
-          if (d) {
-            (pos as unknown as Record<string, unknown>).stopLoss   = d.stop   ?? undefined;
-            (pos as unknown as Record<string, unknown>).takeProfit = d.target ?? undefined;
+        const rows = await c.env.DB.prepare(
+          `SELECT symbol, stop, target
+             FROM decisions
+            WHERE symbol IN (${placeholders})
+              AND accepted = 1
+              AND mode = ?
+            GROUP BY symbol
+            HAVING created_at = MAX(created_at)`,
+        ).bind(...symbols, mode).all<{
+          symbol: string;
+          stop: number | null;
+          target: number | null;
+        }>();
+        const decisions = new Map<string, { stop: number | null; target: number | null }>();
+        for (const row of rows.results ?? []) decisions.set(row.symbol, row);
+        for (const position of positions) {
+          const decision = decisions.get(position.symbol);
+          if (decision) {
+            (position as unknown as Record<string, unknown>).stopLoss = decision.stop ?? undefined;
+            (position as unknown as Record<string, unknown>).takeProfit = decision.target ?? undefined;
           }
         }
-      } catch { /* D1 not available — continue without SL/TP */ }
+      } catch {
+        // Continue without D1 enrichment.
+      }
     }
-
     return c.json({ data: positions });
-  } catch (e) { return c.json({ data: [], error: String(e) }, 502); }
+  } catch (error) {
+    return c.json({ data: [], error: String(error) }, 502);
+  }
 });
 
-trading.get('/:mode/orders', async (c) => {
-  const mode   = (c.req.param('mode').toUpperCase() === 'LIVE' ? 'LIVE' : 'SANDBOX') as TradingMode;
+trading.get('/:mode/orders', async c => {
+  const mode = (c.req.param('mode').toUpperCase() === 'LIVE' ? 'LIVE' : 'SANDBOX') as TradingMode;
   const client = WebullClient.fromEnv(c.env, mode);
   if (!client) return c.json({ data: [], error: `${mode} credentials not configured` }, 503);
-  try   { return c.json({ data: await client.getOrders() }); }
-  catch (e) { return c.json({ data: [], error: String(e) }, 502); }
+  try {
+    return c.json({ data: await client.getOrders() });
+  } catch (error) {
+    return c.json({ data: [], error: String(error) }, 502);
+  }
 });
 
-// ── Place order ────────────────────────────────────────────────────────────────
-trading.post('/orders', async (c) => {
-  const env  = c.env;
+trading.post('/orders', async c => {
+  const env = c.env;
   const body = await c.req.json<{
-    symbol: string; side: 'BUY'|'SELL'; type: string; quantity: number;
-    price?: number; stopPrice?: number; mode: string; idempotencyKey: string;
+    symbol: string;
+    side: 'BUY' | 'SELL';
+    type: string;
+    quantity: number;
+    price?: number;
+    stopPrice?: number;
+    mode: string;
+    idempotencyKey: string;
   }>();
-
   const mode = (body.mode?.toUpperCase() === 'LIVE' ? 'LIVE' : 'SANDBOX') as TradingMode;
-  const ks   = await getKillSwitch(env);
-  if (ks)    return c.json({ error: 'Kill switch is engaged' }, 403);
 
-  // Idempotency check
+  if (mode === 'LIVE') {
+    const authorization = await authorizeLiveExecution(c.req.raw, env);
+    if (!authorization.ok) {
+      return c.json(liveBlockedResponse(authorization), authorization.status as 401 | 423);
+    }
+  }
+
+  const killSwitch = await getKillSwitch(env);
+  if (killSwitch) return c.json({ error: 'Kill switch is engaged' }, 403);
+
   try {
     const existing = await env.DB?.prepare('SELECT id FROM orders WHERE idempotency_key = ?')
-      .bind(body.idempotencyKey).first<{ id: string }>();
+      .bind(body.idempotencyKey)
+      .first<{ id: string }>();
     if (existing) return c.json({ orderId: existing.id, status: 'ALREADY_SUBMITTED' });
-  } catch {}
+  } catch {
+    // D1 idempotency is best effort when the database is unavailable.
+  }
 
   const client = WebullClient.fromEnv(env, mode);
   if (!client) return c.json({ error: `${mode} credentials not configured` }, 503);
 
   try {
     const result = await client.placeOrder({
-      symbol: body.symbol, side: body.side,
-      type:   body.type as 'MARKET'|'LIMIT', qty: body.quantity,
-      price:  body.price, stop: body.stopPrice,
+      symbol: body.symbol,
+      side: body.side,
+      type: body.type as 'MARKET' | 'LIMIT',
+      qty: body.quantity,
+      price: body.price,
+      stop: body.stopPrice,
       idempotencyKey: body.idempotencyKey,
     });
-
     await env.DB?.prepare(
       `INSERT OR IGNORE INTO orders
          (webull_id, symbol, side, type, quantity, price, stop_price, status, mode, idempotency_key)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-    ).bind(result.orderId, body.symbol, body.side, body.type, body.quantity,
-      body.price ?? null, body.stopPrice ?? null, result.status, mode, body.idempotencyKey,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).bind(
+      result.orderId,
+      body.symbol,
+      body.side,
+      body.type,
+      body.quantity,
+      body.price ?? null,
+      body.stopPrice ?? null,
+      result.status,
+      mode,
+      body.idempotencyKey,
     ).run();
-
     return c.json(result);
-  } catch (e) { return c.json({ error: String(e) }, 502); }
+  } catch (error) {
+    return c.json({ error: String(error) }, 502);
+  }
 });
 
-// ── Trades history ─────────────────────────────────────────────────────────────
-trading.get('/trades', async (c) => {
+trading.get('/trades', async c => {
   const limit = Math.min(Number(c.req.query('limit') ?? 100), 500);
-  const mode  = c.req.query('mode');
+  const mode = c.req.query('mode');
   try {
     const query = mode
-      ? `SELECT * FROM trades WHERE mode = ? ORDER BY opened_at DESC LIMIT ?`
-      : `SELECT * FROM trades ORDER BY opened_at DESC LIMIT ?`;
+      ? 'SELECT * FROM trades WHERE mode = ? ORDER BY opened_at DESC LIMIT ?'
+      : 'SELECT * FROM trades ORDER BY opened_at DESC LIMIT ?';
     const dbResult = mode
       ? await c.env.DB?.prepare(query).bind(mode, limit).all<Record<string, unknown>>()
       : await c.env.DB?.prepare(query).bind(limit).all<Record<string, unknown>>();
-
-    const trades = (dbResult?.results ?? []).map(r => ({
-      id:         r.id,
-      symbol:     r.symbol,
-      side:       r.side,
-      quantity:   r.quantity,
-      entryPrice: r.entry_price,
-      exitPrice:  r.exit_price,
-      pnl:        r.pnl,
-      pnlPct:     r.pnl_pct,
-      stopLoss:   r.stop_loss,
-      takeProfit: r.take_profit,
-      signal:     r.signal,
-      status:     r.status,
-      mode:       r.mode,
-      openedAt:   r.opened_at,
-      closedAt:   r.closed_at,
+    const trades = (dbResult?.results ?? []).map(row => ({
+      id: row.id,
+      symbol: row.symbol,
+      side: row.side,
+      quantity: row.quantity,
+      entryPrice: row.entry_price,
+      exitPrice: row.exit_price,
+      pnl: row.pnl,
+      pnlPct: row.pnl_pct,
+      stopLoss: row.stop_loss,
+      takeProfit: row.take_profit,
+      signal: row.signal,
+      status: row.status,
+      mode: row.mode,
+      openedAt: row.opened_at,
+      closedAt: row.closed_at,
     }));
     return c.json({ trades, total: trades.length });
   } catch {
@@ -271,46 +343,90 @@ trading.get('/trades', async (c) => {
   }
 });
 
-// ── Live readiness ─────────────────────────────────────────────────────────────
-trading.get('/live/readiness', async (c) => {
-  const env  = c.env;
+trading.get('/live/readiness', async c => {
+  const env = c.env;
   const live = WebullClient.fromEnv(env, 'LIVE');
   let accountValue = 0;
   let hasPositions = false;
   if (live) {
     try {
-      const [acct, pos] = await Promise.allSettled([live.getAccount(), live.getPositions()]);
-      if (acct.status === 'fulfilled') accountValue = acct.value.accountValue;
-      if (pos.status  === 'fulfilled') hasPositions = pos.value.length > 0;
-    } catch {}
+      const [account, positions] = await Promise.allSettled([
+        live.getAccount(),
+        live.getPositions(),
+      ]);
+      if (account.status === 'fulfilled') accountValue = account.value.accountValue;
+      if (positions.status === 'fulfilled') hasPositions = positions.value.length > 0;
+    } catch {
+      // Readiness remains false when broker observation fails.
+    }
   }
-  return c.json(await checkLiveSafetyGates(env, hasPositions, accountValue));
+  const [legacyReadiness, policy] = await Promise.all([
+    checkLiveSafetyGates(env, hasPositions, accountValue),
+    getLiveExecutionPolicy(env),
+  ]);
+  return c.json({
+    ...legacyReadiness,
+    ready: legacyReadiness.ready && policy.executionAllowed,
+    policy,
+    blockers: policy.blockers,
+  });
 });
 
-// ── Trading mode (SANDBOX / LIVE) ──────────────────────────────────────────────
-trading.get('/mode', async (c) => {
-  const mode = await getTradingMode(c.env);
-  const ks   = await getKillSwitch(c.env);
-  return c.json({ mode, killSwitch: ks });
+trading.get('/mode', async c => {
+  const policy = await getLiveExecutionPolicy(c.env);
+  return c.json({
+    mode: policy.currentMode,
+    storedMode: policy.storedMode,
+    killSwitch: policy.runtimeKillSwitch,
+    liveExecutionAllowed: policy.executionAllowed,
+    blockers: policy.blockers,
+  });
 });
 
-trading.post('/mode', async (c) => {
+trading.post('/mode', async c => {
   const body = await c.req.json<{ mode: string }>();
-  const mode = (body.mode?.toUpperCase() === 'LIVE' ? 'LIVE' : 'SANDBOX') as TradingMode;
-  await setTradingMode(c.env, mode);
-  return c.json({ success: true, mode });
+  const requestedMode = (body.mode?.toUpperCase() === 'LIVE' ? 'LIVE' : 'SANDBOX') as TradingMode;
+  if (requestedMode === 'LIVE') {
+    const authorization = await authorizeLiveExecution(c.req.raw, c.env);
+    if (!authorization.ok) {
+      return c.json(liveBlockedResponse(authorization), authorization.status as 401 | 423);
+    }
+  }
+  await setTradingMode(c.env, requestedMode);
+  const policy = await getLiveExecutionPolicy(c.env);
+  return c.json({
+    success: true,
+    mode: policy.currentMode,
+    storedMode: policy.storedMode,
+    liveExecutionAllowed: policy.executionAllowed,
+    blockers: policy.blockers,
+  });
 });
 
-// ── Kill switch ────────────────────────────────────────────────────────────────
-trading.get('/kill-switch', async (c) => {
+trading.get('/kill-switch', async c => {
   const enabled = await getKillSwitch(c.env);
   return c.json({ killSwitch: enabled });
 });
 
-trading.post('/kill-switch', async (c) => {
+trading.post('/kill-switch', async c => {
   const body = await c.req.json<{ enabled: boolean }>();
-  await setKillSwitch(c.env, !!body.enabled);
-  return c.json({ success: true, killSwitch: !!body.enabled });
+  const enabled = Boolean(body.enabled);
+  if (!enabled) {
+    const policy = await getLiveExecutionPolicy(c.env);
+    if (policy.executionAllowedByConfig) {
+      const authorization = await authorizeLiveControl(c.req.raw, c.env);
+      if (!authorization.ok) {
+        return c.json(liveBlockedResponse(authorization), authorization.status as 401 | 423);
+      }
+    }
+  }
+  await setKillSwitch(c.env, enabled);
+  if (enabled) await setTradingMode(c.env, 'SANDBOX');
+  return c.json({
+    success: true,
+    killSwitch: enabled,
+    mode: enabled ? 'SANDBOX' : undefined,
+  });
 });
 
 export { trading };

@@ -1,0 +1,197 @@
+import SwiftUI
+
+struct PositionsView: View {
+  @EnvironmentObject private var model: AppModel
+  @EnvironmentObject private var session: SessionStore
+  @EnvironmentObject private var network: NetworkMonitor
+  @EnvironmentObject private var preferences: AppPreferences
+  @State private var closingPosition: TradingPosition?
+  @State private var authorizingSymbol: String?
+
+  var body: some View {
+    ScrollView {
+      VStack(spacing: 13) {
+        actionBar
+
+        if let refreshError = model.statusRefreshErrorMessage {
+          InlineErrorView(message: refreshError)
+        }
+
+        if model.activePositions.isEmpty {
+          EmptyStateView(
+            icon: "briefcase",
+            title: "لا توجد مراكز مفتوحة",
+            message: model.isLiveSelected
+              ? "لا توجد مراكز مفتوحة في الحساب الحقيقي."
+              : "لا توجد مراكز مفتوحة في حساب Paper Trading."
+          )
+        } else {
+          ForEach(model.activePositions) { position in
+            PositionCard(
+              position: position,
+              isClosing: model.pendingAction == "close-\(position.symbol ?? "")"
+                || authorizingSymbol == position.symbol,
+              isUnavailable: !network.snapshot.isConnected
+                || session.isAuthorizingSensitiveAction
+            ) {
+              closingPosition = position
+            }
+          }
+        }
+      }
+      .padding()
+    }
+    .background(AppBackground())
+    .foregroundStyle(.white)
+    .navigationTitle(model.isLiveSelected ? "مراكز Live" : "مراكز Paper")
+    .refreshable {
+      guard network.snapshot.isConnected else { return }
+      await model.refreshStatusFromPullToRefresh()
+    }
+    .confirmationDialog(
+      "تأكيد إغلاق المركز",
+      isPresented: Binding(
+        get: { closingPosition != nil },
+        set: { if !$0 { closingPosition = nil } }
+      ),
+      titleVisibility: .visible
+    ) {
+      if let symbol = closingPosition?.symbol {
+        Button("إغلاق \(symbol) فورًا", role: .destructive) {
+          closingPosition = nil
+          Task {
+            authorizingSymbol = symbol
+            defer { authorizingSymbol = nil }
+
+            let authorized = await session.authorizeSensitiveAction(
+              reason: "تأكيد إغلاق مركز \(symbol) وإرسال أمر بيع إلى الوسيط",
+              required: preferences.requiresAuthenticationForSensitiveActions
+            )
+            guard authorized else { return }
+            await model.closePosition(symbol: symbol)
+          }
+        }
+      }
+      Button("إلغاء", role: .cancel) { closingPosition = nil }
+    } message: {
+      Text("سيُرسل أمر إغلاق مؤكد إلى Cloudflare Worker. لا يمكن التراجع بعد قبول الوسيط.")
+    }
+  }
+
+  private var actionBar: some View {
+    GlassCard {
+      HStack(spacing: 10) {
+        Button {
+          Task { await model.refreshStatus(silently: true) }
+        } label: {
+          Label("تحديث الوسيط", systemImage: "arrow.clockwise")
+            .frame(maxWidth: .infinity)
+        }
+        .buttonStyle(.borderedProminent)
+        .tint(MOETheme.accent)
+        .disabled(model.pendingAction != nil || !network.snapshot.isConnected)
+
+        Button {
+          Task { await model.refreshPositions(repair: true) }
+        } label: {
+          Label("فحص الحماية", systemImage: "shield.lefthalf.filled")
+            .frame(maxWidth: .infinity)
+        }
+        .buttonStyle(.bordered)
+        .tint(MOETheme.warning)
+        .disabled(model.pendingAction != nil || !network.snapshot.isConnected)
+      }
+      .font(.caption.bold())
+    }
+  }
+}
+
+private struct PositionCard: View {
+  let position: TradingPosition
+  let isClosing: Bool
+  let isUnavailable: Bool
+  let onClose: () -> Void
+
+  var body: some View {
+    GlassCard {
+      VStack(spacing: 13) {
+        HStack {
+          VStack(alignment: .leading, spacing: 3) {
+            Text(position.symbol ?? "—")
+              .font(.title2.weight(.black))
+            Text(position.indicator ?? position.accountType ?? "—")
+              .font(.caption)
+              .foregroundStyle(MOETheme.muted)
+          }
+          Spacer()
+          Text(position.status ?? (position.positionOpen == true ? "OPEN" : "—"))
+            .font(.caption.bold())
+            .padding(.horizontal, 10)
+            .padding(.vertical, 7)
+            .background(MOETheme.accent.opacity(0.18), in: Capsule())
+        }
+
+        HStack {
+          MetricTile(
+            title: "الكمية",
+            value: formatNumber(position.quantity),
+            icon: "number",
+            tint: MOETheme.accent
+          )
+          MetricTile(
+            title: "آخر سعر",
+            value: formatCurrency(position.lastPrice),
+            icon: "dollarsign",
+            tint: MOETheme.positive
+          )
+        }
+
+        HStack {
+          MetricTile(
+            title: "الدخول",
+            value: formatCurrency(position.entryPrice ?? position.plannedEntryPrice),
+            icon: "arrow.down.circle",
+            tint: MOETheme.accent
+          )
+          MetricTile(
+            title: "Stop",
+            value: formatCurrency(position.currentStopPrice ?? position.initialStopPrice),
+            icon: "shield.fill",
+            tint: MOETheme.negative
+          )
+        }
+
+        HStack {
+          Text("الهدف: \(formatCurrency(position.takeProfitPrice))")
+            .font(.caption)
+            .foregroundStyle(MOETheme.muted)
+          Spacer()
+          Text("P&L: \(formatCurrency(position.unrealizedPnl))")
+            .font(.caption.bold())
+            .foregroundStyle(MOETheme.tone(for: position.unrealizedPnl))
+        }
+
+        if let error = position.error {
+          InlineErrorView(message: error)
+        }
+
+        Button(role: .destructive, action: onClose) {
+          LoadingButtonLabel(
+            title: isClosing ? "جارٍ التحقق…" : "إغلاق المركز فورًا",
+            icon: "xmark.octagon.fill",
+            loading: isClosing
+          )
+          .padding(.vertical, 11)
+        }
+        .buttonStyle(.borderedProminent)
+        .tint(MOETheme.negative)
+        .disabled(isClosing || isUnavailable)
+        .accessibilityHint(
+          isUnavailable
+            ? "يتطلب اتصالًا بالإنترنت"
+            : "سيطلب تأكيد Face ID أو رمز قفل الجهاز عند تفعيل الحماية"
+        )
+      }
+    }
+  }
+}

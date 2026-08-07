@@ -1,0 +1,1 @@
+This file intentionally keeps the recovery change visible to repository-level checks. The executable guard tests are in legacy-durable-objects.test.mjs.

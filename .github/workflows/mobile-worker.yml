@@ -1,0 +1,126 @@
+name: Mobile Worker Integration
+
+on:
+  pull_request:
+    paths:
+      - "worker/**"
+      - "artifacts/trading-bot/**"
+      - ".github/workflows/mobile-worker.yml"
+      - "pnpm-lock.yaml"
+      - "pnpm-workspace.yaml"
+      - "package.json"
+  push:
+    branches:
+      - main
+      - "agent/**"
+    paths:
+      - "worker/**"
+      - "artifacts/trading-bot/**"
+      - ".github/workflows/mobile-worker.yml"
+      - "pnpm-lock.yaml"
+      - "pnpm-workspace.yaml"
+      - "package.json"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mobile-worker-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  WRANGLER_VERSION: "4.119.0"
+
+jobs:
+  validate:
+    name: Validate native mobile Worker API
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up pnpm 10
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.33.4
+          run_install: false
+
+      - name: Set up Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Repair and install dashboard workspace scope
+        run: pnpm --filter @workspace/trading-bot... install --no-frozen-lockfile
+
+      - name: Type-check Live dashboard controls
+        run: pnpm --filter @workspace/trading-bot typecheck
+
+      - name: Install Worker dependencies
+        working-directory: worker
+        run: pnpm install --frozen-lockfile
+
+      - name: Type-check Worker
+        working-directory: worker
+        run: pnpm run type-check
+
+      - name: Run mobile session, Live control, APNs, route, and Wrangler tests
+        working-directory: worker
+        run: pnpm run test:mobile
+
+      - name: Generate local Worker config
+        working-directory: worker
+        run: node scripts/generate-wrangler-config.mjs sandbox wrangler.mobile-ci.toml
+
+      - name: Apply local D1 migrations
+        working-directory: worker
+        run: pnpm dlx wrangler@${WRANGLER_VERSION} d1 migrations apply DB --local --config wrangler.mobile-ci.toml
+
+      - name: Run local Worker HTTP contract
+        working-directory: worker
+        shell: bash
+        env:
+          MOE_LOCAL_CONTROL_PIN: "246810"
+          MOE_LOCAL_WEBHOOK_SECRET: "mobile-ci-webhook-secret"
+        run: |
+          set -euo pipefail
+          cat > .dev.vars <<'VARS'
+          MOE_MOBILE_CONTROL_PIN=246810
+          MOE_MOBILE_SESSION_SECRET=mobile-ci-session-secret-0123456789abcdef0123456789abcdef
+          MOE_WEBHOOK_SECRET=mobile-ci-webhook-secret
+          VARS
+
+          LOG_FILE="$RUNNER_TEMP/moe-mobile-local-worker.log"
+          pnpm dlx wrangler@${WRANGLER_VERSION} dev \
+            --local \
+            --config wrangler.mobile-ci.toml \
+            --ip 127.0.0.1 \
+            --port 8787 \
+            > "$LOG_FILE" 2>&1 &
+          WORKER_PID=$!
+          cleanup() {
+            kill "$WORKER_PID" >/dev/null 2>&1 || true
+            wait "$WORKER_PID" >/dev/null 2>&1 || true
+            rm -f .dev.vars
+          }
+          trap cleanup EXIT
+
+          if ! MOE_LOCAL_BASE_URL=http://127.0.0.1:8787 \
+            MOE_LOCAL_CONTROL_PIN="$MOE_LOCAL_CONTROL_PIN" \
+            MOE_LOCAL_WEBHOOK_SECRET="$MOE_LOCAL_WEBHOOK_SECRET" \
+            node test/mobile-local-e2e.mjs; then
+            cat "$LOG_FILE"
+            exit 1
+          fi
+
+      - name: Wrangler dry-run
+        working-directory: worker
+        run: pnpm dlx wrangler@${WRANGLER_VERSION} deploy --dry-run --config wrangler.mobile-ci.toml
+
+      - name: Remove generated local config
+        if: always()
+        working-directory: worker
+        run: rm -f wrangler.mobile-ci.toml .dev.vars

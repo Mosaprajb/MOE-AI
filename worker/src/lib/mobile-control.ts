@@ -1,0 +1,165 @@
+import type { TradingMode } from './types';
+import type { MobileEnv } from './mobile-env';
+
+const LEGACY_RECEPTION_KEY = 'mobile:tradingview-reception';
+
+export interface MobileReceptionState {
+  enabled: boolean;
+  accountType: 'DEMO' | 'LIVE';
+  updatedAt: string;
+}
+
+function accountTypeFrom(value: TradingMode | 'DEMO' | 'LIVE'): 'DEMO' | 'LIVE' {
+  return value === 'LIVE' ? 'LIVE' : 'DEMO';
+}
+
+function receptionKey(accountType: 'DEMO' | 'LIVE'): string {
+  return `mobile:tradingview-reception:${accountType}`;
+}
+
+function fallbackState(accountType: 'DEMO' | 'LIVE'): MobileReceptionState {
+  return {
+    // Reception must be explicitly enabled after account-specific sizing and
+    // trading-session controls are configured.
+    enabled: false,
+    accountType,
+    updatedAt: new Date(0).toISOString(),
+  };
+}
+
+export async function getMobileReceptionState(
+  env: MobileEnv,
+  modeOrAccount: TradingMode | 'DEMO' | 'LIVE' = 'DEMO',
+): Promise<MobileReceptionState> {
+  const accountType = accountTypeFrom(modeOrAccount);
+  const fallback = fallbackState(accountType);
+  if (!env.CONFIG) return fallback;
+  try {
+    const saved = await env.CONFIG.get(
+      receptionKey(accountType),
+      'json',
+    ) as Partial<MobileReceptionState> | null;
+    if (saved) {
+      return {
+        enabled: saved.enabled === true,
+        accountType,
+        updatedAt: typeof saved.updatedAt === 'string' ? saved.updatedAt : fallback.updatedAt,
+      };
+    }
+
+    // Preserve the legacy Paper state only. Live never inherits Paper state.
+    if (accountType === 'DEMO') {
+      const legacy = await env.CONFIG.get(
+        LEGACY_RECEPTION_KEY,
+        'json',
+      ) as Partial<MobileReceptionState> | null;
+      if (legacy?.accountType !== 'LIVE') {
+        return {
+          enabled: legacy?.enabled === true,
+          accountType: 'DEMO',
+          updatedAt: typeof legacy?.updatedAt === 'string' ? legacy.updatedAt : fallback.updatedAt,
+        };
+      }
+    }
+    return fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+export async function setMobileReceptionState(
+  env: MobileEnv,
+  enabled: boolean,
+  accountType: 'DEMO' | 'LIVE',
+): Promise<MobileReceptionState> {
+  if (!env.CONFIG) throw new Error('CONFIG KV is required to update reception state');
+  const state: MobileReceptionState = {
+    enabled,
+    accountType,
+    updatedAt: new Date().toISOString(),
+  };
+  await env.CONFIG.put(receptionKey(accountType), JSON.stringify(state));
+  return state;
+}
+
+export async function disableAllMobileReception(env: MobileEnv): Promise<void> {
+  if (!env.CONFIG) return;
+  const timestamp = new Date().toISOString();
+  await Promise.all([
+    env.CONFIG.put(
+      receptionKey('DEMO'),
+      JSON.stringify({ enabled: false, accountType: 'DEMO', updatedAt: timestamp }),
+    ),
+    env.CONFIG.put(
+      receptionKey('LIVE'),
+      JSON.stringify({ enabled: false, accountType: 'LIVE', updatedAt: timestamp }),
+    ),
+  ]);
+}
+
+export function mobileAccountTypeForMode(mode: TradingMode): 'DEMO' | 'LIVE' {
+  return mode === 'LIVE' ? 'LIVE' : 'DEMO';
+}
+
+async function runSchemaStatement(env: MobileEnv, sql: string): Promise<void> {
+  if (!env.DB) return;
+  await env.DB.prepare(sql).run();
+}
+
+export async function ensureMobileAuditSchema(env: MobileEnv): Promise<void> {
+  if (!env.DB) return;
+  await runSchemaStatement(env, `
+    CREATE TABLE IF NOT EXISTS mobile_audit (
+      id TEXT PRIMARY KEY,
+      type TEXT NOT NULL,
+      symbol TEXT,
+      account_type TEXT,
+      reason TEXT,
+      error TEXT,
+      request_id TEXT,
+      created_at TEXT NOT NULL
+    )
+  `);
+  await runSchemaStatement(env, `
+    CREATE INDEX IF NOT EXISTS idx_mobile_audit_created
+      ON mobile_audit(created_at DESC)
+  `);
+  await runSchemaStatement(env, `
+    CREATE TABLE IF NOT EXISTS mobile_login_attempts (
+      fingerprint TEXT PRIMARY KEY,
+      failures INTEGER NOT NULL DEFAULT 0,
+      window_started_at INTEGER NOT NULL,
+      locked_until INTEGER,
+      updated_at INTEGER NOT NULL
+    )
+  `);
+}
+
+export async function writeMobileAudit(
+  env: MobileEnv,
+  event: {
+    type: string;
+    symbol?: string;
+    accountType?: string;
+    reason?: string;
+    error?: string;
+    requestId?: string;
+  },
+): Promise<void> {
+  if (!env.DB) return;
+  await ensureMobileAuditSchema(env);
+  await env.DB.prepare(`
+    INSERT INTO mobile_audit (
+      id, type, symbol, account_type, reason, error, request_id, created_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+  `).bind(
+    crypto.randomUUID(),
+    event.type,
+    event.symbol ?? null,
+    event.accountType ?? null,
+    event.reason ?? null,
+    event.error ?? null,
+    event.requestId ?? null,
+    new Date().toISOString(),
+  ).run();
+}

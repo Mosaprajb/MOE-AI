@@ -27,6 +27,21 @@ node_modules
 !.vscode/launch.json
 !.vscode/extensions.json
 
+# Xcode
+DerivedData/
+*.xcuserstate
+xcuserdata/
+*.ipa
+*.dSYM
+*.dSYM.zip
+*.mobileprovision
+
+# Cloudflare generated/local state
+worker/.wrangler/
+worker/.wrangler.*.ci.toml
+worker/wrangler.mobile-ci.toml
+worker/.dev.vars
+
 # misc
 /.sass-cache
 /connect.lock
