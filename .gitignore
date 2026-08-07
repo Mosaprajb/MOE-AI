@@ -36,6 +36,12 @@ xcuserdata/
 *.dSYM.zip
 *.mobileprovision
 
+# Cloudflare generated/local state
+worker/.wrangler/
+worker/.wrangler.*.ci.toml
+worker/wrangler.mobile-ci.toml
+worker/.dev.vars
+
 # misc
 /.sass-cache
 /connect.lock

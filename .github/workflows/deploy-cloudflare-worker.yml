@@ -4,66 +4,68 @@ on:
   push:
     branches: [main]
     paths:
-      - 'worker/**'
-      - '.github/workflows/deploy-cloudflare-worker.yml'
+      - "worker/**"
+      - ".github/workflows/deploy-cloudflare-worker.yml"
   workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-cloudflare-production
+  cancel-in-progress: false
+
+env:
+  WRANGLER_VERSION: "4.119.0"
 
 jobs:
   deploy:
-    name: Type-check & Deploy
+    name: Validate and deploy production
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     environment: production
     defaults:
       run:
         working-directory: worker
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v4
 
-      - uses: pnpm/action-setup@v4
+      - name: Set up pnpm 10
+        uses: pnpm/action-setup@v4
         with:
-          version: 10
+          version: 10.33.4
+          run_install: false
 
-      - uses: actions/setup-node@v4
+      - name: Set up Node 22
+        uses: actions/setup-node@v4
         with:
-          node-version: '22'
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: worker/pnpm-lock.yaml
 
-      # worker/ is NOT in the pnpm workspace; --ignore-workspace installs
-      # into worker/node_modules so node_modules/.bin/tsc is available below.
-      - run: pnpm install --frozen-lockfile --ignore-workspace
+      - name: Install Worker dependencies
+        run: pnpm install --frozen-lockfile
 
-      - name: TypeScript check
-        run: node_modules/.bin/tsc --noEmit
+      - name: Type-check Worker
+        run: pnpm run type-check
 
-      - name: Strip placeholder KV/D1 bindings
-        run: |
-          python3 - <<'PYEOF'
-          import re, pathlib
-          p = pathlib.Path("wrangler.toml")
-          txt = p.read_text()
+      - name: Run mobile Worker tests
+        run: pnpm run test:mobile
 
-          kv_id  = "${{ secrets.KV_NAMESPACE_ID }}"
-          d1_id  = "${{ secrets.D1_DATABASE_ID }}"
+      - name: Generate production config from wrangler.jsonc
+        run: node scripts/generate-wrangler-config.mjs production
 
-          if kv_id:
-              txt = txt.replace('id = "placeholder"', f'id = "{kv_id}"', 1)
-              print(f"✓ KV namespace ID injected")
-          else:
-              txt = re.sub(r'\[\[kv_namespaces\]\][^\[]*', '', txt, flags=re.DOTALL)
-              print("⚠ KV_NAMESPACE_ID not set — KV binding removed")
-
-          if d1_id:
-              txt = txt.replace('database_id = "placeholder"', f'database_id = "{d1_id}"', 1)
-              print(f"✓ D1 database ID injected")
-          else:
-              txt = re.sub(r'\[\[d1_databases\]\][^\[]*', '', txt, flags=re.DOTALL)
-              print("⚠ D1_DATABASE_ID not set — D1 binding removed")
-
-          p.write_text(txt)
-          PYEOF
-
-      - name: Deploy to Cloudflare Workers
-        run: npx wrangler deploy src/index.ts
+      - name: Deploy production Worker
+        run: pnpm dlx wrangler@${WRANGLER_VERSION} deploy --config .wrangler.production.ci.toml
         env:
-          CLOUDFLARE_API_TOKEN:  ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+
+      - name: Verify deployed safety policy
+        run: node scripts/verify-deployment-safety.mjs production
+
+      - name: Remove generated Wrangler config
+        if: always()
+        run: rm -f .wrangler.production.ci.toml

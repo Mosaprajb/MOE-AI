@@ -105,7 +105,7 @@ final class TradingModelsTests: XCTestCase {
         isConstrained: false,
         updatedAt: Date(timeIntervalSince1970: 0)
       ),
-      workerURLText: "https://user:password@example.com/private/path?token=super-secret",
+      workerURLText: "https://example.com/private/path?token=super-secret",
       authenticated: true,
       selectedAccount: "DEMO",
       mode: "TRADINGVIEW_ONLY",
@@ -134,11 +134,16 @@ final class TradingModelsTests: XCTestCase {
     XCTAssertTrue(report.contains("api_request_id=request-123"))
     XCTAssertTrue(report.contains("<redacted>"))
     XCTAssertFalse(report.contains("/private/path"))
-    XCTAssertFalse(report.contains("password"))
     XCTAssertFalse(report.contains("super-secret"))
     XCTAssertFalse(report.contains("secret-value"))
     XCTAssertFalse(report.contains("session-secret"))
     XCTAssertFalse(report.contains(longToken))
+    XCTAssertEqual(
+      SupportDiagnostics.workerEndpointSummary(
+        "https://user:password@example.com/private/path"
+      ),
+      "invalid"
+    )
   }
 
   func testPushNavigationParserUsesTrustedDeepLinkAndNormalizesSymbol() throws {

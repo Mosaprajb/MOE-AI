@@ -2,8 +2,14 @@ import SwiftUI
 
 struct MainTabView: View {
   @EnvironmentObject private var model: AppModel
+  @EnvironmentObject private var session: SessionStore
   @EnvironmentObject private var network: NetworkMonitor
   @EnvironmentObject private var notifications: NotificationManager
+  @EnvironmentObject private var preferences: AppPreferences
+
+  private var activeErrorMessage: String? {
+    model.errorMessage ?? session.errorMessage
+  }
 
   var body: some View {
     TabView(selection: $notifications.selectedTab) {
@@ -33,13 +39,17 @@ struct MainTabView: View {
         OfflineBanner(snapshot: network.snapshot)
       }
     }
-    .task {
+    .task(id: preferences.autoRefreshInterval) {
       if model.lastRefresh == nil, network.snapshot.isConnected {
         await model.loadAll()
       }
 
+      let seconds = preferences.autoRefreshInterval.seconds
+      guard seconds > 0 else { return }
+      let delay = UInt64(seconds * 1_000_000_000)
+
       while !Task.isCancelled {
-        try? await Task.sleep(for: .seconds(15))
+        try? await Task.sleep(nanoseconds: delay)
         guard !Task.isCancelled else { break }
         guard network.snapshot.isConnected else { continue }
         await model.refreshStatus(silently: true)
@@ -64,13 +74,21 @@ struct MainTabView: View {
     .alert(
       "MOE-AI",
       isPresented: Binding(
-        get: { model.errorMessage != nil },
-        set: { if !$0 { model.errorMessage = nil } }
+        get: { activeErrorMessage != nil },
+        set: { isPresented in
+          if !isPresented {
+            model.errorMessage = nil
+            session.errorMessage = nil
+          }
+        }
       )
     ) {
-      Button("حسنًا") { model.errorMessage = nil }
+      Button("حسنًا") {
+        model.errorMessage = nil
+        session.errorMessage = nil
+      }
     } message: {
-      Text(model.errorMessage ?? "")
+      Text(activeErrorMessage ?? "")
     }
   }
 }
