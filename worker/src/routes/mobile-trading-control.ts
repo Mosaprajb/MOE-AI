@@ -1,5 +1,5 @@
 import { Hono } from 'hono';
-import type { TradingMode } from '../lib/types';
+import type { Env, TradingMode } from '../lib/types';
 import type { MobileEnv } from '../lib/mobile-env';
 import type { LiveControlEnv } from '../lib/live-policy';
 import { WebullClient } from '../lib/webull';
@@ -20,7 +20,7 @@ import {
   type TradingSettings,
 } from './trading-settings';
 
-type TradingControlEnv = MobileEnv & LiveControlEnv;
+type TradingControlEnv = Env & MobileEnv & LiveControlEnv;
 
 const mobileTradingControl = new Hono<{ Bindings: TradingControlEnv }>();
 
@@ -89,6 +89,11 @@ async function liveBlockers(env: TradingControlEnv): Promise<string[]> {
   ];
 }
 
+function configurationBlocker(settings: TradingSettings): string | null {
+  if (isTradingSettingsConfigured(settings)) return null;
+  return 'Choose a session, share quantity, maximum dollar amount, stop-loss %, take-profit %, and valid trailing settings before enabling TradingView.';
+}
+
 mobileTradingControl.get('/:mode', async c => {
   const mode = modeFrom(c.req.param('mode'));
   const [settings, reception, killSwitch] = await Promise.all([
@@ -101,8 +106,10 @@ mobileTradingControl.get('/:mode', async c => {
   const blockers: string[] = [];
   let broker: Record<string, unknown> = { connected: false };
 
-  if (!isTradingSettingsConfigured(settings)) {
-    blockers.push('Choose at least one session, a share quantity, and a maximum dollar amount before enabling TradingView.');
+  const settingsBlocker = configurationBlocker(settings);
+  if (settingsBlocker) blockers.push(settingsBlocker);
+  if (settings.trailingEnabled && !c.env.STEP_TRAILING_COORDINATOR) {
+    blockers.push('Step trailing coordinator binding is not configured.');
   }
   if (!client) {
     blockers.push(`${mode} Webull credentials are not configured.`);
@@ -164,7 +171,7 @@ mobileTradingControl.post('/:mode/settings', async c => {
 
   try {
     const settings = await saveTradingSettings(c.env, mode, body);
-    // Any sizing/session/TIF change requires an explicit re-arm.
+    // Any sizing/session/TIF/protection change requires an explicit re-arm.
     await setMobileReceptionState(c.env, false, accountType(mode));
     await writeMobileAudit(c.env, {
       type: 'MOBILE_TRADING_SETTINGS_UPDATED',
@@ -174,6 +181,13 @@ mobileTradingControl.post('/:mode/settings', async c => {
         timeInForce: settings.timeInForce,
         shareQuantity: settings.shareQuantity,
         maxTradeAmountUsd: settings.maxTradeAmountUsd,
+        stopLossPct: settings.stopLossPct,
+        takeProfitPct: settings.takeProfitPct,
+        trailingEnabled: settings.trailingEnabled,
+        trailingActivationCents: settings.trailingActivationCents,
+        trailingInitialLockCents: settings.trailingInitialLockCents,
+        trailingStepTriggerCents: settings.trailingStepTriggerCents,
+        trailingStepMoveCents: settings.trailingStepMoveCents,
       }),
       requestId: c.req.header('x-moe-request-id'),
     });
@@ -207,7 +221,7 @@ mobileTradingControl.post('/:mode/preview', async c => {
 
   const settings = await getTradingSettings(c.env, mode);
   if (!isTradingSettingsConfigured(settings)) {
-    return c.json({ ok: false, error: 'Trading controls must be configured before preview.' }, 423);
+    return c.json({ ok: false, error: 'Trading controls and exit protection must be configured before preview.' }, 423);
   }
   const market = currentTradingWindow();
   if (!market.webullSession || !isCurrentTradingWindowAllowed(settings, market)) {
@@ -258,6 +272,8 @@ mobileTradingControl.post('/:mode/preview', async c => {
       orderType: preview.orderType,
       tradingSession: preview.tradingSession,
       timeInForce: preview.timeInForce,
+      stopLossPrice: side === 'BUY' ? price * (1 - settings.stopLossPct / 100) : undefined,
+      takeProfitPrice: side === 'BUY' ? price * (1 + settings.takeProfitPct / 100) : undefined,
       intradayBuyingPower: account.dayBuyingPower,
       overnightBuyingPower: account.overnightBuyingPower,
       nightTradingBuyingPower: effectiveNightBuyingPower(account),
@@ -291,8 +307,10 @@ mobileTradingControl.post('/:mode/reception', async c => {
 
   const settings = await getTradingSettings(c.env, mode);
   const blockers: string[] = [];
-  if (!isTradingSettingsConfigured(settings)) {
-    blockers.push('Configure sessions, share quantity, and maximum trade amount first.');
+  const settingsBlocker = configurationBlocker(settings);
+  if (settingsBlocker) blockers.push(settingsBlocker);
+  if (settings.trailingEnabled && !c.env.STEP_TRAILING_COORDINATOR) {
+    blockers.push('Step trailing coordinator binding is not configured.');
   }
   if (await getKillSwitch(c.env)) blockers.push('Kill Switch is active.');
 
@@ -324,7 +342,19 @@ mobileTradingControl.post('/:mode/reception', async c => {
   await writeMobileAudit(c.env, {
     type: 'MOBILE_RECEPTION_ENABLED',
     accountType: accountType(mode),
-    reason: `${settings.allowedSessions.join('+')}|${settings.shareQuantity}|${settings.maxTradeAmountUsd}|${settings.timeInForce}`,
+    reason: JSON.stringify({
+      allowedSessions: settings.allowedSessions,
+      shareQuantity: settings.shareQuantity,
+      maxTradeAmountUsd: settings.maxTradeAmountUsd,
+      timeInForce: settings.timeInForce,
+      stopLossPct: settings.stopLossPct,
+      takeProfitPct: settings.takeProfitPct,
+      trailingEnabled: settings.trailingEnabled,
+      trailingActivationCents: settings.trailingActivationCents,
+      trailingInitialLockCents: settings.trailingInitialLockCents,
+      trailingStepTriggerCents: settings.trailingStepTriggerCents,
+      trailingStepMoveCents: settings.trailingStepMoveCents,
+    }),
     requestId: c.req.header('x-moe-request-id'),
   });
   return c.json({ ok: true, mode, reception: state, settings });
