@@ -1,11 +1,10 @@
-const baseUrl = String(
+const DEFAULT_BASE_URL = String(
   process.env.MOE_PRODUCTION_BASE_URL
     ?? 'https://moerand-alerts.mosaprajb.workers.dev',
 ).replace(/\/$/u, '');
 
-const endpoint = `${baseUrl}/api/trading/live/observation`;
-const attempts = 8;
-const delayMs = 3000;
+const DEFAULT_ATTEMPTS = 30;
+const DEFAULT_RETRY_DELAY_MS = 3_000;
 
 function sanitized(payload) {
   return {
@@ -47,28 +46,68 @@ function validate(payload) {
   return view;
 }
 
-let lastError = null;
-for (let attempt = 1; attempt <= attempts; attempt += 1) {
-  try {
-    const response = await fetch(endpoint, {
-      headers: { accept: 'application/json' },
-      signal: AbortSignal.timeout(10000),
-    });
-    const payload = await response.json().catch(() => null);
-    if (!response.ok) {
-      throw new Error(`HTTP ${response.status}\n${JSON.stringify(sanitized(payload), null, 2)}`);
-    }
-    const result = validate(payload);
-    console.log(JSON.stringify(result, null, 2));
-    process.exit(0);
-  } catch (error) {
-    lastError = error;
-    if (attempt < attempts) {
-      console.warn(`Live observation verification attempt ${attempt}/${attempts} failed; retrying in ${delayMs}ms.`);
-      await new Promise(resolve => setTimeout(resolve, delayMs));
-    }
-  }
+export function liveObservationProbeUrl(url, attempt, timestamp = Date.now()) {
+  const probe = new URL(url);
+  probe.searchParams.set('_moe_probe', `${timestamp}-${attempt}`);
+  return probe.toString();
 }
 
-console.error(lastError instanceof Error ? lastError.message : String(lastError));
-process.exit(1);
+async function fetchObservation(fetchImpl, endpoint, attempt) {
+  const response = await fetchImpl(liveObservationProbeUrl(endpoint, attempt), {
+    method: 'GET',
+    headers: {
+      accept: 'application/json',
+      'cache-control': 'no-cache, no-store, max-age=0',
+      pragma: 'no-cache',
+    },
+    signal: AbortSignal.timeout(10_000),
+  });
+  const payload = await response.json().catch(() => null);
+  if (!response.ok) {
+    throw new Error(`HTTP ${response.status}\n${JSON.stringify(sanitized(payload), null, 2)}`);
+  }
+  return payload;
+}
+
+function sleep(milliseconds) {
+  return new Promise(resolve => setTimeout(resolve, milliseconds));
+}
+
+export async function verifyLiveObservation({
+  baseUrl = DEFAULT_BASE_URL,
+  fetchImpl = fetch,
+  attempts = DEFAULT_ATTEMPTS,
+  retryDelayMs = DEFAULT_RETRY_DELAY_MS,
+} = {}) {
+  if (typeof baseUrl !== 'string' || baseUrl.length === 0) {
+    throw new Error('A production base URL is required.');
+  }
+  if (!Number.isInteger(attempts) || attempts < 1) {
+    throw new Error('attempts must be a positive integer.');
+  }
+
+  const endpoint = `${baseUrl.replace(/\/$/u, '')}/api/trading/live/observation`;
+  let lastError = null;
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    try {
+      return validate(await fetchObservation(fetchImpl, endpoint, attempt));
+    } catch (error) {
+      lastError = error;
+      if (attempt < attempts) {
+        console.warn(`Live observation verification attempt ${attempt}/${attempts} failed; retrying in ${retryDelayMs}ms.`);
+        await sleep(retryDelayMs);
+      }
+    }
+  }
+  throw lastError;
+}
+
+if (import.meta.url === `file://${process.argv[1]}`) {
+  try {
+    const result = await verifyLiveObservation();
+    console.log(JSON.stringify(result, null, 2));
+  } catch (error) {
+    console.error(error instanceof Error ? error.message : String(error));
+    process.exitCode = 1;
+  }
+}
