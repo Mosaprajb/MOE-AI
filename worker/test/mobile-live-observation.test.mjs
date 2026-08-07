@@ -62,6 +62,7 @@ test('sanitized Live observation probe stays public without exposing account pay
   assert.equal(payload.liveReadOnly, true);
   assert.equal(payload.liveExecutionAllowed, false);
   assert.deepEqual(payload.diagnostics, {
+    token: null,
     account: null,
     positions: null,
     openOrders: null,
