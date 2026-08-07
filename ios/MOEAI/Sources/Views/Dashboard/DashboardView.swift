@@ -415,6 +415,7 @@ struct DashboardView: View {
       .overlay {
         RoundedRectangle(cornerRadius: 14, style: .continuous)
           .stroke(selected ? MOETheme.accent.opacity(0.35) : Color.white.opacity(0.06))
+          .allowsHitTesting(false)
       }
     }
     .buttonStyle(.plain)
@@ -431,6 +432,9 @@ struct DashboardView: View {
         .font(.caption.weight(.bold))
         .foregroundStyle(MOETheme.muted)
       TextField(placeholder, text: text)
+        .textFieldStyle(.plain)
+        .foregroundStyle(.white)
+        .tint(MOETheme.accent)
         .keyboardType(keyboard)
         .textInputAutocapitalization(title == "Symbol" ? .characters : .never)
         .autocorrectionDisabled()
@@ -440,7 +444,9 @@ struct DashboardView: View {
         .overlay {
           RoundedRectangle(cornerRadius: 12)
             .stroke(Color.white.opacity(0.08))
+            .allowsHitTesting(false)
         }
+        .contentShape(Rectangle())
     }
     .frame(maxWidth: .infinity)
   }
