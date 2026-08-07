@@ -13,6 +13,10 @@ struct PositionsView: View {
       VStack(spacing: 13) {
         actionBar
 
+        if let refreshError = model.statusRefreshErrorMessage {
+          InlineErrorView(message: refreshError)
+        }
+
         if model.status.safePositions.isEmpty {
           EmptyStateView(
             icon: "briefcase",
@@ -40,7 +44,7 @@ struct PositionsView: View {
     .navigationTitle("المراكز")
     .refreshable {
       guard network.snapshot.isConnected else { return }
-      await model.refreshStatus()
+      await model.refreshStatusFromPullToRefresh()
     }
     .confirmationDialog(
       "تأكيد إغلاق المركز",
