@@ -4,6 +4,7 @@ import type { MobileEnv } from './lib/mobile-env';
 import type { LiveControlEnv } from './lib/live-policy';
 import { corsMiddleware } from './lib/cors';
 import { getRecentTelemetry } from './lib/telemetry';
+import { readValidMobileSession } from './lib/mobile-session';
 import { health } from './routes/health';
 import { webhook } from './routes/webhook';
 import { trading } from './routes/trading';
@@ -119,6 +120,16 @@ app.use('/api/tradingview/kill-switch', async (c, next) => {
   return undefined;
 });
 
+// Decisions expose trading history, so keep them behind the authenticated
+// native mobile session even though the TradingView webhook itself is public
+// and authenticated with MOE_WEBHOOK_SECRET in its JSON body.
+app.use('/api/tradingview/decisions', async (c, next) => {
+  const session = await readValidMobileSession(c.req.raw, c.env);
+  if (!session) return c.json({ ok: false, error: 'Authentication required' }, 401);
+  await next();
+  return undefined;
+});
+
 app.use('/api/tradingview/webhook', async (c, next) => {
   await next();
 
@@ -189,8 +200,10 @@ app.use('/api/tradingview/webhook', async (c, next) => {
 
 app.route('/api/health', health);
 app.route('/api/system/health', health);
-app.route('/api/tradingview', mobileTradingView);
+// Register webhook routes before the native mobile sub-router so the public
+// TradingView POST is authenticated by MOE_WEBHOOK_SECRET, not by an iPhone cookie.
 app.route('/api/tradingview', webhook);
+app.route('/api/tradingview', mobileTradingView);
 app.route('/api/mobile', mobileApi);
 app.route('/api/mobile/trading-control', mobileTradingControl);
 app.route('/api/trading/live', liveControl);
