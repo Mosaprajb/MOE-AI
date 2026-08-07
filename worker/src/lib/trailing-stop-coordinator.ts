@@ -186,11 +186,7 @@ export class TrailingStopCoordinator {
           await this.schedule(managed);
           return;
         }
-        managed.status = 'CLOSED';
-        managed.updatedAt = new Date().toISOString();
-        managed.lastError = undefined;
-        await this.state.storage.put(STATE_KEY, managed);
-        await this.state.storage.deleteAlarm();
+        await this.finishClosed(managed);
         return;
       }
 
@@ -265,7 +261,10 @@ export class TrailingStopCoordinator {
           // Some broker combo implementations may remove a sibling when one leg
           // is cancelled. Verify the stop is still open and recreate a standalone
           // stop with a deterministic ID when necessary.
-          await this.ensureTrailingStopOpen(client, managed);
+          if (!(await this.ensureTrailingStopOpen(client, managed))) {
+            await this.finishClosed(managed);
+            return;
+          }
         } catch (error) {
           // The stop was already moved into profit before this transition. Keep
           // retrying until both TP removal and stop verification succeed.
@@ -285,7 +284,10 @@ export class TrailingStopCoordinator {
 
         // Verify a protective SELL stop exists on every alarm before attempting
         // another price step. This also covers eventual combo-cancellation effects.
-        await this.ensureTrailingStopOpen(client, managed);
+        if (!(await this.ensureTrailingStopOpen(client, managed))) {
+          await this.finishClosed(managed);
+          return;
+        }
 
         const nextTrigger = Number(managed.nextTriggerPrice ?? 0);
         const currentStop = Number(managed.currentStopPrice ?? 0);
@@ -325,6 +327,14 @@ export class TrailingStopCoordinator {
     await this.state.storage.setAlarm(Date.now() + POLL_INTERVAL_MS);
   }
 
+  private async finishClosed(managed: ManagedPosition): Promise<void> {
+    managed.status = 'CLOSED';
+    managed.updatedAt = new Date().toISOString();
+    managed.lastError = undefined;
+    await this.state.storage.put(STATE_KEY, managed);
+    await this.state.storage.deleteAlarm();
+  }
+
   private async retryWithError(managed: ManagedPosition, message: string): Promise<void> {
     managed.lastError = message;
     managed.updatedAt = new Date().toISOString();
@@ -345,36 +355,53 @@ export class TrailingStopCoordinator {
   private async ensureTrailingStopOpen(
     client: WebullClient,
     managed: ManagedPosition,
-  ): Promise<void> {
+  ): Promise<boolean> {
     const stopPrice = Number(managed.currentStopPrice ?? 0);
     if (!(stopPrice > 0)) throw new Error('Trailing stop price is unavailable.');
 
     let openIds = await getOpenClientOrderIds(client);
-    if (openIds.has(managed.stopLossClientOrderId)) return;
+    if (openIds.has(managed.stopLossClientOrderId)) return true;
+
+    // Before creating a recovery SELL, re-check the broker position to avoid a
+    // stale stop opening a short after TP/SL closed the long between API calls.
+    const positions = await client.getPositions();
+    const livePosition = positions.find(item => (
+      item.symbol === managed.symbol
+      && item.side === 'LONG'
+      && item.quantity > 0
+    ));
+    if (!livePosition) return false;
 
     const recoveryId = recoveryStopClientOrderId(managed);
     if (openIds.has(recoveryId)) {
       managed.stopLossClientOrderId = recoveryId;
-      return;
+      return true;
     }
+
+    const recoveryQuantity = Math.max(
+      0,
+      Math.min(Math.floor(managed.qty), Math.floor(livePosition.quantity)),
+    );
+    if (recoveryQuantity < 1) return false;
 
     try {
       await placeStandaloneProtectiveStop(client, {
         symbol: managed.symbol,
-        qty: managed.qty,
+        qty: recoveryQuantity,
         stopPrice,
         clientOrderId: recoveryId,
         tradingSession: managed.tradingSession,
         timeInForce: managed.timeInForce,
       });
       managed.stopLossClientOrderId = recoveryId;
+      return true;
     } catch (error) {
       // Durable Object alarms are at-least-once. If a retry races a successful
       // prior placement, confirm the deterministic recovery ID before failing.
       openIds = await getOpenClientOrderIds(client);
       if (openIds.has(recoveryId)) {
         managed.stopLossClientOrderId = recoveryId;
-        return;
+        return true;
       }
       throw error;
     }
