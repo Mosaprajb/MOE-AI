@@ -24,7 +24,11 @@ test('mobile session token round-trips and expires', async () => {
 
 test('mobile session rejects a modified signature', async () => {
   const created = await createMobileSessionToken(env, 2_000);
-  const tampered = `${created.token.slice(0, -1)}${created.token.endsWith('a') ? 'b' : 'a'}`;
+  const [segment, signature] = created.token.split('.');
+  assert.ok(segment);
+  assert.ok(signature);
+  const tamperedSignature = `${signature[0] === 'A' ? 'B' : 'A'}${signature.slice(1)}`;
+  const tampered = `${segment}.${tamperedSignature}`;
   assert.equal(await verifyMobileSessionToken(tampered, env, 2_001), null);
 });
 

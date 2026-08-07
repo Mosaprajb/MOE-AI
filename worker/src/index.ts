@@ -1,18 +1,33 @@
 // MOE-AI Cloudflare Worker - TradingView -> Webull Bridge
 import { Hono } from 'hono';
 import type { MobileEnv } from './lib/mobile-env';
+import type { LiveControlEnv } from './lib/live-policy';
 import { corsMiddleware } from './lib/cors';
 import { getRecentTelemetry } from './lib/telemetry';
 import { health } from './routes/health';
 import { webhook } from './routes/webhook';
 import { trading } from './routes/trading';
+import { liveControl } from './routes/live-control';
 import { scanner } from './routes/scanner';
-import { getTradingMode } from './lib/risk';
+import { getTradingMode, setTradingMode } from './lib/risk';
+import {
+  authorizeLiveControl,
+  authorizeLiveExecution,
+  getLiveExecutionPolicy,
+} from './lib/live-control';
 import { getMobileReceptionState } from './lib/mobile-control';
 import { broadcastMobilePush, getAPNsConfigurationStatus } from './lib/apns';
 import { mobileApi, mobileTradingView } from './routes/mobile';
 
-const app = new Hono<{ Bindings: MobileEnv }>();
+type WorkerEnv = MobileEnv & LiveControlEnv;
+
+export {
+  AlertCoordinator,
+  SimulationDriver,
+  TradingViewPositionCoordinator,
+} from './lib/legacy-durable-objects';
+
+const app = new Hono<{ Bindings: WorkerEnv }>();
 
 app.use('*', corsMiddleware);
 
@@ -31,8 +46,97 @@ app.use('/api/scanner/*', async (c, next) => {
   return undefined;
 });
 
+function liveAuthorizationPayload(authorization: Awaited<ReturnType<typeof authorizeLiveExecution>>) {
+  return {
+    ok: false,
+    code: authorization.code ?? 'LIVE_EXECUTION_BLOCKED',
+    error: authorization.error ?? 'Live execution is blocked by the server policy.',
+    mode: 'SANDBOX',
+    storedMode: authorization.policy.storedMode,
+    blockers: authorization.policy.blockers,
+  };
+}
+
+// The authenticated mobile API contains the third order path in addition to
+// direct trading orders and TradingView webhooks. Protect it at the app edge so
+// future changes inside the mobile router cannot bypass the central Live policy.
+app.use('/api/tradingview/position/close', async (c, next) => {
+  if (c.req.method === 'POST') {
+    const policy = await getLiveExecutionPolicy(c.env);
+    if (policy.storedMode === 'LIVE' || policy.currentMode === 'LIVE') {
+      const authorization = await authorizeLiveExecution(c.req.raw, c.env);
+      if (!authorization.ok) {
+        return c.json(liveAuthorizationPayload(authorization), authorization.status as 401 | 423);
+      }
+    }
+  }
+  await next();
+  return undefined;
+});
+
+app.use('/api/tradingview/reception', async (c, next) => {
+  if (c.req.method === 'POST') {
+    let request: { enabled?: boolean; accountType?: string } = {};
+    try {
+      request = await c.req.raw.clone().json() as { enabled?: boolean; accountType?: string };
+    } catch {
+      // The mobile route returns the canonical invalid JSON response.
+    }
+    if (request.enabled === true && request.accountType?.toUpperCase() === 'LIVE') {
+      const authorization = await authorizeLiveExecution(c.req.raw, c.env);
+      if (!authorization.ok) {
+        return c.json(liveAuthorizationPayload(authorization), authorization.status as 401 | 423);
+      }
+    }
+  }
+  await next();
+  return undefined;
+});
+
+app.use('/api/tradingview/kill-switch', async (c, next) => {
+  let action = 'ACTIVATE';
+  if (c.req.method === 'POST') {
+    try {
+      const request = await c.req.raw.clone().json() as { action?: string };
+      action = String(request.action ?? 'ACTIVATE').toUpperCase();
+    } catch {
+      // The mobile route returns the canonical invalid JSON response.
+    }
+    if (action === 'CLEAR') {
+      const policy = await getLiveExecutionPolicy(c.env);
+      if (policy.executionAllowedByConfig || policy.storedMode === 'LIVE') {
+        const authorization = await authorizeLiveControl(c.req.raw, c.env);
+        if (!authorization.ok) {
+          return c.json(liveAuthorizationPayload(authorization), authorization.status as 401 | 423);
+        }
+      }
+    }
+  }
+  await next();
+  if (c.req.method === 'POST' && action !== 'CLEAR') {
+    await setTradingMode(c.env, 'SANDBOX');
+  }
+  return undefined;
+});
+
 app.use('/api/tradingview/webhook', async (c, next) => {
   if (c.req.method === 'POST') {
+    const storedMode = await getTradingMode(c.env);
+    if (storedMode === 'LIVE') {
+      const livePolicy = await getLiveExecutionPolicy(c.env);
+      if (!livePolicy.webhookExecutionAllowed) {
+        return c.json({
+          ok: false,
+          accepted: false,
+          code: 'LIVE_WEBHOOK_EXECUTION_BLOCKED',
+          error: 'TradingView Live execution is blocked by the server policy.',
+          mode: 'SANDBOX',
+          storedMode,
+          blockers: [...livePolicy.blockers, ...livePolicy.webhookBlockers],
+        }, 423);
+      }
+    }
+
     const reception = await getMobileReceptionState(c.env);
     if (!reception.enabled) {
       return c.json({
@@ -96,6 +200,7 @@ app.route('/api/system/health', health);
 app.route('/api/tradingview', mobileTradingView);
 app.route('/api/tradingview', webhook);
 app.route('/api/mobile', mobileApi);
+app.route('/api/trading/live', liveControl);
 app.route('/api/trading', trading);
 app.route('/api/scanner', scanner);
 
@@ -131,6 +236,9 @@ app.get('/', c => c.json({
     'GET  /api/tradingview/decisions',
     'GET  /api/trading/sandbox/dashboard',
     'GET  /api/trading/live/dashboard',
+    'GET  /api/trading/live/status',
+    'POST /api/trading/live/unlock',
+    'POST /api/trading/live/lock',
     'GET  /api/trading/mode',
     'POST /api/trading/mode',
     'GET  /api/trading/kill-switch',
