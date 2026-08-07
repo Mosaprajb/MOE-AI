@@ -3,6 +3,7 @@ import type { TradingMode } from '../lib/types';
 import type { MobileEnv } from '../lib/mobile-env';
 import type { LiveControlEnv } from '../lib/live-policy';
 import { WebullClient } from '../lib/webull';
+import { trailingCoordinatorConfigured } from '../lib/trailing-stop-coordinator';
 import { readValidMobileSession } from '../lib/mobile-session';
 import {
   getMobileReceptionState,
@@ -44,8 +45,6 @@ function accountType(mode: TradingMode): 'DEMO' | 'LIVE' {
 function effectiveNightBuyingPower(
   account: Awaited<ReturnType<WebullClient['getAccount']>>,
 ): number {
-  // Webull overnight trading does not allow margin. Cap the broker-reported
-  // night BP by available cash so MOE-AI never sizes a NIGHT order from margin.
   return Math.max(0, Math.min(
     Number(account.cash ?? 0),
     Number(account.nightTradingBuyingPower ?? 0),
@@ -56,13 +55,9 @@ function buyingPowerForCurrentWindow(
   account: Awaited<ReturnType<WebullClient['getAccount']>>,
 ): number {
   const window = currentTradingWindow();
-  if (window.window === 'NIGHT') {
-    return effectiveNightBuyingPower(account);
-  }
+  if (window.window === 'NIGHT') return effectiveNightBuyingPower(account);
   if (window.window === 'EXTENDED') {
-    return account.overnightBuyingPower > 0
-      ? account.overnightBuyingPower
-      : account.buyingPower;
+    return account.overnightBuyingPower > 0 ? account.overnightBuyingPower : account.buyingPower;
   }
   return account.dayBuyingPower > 0 ? account.dayBuyingPower : account.buyingPower;
 }
@@ -102,8 +97,9 @@ mobileTradingControl.get('/:mode', async c => {
   let broker: Record<string, unknown> = { connected: false };
 
   if (!isTradingSettingsConfigured(settings)) {
-    blockers.push('Choose at least one session, a share quantity, and a maximum dollar amount before enabling TradingView.');
+    blockers.push('Choose sessions, share quantity, max trade amount, stop loss, take profit, and valid trailing settings before enabling TradingView.');
   }
+  if (!trailingCoordinatorConfigured(c.env)) blockers.push('Protective-order coordinator is not configured.');
   if (!client) {
     blockers.push(`${mode} Webull credentials are not configured.`);
   } else {
@@ -164,7 +160,6 @@ mobileTradingControl.post('/:mode/settings', async c => {
 
   try {
     const settings = await saveTradingSettings(c.env, mode, body);
-    // Any sizing/session/TIF change requires an explicit re-arm.
     await setMobileReceptionState(c.env, false, accountType(mode));
     await writeMobileAudit(c.env, {
       type: 'MOBILE_TRADING_SETTINGS_UPDATED',
@@ -174,6 +169,13 @@ mobileTradingControl.post('/:mode/settings', async c => {
         timeInForce: settings.timeInForce,
         shareQuantity: settings.shareQuantity,
         maxTradeAmountUsd: settings.maxTradeAmountUsd,
+        stopLossPct: settings.stopLossPct,
+        takeProfitPct: settings.takeProfitPct,
+        trailingEnabled: settings.trailingEnabled,
+        trailActivationUsd: settings.trailActivationUsd,
+        trailInitialStopOffsetUsd: settings.trailInitialStopOffsetUsd,
+        trailTriggerStepUsd: settings.trailTriggerStepUsd,
+        trailStopMoveUsd: settings.trailStopMoveUsd,
       }),
       requestId: c.req.header('x-moe-request-id'),
     });
@@ -211,11 +213,7 @@ mobileTradingControl.post('/:mode/preview', async c => {
   }
   const market = currentTradingWindow();
   if (!market.webullSession || !isCurrentTradingWindowAllowed(settings, market)) {
-    return c.json({
-      ok: false,
-      error: `The current ${market.label} session is not enabled for this account.`,
-      market,
-    }, 423);
+    return c.json({ ok: false, error: `The current ${market.label} session is not enabled for this account.`, market }, 423);
   }
 
   const client = WebullClient.fromEnv(c.env, mode);
@@ -292,8 +290,9 @@ mobileTradingControl.post('/:mode/reception', async c => {
   const settings = await getTradingSettings(c.env, mode);
   const blockers: string[] = [];
   if (!isTradingSettingsConfigured(settings)) {
-    blockers.push('Configure sessions, share quantity, and maximum trade amount first.');
+    blockers.push('Configure sessions, share quantity, max trade amount, stop loss, take profit, and valid trailing settings first.');
   }
+  if (!trailingCoordinatorConfigured(c.env)) blockers.push('Protective-order coordinator is not configured.');
   if (await getKillSwitch(c.env)) blockers.push('Kill Switch is active.');
 
   const client = WebullClient.fromEnv(c.env, mode);
@@ -324,7 +323,19 @@ mobileTradingControl.post('/:mode/reception', async c => {
   await writeMobileAudit(c.env, {
     type: 'MOBILE_RECEPTION_ENABLED',
     accountType: accountType(mode),
-    reason: `${settings.allowedSessions.join('+')}|${settings.shareQuantity}|${settings.maxTradeAmountUsd}|${settings.timeInForce}`,
+    reason: JSON.stringify({
+      sessions: settings.allowedSessions,
+      quantity: settings.shareQuantity,
+      maxTradeAmountUsd: settings.maxTradeAmountUsd,
+      timeInForce: settings.timeInForce,
+      stopLossPct: settings.stopLossPct,
+      takeProfitPct: settings.takeProfitPct,
+      trailingEnabled: settings.trailingEnabled,
+      trailActivationUsd: settings.trailActivationUsd,
+      trailInitialStopOffsetUsd: settings.trailInitialStopOffsetUsd,
+      trailTriggerStepUsd: settings.trailTriggerStepUsd,
+      trailStopMoveUsd: settings.trailStopMoveUsd,
+    }),
     requestId: c.req.header('x-moe-request-id'),
   });
   return c.json({ ok: true, mode, reception: state, settings });
