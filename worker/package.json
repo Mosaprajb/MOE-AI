@@ -12,7 +12,10 @@
     "type-check": "tsc --noEmit",
     "test:mobile": "pnpm --dir ../scripts exec tsx --test ../worker/test/mobile-*.test.mjs",
     "validate:mobile": "pnpm run type-check && pnpm run test:mobile && node scripts/generate-wrangler-config.mjs sandbox && pnpm dlx wrangler@4.119.0 deploy --dry-run --config .wrangler.sandbox.ci.toml",
-    "db:migrate": "node scripts/generate-wrangler-config.mjs production && pnpm dlx wrangler@4.119.0 d1 migrations apply DB --remote --config .wrangler.production.ci.toml"
+    "db:migrate": "node scripts/generate-wrangler-config.mjs production && pnpm dlx wrangler@4.119.0 d1 migrations apply DB --remote --config .wrangler.production.ci.toml",
+    "verify:sandbox": "node scripts/verify-deployment-safety.mjs sandbox",
+    "verify:staging": "node scripts/verify-deployment-safety.mjs staging",
+    "verify:production": "node scripts/verify-deployment-safety.mjs production"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^4.20260702.1",
