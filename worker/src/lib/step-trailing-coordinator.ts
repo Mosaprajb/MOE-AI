@@ -44,6 +44,44 @@ type ManagedStepTrail = StepTrailingArmRequest & {
 
 type ManagedState = Record<string, ManagedStepTrail>;
 
+const terminalOrderStatuses = new Set([
+  'CANCELLED',
+  'CANCELED',
+  'REJECTED',
+  'FAILED',
+  'EXPIRED',
+  'VOID',
+  'VOIDED',
+  'CLOSED',
+  'FILLED',
+]);
+
+function isTerminalOrderStatus(status: string): boolean {
+  return terminalOrderStatuses.has(status.trim().toUpperCase());
+}
+
+function isFilledOrderStatus(status: string): boolean {
+  return status.trim().toUpperCase() === 'FILLED';
+}
+
+function isCoreTradingNow(date = new Date()): boolean {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'America/New_York',
+    weekday: 'short',
+    hour: '2-digit',
+    minute: '2-digit',
+    hourCycle: 'h23',
+  }).formatToParts(date);
+  const value = (type: string) => parts.find(part => part.type === type)?.value ?? '';
+  const weekday = value('weekday');
+  const hour = Number(value('hour') === '24' ? '0' : value('hour'));
+  const minute = Number(value('minute'));
+  const minutes = hour * 60 + minute;
+  return ['Mon', 'Tue', 'Wed', 'Thu', 'Fri'].includes(weekday)
+    && minutes >= 9 * 60 + 30
+    && minutes < 16 * 60;
+}
+
 function priceTick(price: number): number {
   return Math.abs(price) >= 1 ? 0.01 : 0.0001;
 }
@@ -71,7 +109,6 @@ export async function armStepTrailingCoordinator(
   env: Env,
   request: StepTrailingArmRequest,
 ): Promise<void> {
-  if (!request.trailingEnabled) return;
   if (!env.STEP_TRAILING_COORDINATOR) {
     throw new Error('STEP_TRAILING_COORDINATOR binding is not configured.');
   }
@@ -149,6 +186,7 @@ export class StepTrailingCoordinator {
       managed[symbol] = {
         ...body,
         symbol,
+        qty: Math.max(1, Math.floor(body.qty)),
         trailingActive: false,
         protectionSynced: false,
         createdAt: now,
@@ -221,6 +259,16 @@ export class StepTrailingCoordinator {
     currentPrice: number,
     qty: number,
   ): Promise<ManagedStepTrail> {
+    // Webull's documented stock stop examples use CORE. Until Sandbox proves
+    // custom stop replacement in other sessions, never remove the broker-side
+    // bracket outside regular hours.
+    if (!isCoreTradingNow()) {
+      return {
+        ...managed,
+        lastError: 'Step trailing activation deferred outside CORE; broker bracket left intact.',
+      };
+    }
+
     const requestedStop = normalizePrice(
       entryPrice + managed.trailingInitialLockCents / 100,
     );
@@ -235,17 +283,49 @@ export class StepTrailingCoordinator {
     try {
       await client.cancelOrder(managed.takeProfitClientOrderId);
     } catch (error) {
-      cancellationErrors.push(`TP cancel: ${String(error)}`);
+      cancellationErrors.push(`TP cancel request: ${String(error)}`);
     }
     try {
       await client.cancelOrder(managed.stopLossClientOrderId);
     } catch (error) {
-      cancellationErrors.push(`SL cancel: ${String(error)}`);
+      cancellationErrors.push(`SL cancel request: ${String(error)}`);
     }
 
-    // Re-read the position before creating a standalone trailing stop. This
-    // prevents an exit order from being added after a bracket leg filled while
-    // the two cancellation requests were in flight.
+    let takeProfitStatus = '';
+    let stopLossStatus = '';
+    try {
+      [takeProfitStatus, stopLossStatus] = await Promise.all([
+        client.getOrderStatus(managed.takeProfitClientOrderId),
+        client.getOrderStatus(managed.stopLossClientOrderId),
+      ]);
+    } catch (error) {
+      return {
+        ...managed,
+        lastError: `Bracket cancellation could not be verified; no standalone stop was submitted: ${String(error)}`,
+      };
+    }
+
+    if (isFilledOrderStatus(takeProfitStatus) || isFilledOrderStatus(stopLossStatus)) {
+      return {
+        ...managed,
+        qty: 0,
+        lastError: 'A bracket exit filled while trailing activation was being prepared.',
+      };
+    }
+
+    if (!isTerminalOrderStatus(takeProfitStatus) || !isTerminalOrderStatus(stopLossStatus)) {
+      return {
+        ...managed,
+        lastError: [
+          ...cancellationErrors,
+          `Bracket cancellation not verified (TP=${takeProfitStatus || 'UNKNOWN'}, SL=${stopLossStatus || 'UNKNOWN'}).`,
+        ].join(' | '),
+      };
+    }
+
+    // Re-read the position only after both child exits are confirmed terminal.
+    // This prevents a new SELL stop from being added while an old exit can still
+    // execute. If the position disappeared, the bracket already closed it.
     const afterCancel = await client.getPositions();
     const position = afterCancel.find(item => (
       item.symbol === managed.symbol
@@ -262,26 +342,23 @@ export class StepTrailingCoordinator {
       };
     }
 
-    if (cancellationErrors.length > 0) {
-      return {
-        ...managed,
-        qty: Math.floor(position.quantity),
-        lastError: cancellationErrors.join(' | '),
-      };
-    }
+    const stopQty = Math.max(1, Math.min(
+      Math.floor(position.quantity),
+      Math.floor(qty),
+      Math.floor(managed.qty),
+    ));
 
     try {
       const stop = await client.placeProtectiveStop({
         symbol: managed.symbol,
-        qty: Math.floor(position.quantity),
+        qty: stopQty,
         stop: requestedStop,
         idempotencyKey: `${managed.signalId}-step-trail`,
         timeInForce: managed.timeInForce,
-        tradingSession: managed.tradingSession,
+        tradingSession: 'CORE',
       });
       return {
         ...managed,
-        qty: Math.floor(position.quantity),
         trailingActive: true,
         currentStopPrice: requestedStop,
         currentStopClientOrderId: stop.clientOrderId,
@@ -293,15 +370,14 @@ export class StepTrailingCoordinator {
       try {
         const fallback = await client.placeProtectiveStop({
           symbol: managed.symbol,
-          qty: Math.floor(position.quantity),
+          qty: stopQty,
           stop: managed.plannedStopPrice,
           idempotencyKey: `${managed.signalId}-fallback-stop`,
           timeInForce: managed.timeInForce,
-          tradingSession: managed.tradingSession,
+          tradingSession: 'CORE',
         });
         return {
           ...managed,
-          qty: Math.floor(position.quantity),
           trailingActive: true,
           currentStopPrice: managed.plannedStopPrice,
           currentStopClientOrderId: fallback.clientOrderId,
@@ -325,6 +401,12 @@ export class StepTrailingCoordinator {
     qty: number,
   ): Promise<ManagedStepTrail> {
     if (!managed.currentStopClientOrderId || managed.currentStopPrice == null) return managed;
+    if (!isCoreTradingNow()) {
+      return {
+        ...managed,
+        lastError: 'Step stop movement deferred outside CORE.',
+      };
+    }
     const activationPrice = entryPrice + managed.trailingActivationCents / 100;
     const progress = Math.max(0, highWaterPrice - activationPrice);
     const steps = Math.floor(progress / (managed.trailingStepTriggerCents / 100));
@@ -393,7 +475,10 @@ export class StepTrailingCoordinator {
           continue;
         }
 
-        const qty = Math.max(1, Math.floor(position.quantity));
+        const requestedQty = Math.max(1, Math.floor(item.qty));
+        const observedQty = Math.max(1, Math.floor(position.quantity));
+        const fullyFilled = observedQty >= requestedQty;
+        const activeStopQty = Math.max(1, Math.min(observedQty, requestedQty));
         const entryPrice = position.averagePrice > 0
           ? position.averagePrice
           : item.plannedEntryPrice;
@@ -407,12 +492,31 @@ export class StepTrailingCoordinator {
 
         item = {
           ...item,
-          qty,
           entryPrice,
           highWaterPrice,
           updatedAt: new Date().toISOString(),
         };
-        item = await this.syncProtectionToFill(client, item, entryPrice, qty);
+
+        // Do not cancel/replace broker bracket legs while the entry is only
+        // partially filled. The original combo remains the authoritative
+        // protection until the configured share quantity is visible.
+        if (!item.trailingActive && !fullyFilled) {
+          managed[symbol] = {
+            ...item,
+            lastError: `Step trailing waiting for full configured quantity (${observedQty}/${requestedQty}).`,
+            updatedAt: new Date().toISOString(),
+          };
+          continue;
+        }
+
+        if (!item.trailingActive) {
+          item = await this.syncProtectionToFill(
+            client,
+            item,
+            entryPrice,
+            requestedQty,
+          );
+        }
 
         if (item.trailingEnabled && !item.trailingActive) {
           const activationPrice = entryPrice + item.trailingActivationCents / 100;
@@ -422,7 +526,7 @@ export class StepTrailingCoordinator {
               item,
               entryPrice,
               currentPrice,
-              qty,
+              requestedQty,
             );
             if (item.qty === 0) {
               delete managed[symbol];
@@ -438,7 +542,7 @@ export class StepTrailingCoordinator {
             entryPrice,
             highWaterPrice,
             currentPrice,
-            qty,
+            activeStopQty,
           );
         }
 
