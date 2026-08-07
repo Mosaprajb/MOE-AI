@@ -1,4 +1,3 @@
-import { DurableObject } from 'cloudflare:workers';
 import type { Env, Position, TradingMode } from './types';
 import { WebullClient, type WebullTimeInForce } from './webull';
 import {
@@ -147,7 +146,12 @@ async function safeCancel(client: WebullClient, ids: string[]): Promise<void> {
   }
 }
 
-export class TradeProtectionCoordinator extends DurableObject<Env> {
+export class TradeProtectionCoordinator {
+  constructor(
+    private readonly ctx: DurableObjectState,
+    private readonly env: Env,
+  ) {}
+
   async fetch(request: Request): Promise<Response> {
     const url = new URL(request.url);
     if (request.method === 'GET' && url.pathname === '/status') {
