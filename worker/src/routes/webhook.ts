@@ -6,6 +6,10 @@ import { getLiveExecutionPolicy } from '../lib/live-control';
 import { getMobileReceptionState } from '../lib/mobile-control';
 import { WebullClient } from '../lib/webull';
 import {
+  armStepTrailingCoordinator,
+  disarmStepTrailingCoordinator,
+} from '../lib/step-trailing-coordinator';
+import {
   currentTradingWindow,
   getTradingSettings,
   isCurrentTradingWindowAllowed,
@@ -35,11 +39,12 @@ function availableBuyingPower(
 ): number {
   const market = currentTradingWindow();
   if (market.window === 'NIGHT') {
-    return account.nightTradingBuyingPower > 0
-      ? account.nightTradingBuyingPower
-      : account.overnightBuyingPower > 0
-        ? account.overnightBuyingPower
-        : account.buyingPower;
+    // Overnight stock trading is cash-only for MOE-AI. Never fall back to
+    // generic buying power because that can include margin capacity.
+    return Math.max(0, Math.min(
+      Number(account.cash ?? 0),
+      Number(account.nightTradingBuyingPower ?? 0),
+    ));
   }
   if (market.window === 'EXTENDED') {
     return account.overnightBuyingPower > 0
@@ -125,19 +130,17 @@ async function executeForMode(
     symbol: string;
     side: 'BUY' | 'SELL';
     orderPrice?: number;
-    stopPrice?: number;
-    targetPrice?: number;
   },
 ): Promise<ExecutionResult> {
-  const { symbol, side, orderPrice, stopPrice, targetPrice } = normalized;
+  const { symbol, side, orderPrice } = normalized;
   const signalId = `${normalized.baseSignalId}-${mode.toLowerCase()}`.slice(0, 190);
   const settings = await getTradingSettings(env, mode);
 
   if (!isTradingSettingsConfigured(settings)) {
     return reject(env, {
       mode, signalId, symbol, side,
-      error: 'Trading controls are not configured for this account.',
-    }, orderPrice, stopPrice, targetPrice);
+      error: 'Trading controls and exit protection are not configured for this account.',
+    }, orderPrice);
   }
 
   if (mode === 'LIVE') {
@@ -149,7 +152,7 @@ async function executeForMode(
       return reject(env, {
         mode, signalId, symbol, side,
         error: reason || 'Live TradingView execution is blocked by server policy.',
-      }, orderPrice, stopPrice, targetPrice);
+      }, orderPrice);
     }
   }
 
@@ -158,7 +161,7 @@ async function executeForMode(
     return reject(env, {
       mode, signalId, symbol, side,
       error: `Current trading window is not enabled for ${mode}: ${market.label}.`,
-    }, orderPrice, stopPrice, targetPrice);
+    }, orderPrice);
   }
 
   const client = WebullClient.fromEnv(env, mode);
@@ -166,7 +169,7 @@ async function executeForMode(
     return reject(env, {
       mode, signalId, symbol, side,
       error: `${mode} Webull credentials are not configured.`,
-    }, orderPrice, stopPrice, targetPrice);
+    }, orderPrice);
   }
 
   // MOE-AI is long-only: every SELL signal closes the existing long position.
@@ -175,6 +178,8 @@ async function executeForMode(
   let estimatedTotal: number | undefined;
   let estimatedTransactionFee: number | undefined;
   let maxQty: number | undefined;
+  let protectiveStop: number | undefined;
+  let takeProfit: number | undefined;
 
   try {
     if (isClose) {
@@ -188,7 +193,7 @@ async function executeForMode(
         return reject(env, {
           mode, signalId, symbol, side,
           error: `No open long position in ${symbol} to close.`,
-        }, orderPrice, stopPrice, targetPrice);
+        }, orderPrice);
       }
       qty = Math.floor(position.quantity);
     } else {
@@ -197,7 +202,7 @@ async function executeForMode(
         return reject(env, {
           mode, signalId, symbol, side,
           error: 'TradingView BUY alerts must include a valid price.',
-        }, orderPrice, stopPrice, targetPrice);
+        }, orderPrice);
       }
 
       if (settings.blockIfPosition) {
@@ -206,7 +211,7 @@ async function executeForMode(
           return reject(env, {
             mode, signalId, symbol, side,
             error: `A position in ${symbol} is already open; duplicate BUY was blocked.`,
-          }, orderPrice, stopPrice, targetPrice);
+          }, orderPrice);
         }
       }
 
@@ -219,8 +224,10 @@ async function executeForMode(
           mode, signalId, symbol, side,
           maximumQuantityToBuy: maxQty,
           error: 'Configured share quantity, trade cap, or buying power does not allow one share.',
-        }, orderPrice, stopPrice, targetPrice);
+        }, orderPrice);
       }
+      protectiveStop = price * (1 - settings.stopLossPct / 100);
+      takeProfit = price * (1 + settings.takeProfitPct / 100);
     }
 
     const previewPrice = Number(orderPrice ?? 0);
@@ -228,7 +235,7 @@ async function executeForMode(
       return reject(env, {
         mode, signalId, symbol, side, qty,
         error: 'A valid price is required to preview and submit this order.',
-      }, orderPrice, stopPrice, targetPrice);
+      }, orderPrice, protectiveStop, takeProfit);
     }
 
     const preview = await client.previewOrder({
@@ -244,62 +251,100 @@ async function executeForMode(
     estimatedTotal = preview.estimatedCost;
     estimatedTransactionFee = preview.estimatedTransactionFee;
 
-    const result = await client.placeOrder({
+    if (isClose) {
+      const result = await client.placeOrder({
+        symbol,
+        side,
+        type: market.webullSession === 'CORE' ? 'MARKET' : 'LIMIT',
+        qty,
+        price: previewPrice,
+        idempotencyKey: signalId,
+        tradingSession: market.webullSession,
+        timeInForce: settings.timeInForce,
+      });
+      try {
+        await disarmStepTrailingCoordinator(env, mode, symbol);
+      } catch {
+        // The broker close is authoritative. The coordinator also self-cleans
+        // as soon as the position disappears from the account snapshot.
+      }
+
+      await persistDecision(env, {
+        signalId,
+        symbol,
+        side,
+        signal: 'SELL NOW',
+        entry: orderPrice,
+        accepted: true,
+        submitted: true,
+        mode,
+        createdAt: new Date().toISOString(),
+      });
+      return {
+        mode,
+        accepted: true,
+        signalId,
+        symbol,
+        side,
+        qty,
+        orderId: result.orderId,
+        orderStatus: result.status,
+        estimatedTotal,
+        estimatedTransactionFee,
+        maximumQuantityToBuy: maxQty,
+      };
+    }
+
+    if (protectiveStop == null || takeProfit == null) {
+      return reject(env, {
+        mode, signalId, symbol, side, qty,
+        error: 'Stop-loss and take-profit protection could not be calculated.',
+      }, orderPrice);
+    }
+
+    // The BUY is submitted as a single broker-side MASTER + take-profit +
+    // stop-loss combo. The entry is never intentionally submitted naked.
+    const bracket = await client.placeBracketEntry({
       symbol,
-      side,
-      type: market.webullSession === 'CORE' ? 'MARKET' : 'LIMIT',
       qty,
-      price: previewPrice,
+      entryPrice: previewPrice,
+      stopPrice: protectiveStop,
+      takeProfitPrice: takeProfit,
       idempotencyKey: signalId,
       tradingSession: market.webullSession,
       timeInForce: settings.timeInForce,
     });
+    let orderStatus = `${bracket.status}; BRACKET SL+TP`;
+    let coordinatorWarning: string | undefined;
 
-    let orderStatus = result.status;
-    let protectiveStop = stopPrice;
-    if (!isClose && side === 'BUY' && settings.stopLossEnabled) {
-      protectiveStop = previewPrice * (1 - settings.stopLossPct / 100);
+    if (settings.trailingEnabled) {
       try {
-        const stopResult = await client.placeProtectiveStop({
+        await armStepTrailingCoordinator(env, {
+          mode,
           symbol,
           qty,
-          stop: protectiveStop,
-          idempotencyKey: `${signalId}-SL`,
+          signalId,
+          plannedEntryPrice: previewPrice,
+          plannedStopPrice: protectiveStop,
+          plannedTakeProfitPrice: takeProfit,
+          stopLossClientOrderId: bracket.stopLossClientOrderId,
+          takeProfitClientOrderId: bracket.takeProfitClientOrderId,
+          stopLossPct: settings.stopLossPct,
+          takeProfitPct: settings.takeProfitPct,
+          trailingEnabled: true,
+          trailingActivationCents: settings.trailingActivationCents,
+          trailingInitialLockCents: settings.trailingInitialLockCents,
+          trailingStepTriggerCents: settings.trailingStepTriggerCents,
+          trailingStepMoveCents: settings.trailingStepMoveCents,
           timeInForce: settings.timeInForce,
+          tradingSession: market.webullSession,
         });
-        orderStatus = `${orderStatus}; STOP_LOSS ${stopResult.status}`;
+        orderStatus += '; STEP_TRAIL ARMED';
       } catch (error) {
-        // Entry already submitted. Surface this loudly in the result/audit.
-        const message = `Entry submitted but protective stop failed: ${String(error)}`;
-        await persistDecision(env, {
-          signalId,
-          symbol,
-          side,
-          signal: 'BUY NOW',
-          entry: orderPrice,
-          stop: protectiveStop,
-          target: targetPrice,
-          accepted: true,
-          submitted: true,
-          rejectReason: message,
-          reasons: [message],
-          mode,
-          createdAt: new Date().toISOString(),
-        });
-        return {
-          mode,
-          accepted: true,
-          signalId,
-          symbol,
-          side,
-          qty,
-          orderId: result.orderId,
-          orderStatus,
-          estimatedTotal,
-          estimatedTransactionFee,
-          maximumQuantityToBuy: maxQty,
-          error: message,
-        };
+        // The bracket remains live at the broker. Never remove protection merely
+        // because the optional staircase coordinator could not be armed.
+        coordinatorWarning = `Bracket submitted but step trailing was not armed: ${String(error)}`;
+        orderStatus += '; STEP_TRAIL NOT_ARMED';
       }
     }
 
@@ -307,12 +352,14 @@ async function executeForMode(
       signalId,
       symbol,
       side,
-      signal: side === 'BUY' ? 'BUY NOW' : 'SELL NOW',
+      signal: 'BUY NOW',
       entry: orderPrice,
       stop: protectiveStop,
-      target: targetPrice,
+      target: takeProfit,
       accepted: true,
       submitted: true,
+      rejectReason: coordinatorWarning,
+      reasons: coordinatorWarning ? [coordinatorWarning] : undefined,
       mode,
       createdAt: new Date().toISOString(),
     });
@@ -324,11 +371,12 @@ async function executeForMode(
       symbol,
       side,
       qty,
-      orderId: result.orderId,
+      orderId: bracket.orderId,
       orderStatus,
       estimatedTotal,
       estimatedTransactionFee,
       maximumQuantityToBuy: maxQty,
+      error: coordinatorWarning,
     };
   } catch (error) {
     return reject(env, {
@@ -337,7 +385,7 @@ async function executeForMode(
       estimatedTransactionFee,
       maximumQuantityToBuy: maxQty,
       error: String(error),
-    }, orderPrice, stopPrice, targetPrice);
+    }, orderPrice, protectiveStop, takeProfit);
   }
 }
 
@@ -372,8 +420,6 @@ webhook.post('/webhook', async c => {
     ? `tv-${payload.signalId.slice(0, 150)}`
     : `tv-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
   const orderPrice = payload.price ?? payload.entry ?? payload.limitPrice;
-  const stopPrice = payload.stop ?? payload.stopLoss;
-  const targetPrice = payload.target ?? payload.takeProfit;
 
   if (await getKillSwitch(env)) {
     return c.json({
@@ -410,8 +456,6 @@ webhook.post('/webhook', async c => {
     symbol,
     side,
     orderPrice,
-    stopPrice,
-    targetPrice,
   })));
   const accepted = executions.some(result => result.accepted);
   const primary = executions[0];
