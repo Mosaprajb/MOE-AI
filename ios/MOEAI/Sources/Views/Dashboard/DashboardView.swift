@@ -11,6 +11,13 @@ struct DashboardView: View {
   @State private var timeInForce: TradingTimeInForceOption = .day
   @State private var shareQuantityText = ""
   @State private var maxTradeAmountText = ""
+  @State private var stopLossPctText = "2.00"
+  @State private var takeProfitPctText = "3.00"
+  @State private var trailingEnabled = true
+  @State private var trailingTriggerCentsText = "5"
+  @State private var trailingInitialStopProfitCentsText = "2"
+  @State private var trailingTriggerStepCentsText = "5"
+  @State private var trailingStopStepCentsText = "1"
   @State private var previewSymbol = ""
   @State private var previewPriceText = ""
   @State private var showLiveArmConfirmation = false
@@ -240,9 +247,9 @@ struct DashboardView: View {
           ForEach(TradingSessionOption.allCases) { option in
             sessionButton(option)
           }
-          Text("يمكن تفعيل جلسة واحدة أو جلستين أو الثلاث معًا.")
+          Text("الحماية الآلية SL / TP / Trailing مفعلة حاليًا في ساعات CORE فقط؛ Extended وOvernight غير قابلين للتسليح مع هذه الميزة.")
             .font(.caption2)
-            .foregroundStyle(MOETheme.muted)
+            .foregroundStyle(MOETheme.warning)
         }
 
         Divider().overlay(Color.white.opacity(0.08))
@@ -265,6 +272,12 @@ struct DashboardView: View {
         Text("Max Trade $ هو سقف استخدام Buying Power للصفقة. أثناء الجلسة العادية لن تتجاوز الصفقة Intraday BP أو هذا السقف أو Quantity المحفوظة — يتم استخدام الحد الأقل.")
           .font(.caption2)
           .foregroundStyle(MOETheme.muted)
+
+        Divider().overlay(Color.white.opacity(0.08))
+
+        tradeProtectionSection
+
+        Divider().overlay(Color.white.opacity(0.08))
 
         VStack(alignment: .leading, spacing: 8) {
           Text("Time in Force")
@@ -323,7 +336,7 @@ struct DashboardView: View {
           Button {
             Task { await runPreview() }
           } label: {
-            Label("حساب Estimated Total والرسوم", systemImage: "function")
+            Label("حساب Estimated Total والحماية", systemImage: "function")
               .frame(maxWidth: .infinity)
           }
           .buttonStyle(.bordered)
@@ -382,14 +395,95 @@ struct DashboardView: View {
     }
   }
 
+  private var tradeProtectionSection: some View {
+    VStack(alignment: .leading, spacing: 12) {
+      HStack {
+        VStack(alignment: .leading, spacing: 3) {
+          Text("Trade Protection")
+            .font(.subheadline.weight(.bold))
+          Text("تُحفظ هذه القيم بشكل مستقل للحساب المحدد.")
+            .font(.caption2)
+            .foregroundStyle(MOETheme.muted)
+        }
+        Spacer()
+        Image(systemName: "shield.lefthalf.filled")
+          .foregroundStyle(MOETheme.positive)
+      }
+
+      HStack(spacing: 12) {
+        tradingInput(
+          title: "Stop Loss %",
+          placeholder: "2.00",
+          text: $stopLossPctText,
+          keyboard: .decimalPad
+        )
+        tradingInput(
+          title: "Take Profit %",
+          placeholder: "3.00",
+          text: $takeProfitPctText,
+          keyboard: .decimalPad
+        )
+      }
+
+      Toggle(isOn: $trailingEnabled) {
+        VStack(alignment: .leading, spacing: 2) {
+          Text("Trailing Stop")
+            .font(.subheadline.weight(.bold))
+          Text("إلغاء SL وTP عند التفعيل ثم تحويل الحماية إلى Stop متحرك.")
+            .font(.caption2)
+            .foregroundStyle(MOETheme.muted)
+        }
+      }
+      .tint(MOETheme.positive)
+
+      if trailingEnabled {
+        HStack(spacing: 12) {
+          tradingInput(
+            title: "Trigger +¢",
+            placeholder: "5",
+            text: $trailingTriggerCentsText,
+            keyboard: .numberPad
+          )
+          tradingInput(
+            title: "First Stop +¢",
+            placeholder: "2",
+            text: $trailingInitialStopProfitCentsText,
+            keyboard: .numberPad
+          )
+        }
+
+        HStack(spacing: 12) {
+          tradingInput(
+            title: "Each Gain +¢",
+            placeholder: "5",
+            text: $trailingTriggerStepCentsText,
+            keyboard: .numberPad
+          )
+          tradingInput(
+            title: "Raise Stop +¢",
+            placeholder: "1",
+            text: $trailingStopStepCentsText,
+            keyboard: .numberPad
+          )
+        }
+
+        Text(trailingExampleText)
+          .font(.caption2.monospacedDigit())
+          .foregroundStyle(trailingSettingsAreValid ? MOETheme.positive : MOETheme.warning)
+      }
+
+      Text("بعد حفظ أي تغيير يتم إيقاف استقبال TradingView تلقائيًا، ويجب تفعيله من جديد حتى لا تبدأ صفقة بإعدادات غير مقصودة.")
+        .font(.caption2)
+        .foregroundStyle(MOETheme.muted)
+    }
+  }
+
   private func sessionButton(_ option: TradingSessionOption) -> some View {
     let selected = selectedSessions.contains(option)
+    let supported = option == .regular
     return Button {
-      if selected {
-        selectedSessions.remove(option)
-      } else {
-        selectedSessions.insert(option)
-      }
+      guard supported else { return }
+      selectedSessions = [.regular]
     } label: {
       HStack(spacing: 12) {
         Image(systemName: selected ? "checkmark.circle.fill" : "circle")
@@ -403,7 +497,7 @@ struct DashboardView: View {
             .foregroundStyle(MOETheme.muted)
         }
         Spacer()
-        Text(option.rawValue)
+        Text(supported ? option.rawValue : "BLOCKED")
           .font(.caption2.monospaced().bold())
           .foregroundStyle(selected ? MOETheme.accent : MOETheme.muted)
       }
@@ -417,8 +511,10 @@ struct DashboardView: View {
           .stroke(selected ? MOETheme.accent.opacity(0.35) : Color.white.opacity(0.06))
           .allowsHitTesting(false)
       }
+      .opacity(supported ? 1 : 0.55)
     }
     .buttonStyle(.plain)
+    .disabled(!supported)
   }
 
   private func tradingInput(
@@ -456,6 +552,16 @@ struct DashboardView: View {
       previewRow("Estimated Total", formatCurrency(model.tradingPreview?.estimatedTotal))
       previewRow("Estimated Transaction Fee", formatCurrency(model.tradingPreview?.estimatedTransactionFee))
       previewRow("Max Quantity to Buy", model.tradingPreview?.maximumQuantityToBuy.map(String.init) ?? "—")
+
+      if let protection = model.tradingPreview?.protection {
+        Divider().overlay(Color.white.opacity(0.08))
+        previewRow("Stop Loss", formatCurrency(protection.stopLossPrice))
+        previewRow("Take Profit", formatCurrency(protection.takeProfitPrice))
+        previewRow("Trailing Trigger", formatCurrency(protection.trailingTriggerPrice))
+        previewRow("First Trailing Stop", formatCurrency(protection.trailingInitialStopPrice))
+      }
+
+      Divider().overlay(Color.white.opacity(0.08))
       previewRow("Intraday BP", formatCurrency(model.tradingPreview?.intradayBuyingPower ?? control?.broker.intradayBuyingPower))
       previewRow("Overnight BP", formatCurrency(model.tradingPreview?.overnightBuyingPower ?? control?.broker.overnightBuyingPower))
       previewRow("Night Trading BP", formatCurrency(model.tradingPreview?.nightTradingBuyingPower ?? control?.broker.nightTradingBuyingPower))
@@ -542,9 +648,37 @@ struct DashboardView: View {
   }
 
   private var controlFormIsValid: Bool {
-    !selectedSessions.isEmpty
+    selectedSessions == [.regular]
       && (Int(shareQuantityText) ?? 0) > 0
       && parsedDouble(maxTradeAmountText) > 0
+      && parsedDouble(stopLossPctText) > 0
+      && parsedDouble(takeProfitPctText) > 0
+      && trailingSettingsAreValid
+  }
+
+  private var trailingSettingsAreValid: Bool {
+    guard trailingEnabled else { return true }
+    let trigger = parsedInt(trailingTriggerCentsText)
+    let initialStop = parsedInt(trailingInitialStopProfitCentsText)
+    let triggerStep = parsedInt(trailingTriggerStepCentsText)
+    let stopStep = parsedInt(trailingStopStepCentsText)
+    return trigger >= 1
+      && initialStop >= 0
+      && initialStop < trigger
+      && triggerStep >= 2
+      && stopStep >= 1
+      && stopStep < triggerStep
+  }
+
+  private var trailingExampleText: String {
+    guard trailingSettingsAreValid else {
+      return "يجب أن يكون First Stop أقل من Trigger، وRaise Stop أقل من Each Gain."
+    }
+    let trigger = parsedInt(trailingTriggerCentsText)
+    let initialStop = parsedInt(trailingInitialStopProfitCentsText)
+    let triggerStep = parsedInt(trailingTriggerStepCentsText)
+    let stopStep = parsedInt(trailingStopStepCentsText)
+    return "مثال من Entry: +\(trigger)¢ → Stop +\(initialStop)¢، ثم +\(trigger + triggerStep)¢ → Stop +\(initialStop + stopStep)¢."
   }
 
   private var previewFormIsValid: Bool {
@@ -557,27 +691,47 @@ struct DashboardView: View {
     Double(value.replacingOccurrences(of: ",", with: ".")) ?? 0
   }
 
+  private func parsedInt(_ value: String) -> Int {
+    Int(value.trimmingCharacters(in: .whitespacesAndNewlines)) ?? -1
+  }
+
   private func syncControlFields() {
     guard let settings = control?.settings else { return }
-    selectedSessions = Set(settings.allowedSessions)
+    // Automated broker protection is intentionally CORE-only. Normalize older
+    // saved session choices locally; saving then persists the safe CORE setting.
+    selectedSessions = [.regular]
     timeInForce = settings.timeInForce
     shareQuantityText = settings.shareQuantity > 0 ? String(settings.shareQuantity) : ""
     maxTradeAmountText = settings.maxTradeAmountUsd > 0
       ? String(format: "%.2f", settings.maxTradeAmountUsd)
       : ""
+    stopLossPctText = String(format: "%.2f", settings.stopLossPct)
+    takeProfitPctText = String(format: "%.2f", settings.effectiveTakeProfitPct)
+    trailingEnabled = settings.effectiveTrailingEnabled
+    trailingTriggerCentsText = String(settings.effectiveTrailingTriggerCents)
+    trailingInitialStopProfitCentsText = String(settings.effectiveTrailingInitialStopProfitCents)
+    trailingTriggerStepCentsText = String(settings.effectiveTrailingTriggerStepCents)
+    trailingStopStepCentsText = String(settings.effectiveTrailingStopStepCents)
   }
 
   private func saveTradingControls() async {
     let authorized = await session.authorizeSensitiveAction(
-      reason: "حفظ حدود كمية الأسهم والمبلغ وجلسات استقبال TradingView",
+      reason: "حفظ إعدادات حجم الصفقة وStop Loss وTake Profit وTrailing Stop",
       required: preferences.requiresAuthenticationForSensitiveActions
     )
     guard authorized else { return }
     await model.saveTradingControl(
-      sessions: TradingSessionOption.allCases.filter(selectedSessions.contains),
+      sessions: [.regular],
       timeInForce: timeInForce,
       shareQuantity: Int(shareQuantityText) ?? 0,
-      maxTradeAmountUsd: parsedDouble(maxTradeAmountText)
+      maxTradeAmountUsd: parsedDouble(maxTradeAmountText),
+      stopLossPct: parsedDouble(stopLossPctText),
+      takeProfitPct: parsedDouble(takeProfitPctText),
+      trailingEnabled: trailingEnabled,
+      trailingTriggerCents: max(1, parsedInt(trailingTriggerCentsText)),
+      trailingInitialStopProfitCents: max(0, parsedInt(trailingInitialStopProfitCentsText)),
+      trailingTriggerStepCents: max(2, parsedInt(trailingTriggerStepCentsText)),
+      trailingStopStepCents: max(1, parsedInt(trailingStopStepCentsText))
     )
     syncControlFields()
   }

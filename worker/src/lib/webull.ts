@@ -48,6 +48,18 @@ export interface WebullMarginSnapshot {
   marginRatio: number;
 }
 
+export interface WebullSubmittedOrder {
+  orderId: string;
+  clientOrderId: string;
+  status: string;
+}
+
+export interface WebullProtectionOcoResult {
+  clientComboOrderId: string;
+  takeProfit: WebullSubmittedOrder;
+  stopLoss: WebullSubmittedOrder;
+}
+
 function currentWebullSession(date = new Date()): WebullTradingSession | null {
   const parts = new Intl.DateTimeFormat('en-US', {
     timeZone: 'America/New_York',
@@ -77,6 +89,17 @@ function limitPriceWithSlippage(entry: number, side: OrderSide): number {
   const adjusted = side === 'BUY' ? entry * 1.001 : entry * 0.999;
   const decimals = adjusted >= 1 ? 2 : 4;
   return Number(adjusted.toFixed(decimals));
+}
+
+function formatStockPrice(price: number): string {
+  if (!Number.isFinite(price) || price <= 0) throw new Error('A valid positive stock price is required.');
+  return price.toFixed(price >= 1 ? 2 : 4);
+}
+
+function normalizeClientOrderId(value: string): string {
+  const normalized = value.replace(/[^A-Za-z0-9_-]/gu, '').slice(0, 32);
+  if (!normalized) throw new Error('A valid client order ID is required.');
+  return normalized;
 }
 
 function parseMarginCalls(value: unknown): string[] {
@@ -562,7 +585,7 @@ export class WebullClient {
     }
 
     const order: Record<string, unknown> = {
-      client_order_id: params.idempotencyKey.slice(0, 32),
+      client_order_id: normalizeClientOrderId(params.idempotencyKey),
       combo_type: 'NORMAL',
       symbol: params.symbol,
       side: params.side,
@@ -601,33 +624,94 @@ export class WebullClient {
     };
   }
 
-  private async submitOrder(order: Record<string, unknown>): Promise<{ orderId: string; status: string }> {
+  private async submitOrders(
+    orders: Array<Record<string, unknown>>,
+    clientComboOrderId?: string,
+  ): Promise<WebullSubmittedOrder[]> {
+    const body: Record<string, unknown> = {
+      account_id: this.accountId,
+      new_orders: orders,
+    };
+    if (clientComboOrderId) body.client_combo_order_id = normalizeClientOrderId(clientComboOrderId);
+
     const raw = await this.req<Record<string, unknown>>(
       'POST',
       '/openapi/trade/order/place',
       {},
-      {
-        account_id: this.accountId,
-        new_orders: [order],
-      },
+      body,
     );
     const rows = extractOrderRows(raw);
-    const result = rows[0] ?? raw;
-    return {
-      orderId: String(
-        result.order_id
-        ?? result.client_order_id
-        ?? raw.order_id
-        ?? order.client_order_id
-        ?? 'unknown',
-      ),
-      status: String(result.status ?? raw.status ?? 'PENDING'),
-    };
+
+    return orders.map((order, index) => {
+      const clientOrderId = normalizeClientOrderId(String(order.client_order_id ?? ''));
+      const result = rows.find(row => String(row.client_order_id ?? '') === clientOrderId)
+        ?? rows[index]
+        ?? raw;
+      return {
+        orderId: String(result.order_id ?? result.id ?? clientOrderId),
+        clientOrderId,
+        status: String(result.status ?? raw.status ?? 'PENDING'),
+      };
+    });
   }
 
-  async placeOrder(params: WebullOrderRequest): Promise<{ orderId: string; status: string }> {
+  private async submitOrder(order: Record<string, unknown>): Promise<WebullSubmittedOrder> {
+    const [result] = await this.submitOrders([order]);
+    return result;
+  }
+
+  async placeOrder(params: WebullOrderRequest): Promise<WebullSubmittedOrder> {
     const built = this.buildOrder(params);
     return this.submitOrder(built.order);
+  }
+
+  async placeProtectiveOco(params: {
+    symbol: string;
+    qty: number;
+    takeProfit: number;
+    stopLoss: number;
+    clientComboOrderId: string;
+    takeProfitClientOrderId: string;
+    stopLossClientOrderId: string;
+    timeInForce?: WebullTimeInForce;
+  }): Promise<WebullProtectionOcoResult> {
+    const clientComboOrderId = normalizeClientOrderId(params.clientComboOrderId);
+    const takeProfitClientOrderId = normalizeClientOrderId(params.takeProfitClientOrderId);
+    const stopLossClientOrderId = normalizeClientOrderId(params.stopLossClientOrderId);
+    const timeInForce: WebullTimeInForce = params.timeInForce === 'GTC' ? 'GTC' : 'DAY';
+    const common = {
+      combo_type: 'OCO',
+      symbol: params.symbol,
+      side: 'SELL',
+      quantity: String(params.qty),
+      instrument_type: 'EQUITY',
+      entrust_type: 'QTY',
+      time_in_force: timeInForce,
+      market: 'US',
+      // Webull's documented stop-order example is CORE. Keeping both linked
+      // protection legs in the same session avoids inconsistent OCO behavior.
+      support_trading_session: 'CORE',
+    };
+    const results = await this.submitOrders([
+      {
+        ...common,
+        client_order_id: takeProfitClientOrderId,
+        order_type: 'LIMIT',
+        limit_price: formatStockPrice(params.takeProfit),
+      },
+      {
+        ...common,
+        client_order_id: stopLossClientOrderId,
+        order_type: 'STOP_LOSS',
+        stop_price: formatStockPrice(params.stopLoss),
+      },
+    ], clientComboOrderId);
+
+    return {
+      clientComboOrderId,
+      takeProfit: results[0],
+      stopLoss: results[1],
+    };
   }
 
   async placeProtectiveStop(params: {
@@ -636,9 +720,9 @@ export class WebullClient {
     stop: number;
     idempotencyKey: string;
     timeInForce?: WebullTimeInForce;
-  }): Promise<{ orderId: string; status: string }> {
+  }): Promise<WebullSubmittedOrder> {
     return this.submitOrder({
-      client_order_id: params.idempotencyKey.slice(0, 32),
+      client_order_id: normalizeClientOrderId(params.idempotencyKey),
       combo_type: 'NORMAL',
       symbol: params.symbol,
       side: 'SELL',
@@ -649,15 +733,42 @@ export class WebullClient {
       time_in_force: params.timeInForce === 'GTC' ? 'GTC' : 'DAY',
       market: 'US',
       support_trading_session: 'CORE',
-      stop_price: String(params.stop),
+      stop_price: formatStockPrice(params.stop),
     });
   }
 
-  async cancelOrder(orderId: string): Promise<void> {
+  async replaceProtectiveStop(params: {
+    clientOrderId: string;
+    stop: number;
+    qty: number;
+    timeInForce?: WebullTimeInForce;
+  }): Promise<void> {
+    await this.req('POST', '/openapi/trade/order/replace', {}, {
+      account_id: this.accountId,
+      modify_orders: [{
+        client_order_id: normalizeClientOrderId(params.clientOrderId),
+        order_type: 'STOP_LOSS',
+        stop_price: formatStockPrice(params.stop),
+        quantity: String(params.qty),
+        time_in_force: params.timeInForce === 'GTC' ? 'GTC' : 'DAY',
+      }],
+    });
+  }
+
+  async cancelOrder(clientOrderId: string): Promise<void> {
     await this.req('POST', '/openapi/trade/order/cancel', {}, {
       account_id: this.accountId,
-      client_order_id: orderId,
+      client_order_id: normalizeClientOrderId(clientOrderId),
     });
+  }
+
+  async cancelOrders(clientOrderIds: string[]): Promise<void> {
+    const uniqueIds = [...new Set(clientOrderIds.filter(Boolean))];
+    const results = await Promise.allSettled(uniqueIds.map(id => this.cancelOrder(id)));
+    const rejected = results.filter(result => result.status === 'rejected');
+    if (rejected.length === results.length && results.length > 0) {
+      throw (rejected[0] as PromiseRejectedResult).reason;
+    }
   }
 
   async ping(): Promise<boolean> {

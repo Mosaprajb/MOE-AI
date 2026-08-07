@@ -142,6 +142,27 @@ export function validateExports(exportsMap, moduleExports = null) {
   }
 }
 
+function validateDurableObjectBindings(durableObjects, exportsMap) {
+  if (durableObjects == null) return;
+  if (!isObject(durableObjects) || !Array.isArray(durableObjects.bindings)) {
+    throw new Error('durable_objects.bindings must be an array');
+  }
+  const names = new Set();
+  for (const binding of durableObjects.bindings) {
+    if (!isObject(binding)) throw new Error('Each durable_objects binding must be an object');
+    const name = String(binding.name ?? '').trim();
+    const className = String(binding.class_name ?? '').trim();
+    if (!name || !className) {
+      throw new Error('Each durable_objects binding must define name and class_name');
+    }
+    if (names.has(name)) throw new Error(`Duplicate Durable Object binding name ${name}`);
+    names.add(name);
+    if (!isObject(exportsMap?.[className]) || exportsMap[className].state !== undefined) {
+      throw new Error(`Durable Object binding ${name} references non-live export ${className}`);
+    }
+  }
+}
+
 export function validateCanonicalConfig(config, moduleExports = null) {
   if (!isObject(config)) throw new Error('wrangler.jsonc must contain an object');
 
@@ -151,6 +172,7 @@ export function validateCanonicalConfig(config, moduleExports = null) {
   }
 
   validateExports(config.exports, moduleExports);
+  validateDurableObjectBindings(config.durable_objects, config.exports);
 
   if (!isObject(config.env)) throw new Error('wrangler.jsonc must define env');
   for (const environment of supportedEnvironments) {
@@ -206,7 +228,13 @@ export function serializeToml(config) {
     '# Regenerate with: node scripts/generate-wrangler-config.mjs <environment>',
   ];
 
-  const reserved = new Set(['exports', 'kv_namespaces', 'd1_databases', 'vars']);
+  const reserved = new Set([
+    'exports',
+    'durable_objects',
+    'kv_namespaces',
+    'd1_databases',
+    'vars',
+  ]);
   for (const [key, value] of Object.entries(config)) {
     if (reserved.has(key) || value === undefined || value === null) continue;
     if (isObject(value)) throw new Error(`Unsupported top-level object ${key} in generated Wrangler TOML`);
@@ -220,6 +248,7 @@ export function serializeToml(config) {
     }
   }
 
+  appendArrayTables(lines, 'durable_objects.bindings', config.durable_objects?.bindings);
   appendArrayTables(lines, 'kv_namespaces', config.kv_namespaces);
   appendArrayTables(lines, 'd1_databases', config.d1_databases);
 
@@ -244,6 +273,7 @@ export async function generateWranglerConfig(environment, outputPath = null) {
   const config = await loadCanonicalConfig();
   const flattened = flattenEnvironment(config, environment);
   validateExports(flattened.exports, collectModuleExports(await readFile(workerEntryPath, 'utf8')));
+  validateDurableObjectBindings(flattened.durable_objects, flattened.exports);
 
   const destination = resolve(workerDirectory, outputPath ?? `.wrangler.${environment}.ci.toml`);
   await writeFile(destination, serializeToml(flattened), 'utf8');

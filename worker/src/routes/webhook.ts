@@ -6,10 +6,15 @@ import { getLiveExecutionPolicy } from '../lib/live-control';
 import { getMobileReceptionState } from '../lib/mobile-control';
 import { WebullClient } from '../lib/webull';
 import {
+  startTradeProtection,
+  stopTradeProtection,
+} from '../lib/trade-protection-coordinator';
+import {
   currentTradingWindow,
   getTradingSettings,
   isCurrentTradingWindowAllowed,
   isTradingSettingsConfigured,
+  protectionPreview,
   type TradingSettings,
 } from './trading-settings';
 
@@ -24,6 +29,7 @@ type ExecutionResult = {
   signalId: string;
   orderId?: string;
   orderStatus?: string;
+  protectionStarted?: boolean;
   estimatedTotal?: number;
   estimatedTransactionFee?: number;
   maximumQuantityToBuy?: number;
@@ -160,6 +166,12 @@ async function executeForMode(
       error: `Current trading window is not enabled for ${mode}: ${market.label}.`,
     }, orderPrice, stopPrice, targetPrice);
   }
+  if (market.webullSession !== 'CORE') {
+    return reject(env, {
+      mode, signalId, symbol, side,
+      error: 'Broker-managed Stop Loss, Take Profit, and trailing protection currently require CORE regular trading hours.',
+    }, orderPrice, stopPrice, targetPrice);
+  }
 
   const client = WebullClient.fromEnv(env, mode);
   if (!client) {
@@ -172,9 +184,11 @@ async function executeForMode(
   // MOE-AI is long-only: every SELL signal closes the existing long position.
   const isClose = side === 'SELL' || payload.action === 'close' || payload.closePosition === true;
   let qty = 0;
+  let executionPrice = Number(orderPrice ?? 0);
   let estimatedTotal: number | undefined;
   let estimatedTransactionFee: number | undefined;
   let maxQty: number | undefined;
+  let protectionPausedForClose = false;
 
   try {
     if (isClose) {
@@ -191,9 +205,9 @@ async function executeForMode(
         }, orderPrice, stopPrice, targetPrice);
       }
       qty = Math.floor(position.quantity);
+      if (!(executionPrice > 0)) executionPrice = Number(position.currentPrice ?? position.averagePrice);
     } else {
-      const price = Number(orderPrice ?? 0);
-      if (!(price > 0)) {
+      if (!(executionPrice > 0)) {
         return reject(env, {
           mode, signalId, symbol, side,
           error: 'TradingView BUY alerts must include a valid price.',
@@ -212,7 +226,7 @@ async function executeForMode(
 
       const account = await client.getAccount();
       const buyingPower = availableBuyingPower(account);
-      maxQty = maximumQuantity(settings, price, buyingPower);
+      maxQty = maximumQuantity(settings, executionPrice, buyingPower);
       qty = maxQty;
       if (qty < 1) {
         return reject(env, {
@@ -223,8 +237,7 @@ async function executeForMode(
       }
     }
 
-    const previewPrice = Number(orderPrice ?? 0);
-    if (!(previewPrice > 0)) {
+    if (!(executionPrice > 0)) {
       return reject(env, {
         mode, signalId, symbol, side, qty,
         error: 'A valid price is required to preview and submit this order.',
@@ -234,51 +247,61 @@ async function executeForMode(
     const preview = await client.previewOrder({
       symbol,
       side,
-      type: market.webullSession === 'CORE' ? 'MARKET' : 'LIMIT',
+      type: 'MARKET',
       qty,
-      price: previewPrice,
+      price: executionPrice,
       idempotencyKey: `${signalId}-preview`,
-      tradingSession: market.webullSession,
+      tradingSession: 'CORE',
       timeInForce: settings.timeInForce,
     });
     estimatedTotal = preview.estimatedCost;
     estimatedTransactionFee = preview.estimatedTransactionFee;
 
+    if (isClose) {
+      // Cancel existing TP/SL/trailing orders only after preview succeeds, so
+      // the time without broker protection is limited to the close submission.
+      await stopTradeProtection(env, mode, symbol);
+      protectionPausedForClose = true;
+    }
+
     const result = await client.placeOrder({
       symbol,
       side,
-      type: market.webullSession === 'CORE' ? 'MARKET' : 'LIMIT',
+      type: 'MARKET',
       qty,
-      price: previewPrice,
+      price: executionPrice,
       idempotencyKey: signalId,
-      tradingSession: market.webullSession,
+      tradingSession: 'CORE',
       timeInForce: settings.timeInForce,
     });
 
     let orderStatus = result.status;
-    let protectiveStop = stopPrice;
-    if (!isClose && side === 'BUY' && settings.stopLossEnabled) {
-      protectiveStop = previewPrice * (1 - settings.stopLossPct / 100);
-      try {
-        const stopResult = await client.placeProtectiveStop({
-          symbol,
-          qty,
-          stop: protectiveStop,
-          idempotencyKey: `${signalId}-SL`,
-          timeInForce: settings.timeInForce,
-        });
-        orderStatus = `${orderStatus}; STOP_LOSS ${stopResult.status}`;
-      } catch (error) {
-        // Entry already submitted. Surface this loudly in the result/audit.
-        const message = `Entry submitted but protective stop failed: ${String(error)}`;
+    let configuredStop: number | undefined;
+    let configuredTarget: number | undefined;
+    let protectionStarted = false;
+
+    if (!isClose && side === 'BUY') {
+      const configured = protectionPreview(settings, executionPrice);
+      configuredStop = configured.stopLossPrice;
+      configuredTarget = configured.takeProfitPrice;
+      const protection = await startTradeProtection(env, {
+        mode,
+        symbol,
+        signalId,
+        quantity: qty,
+        settings,
+      });
+      protectionStarted = protection.ok;
+      if (!protection.ok) {
+        const message = `Entry submitted but trade protection coordinator failed to arm: ${JSON.stringify(protection.body)}`;
         await persistDecision(env, {
           signalId,
           symbol,
           side,
           signal: 'BUY NOW',
-          entry: orderPrice,
-          stop: protectiveStop,
-          target: targetPrice,
+          entry: executionPrice,
+          stop: configuredStop,
+          target: configuredTarget,
           accepted: true,
           submitted: true,
           rejectReason: message,
@@ -295,12 +318,14 @@ async function executeForMode(
           qty,
           orderId: result.orderId,
           orderStatus,
+          protectionStarted: false,
           estimatedTotal,
           estimatedTransactionFee,
           maximumQuantityToBuy: maxQty,
           error: message,
         };
       }
+      orderStatus = `${orderStatus}; PROTECTION_ARMED`;
     }
 
     await persistDecision(env, {
@@ -308,9 +333,9 @@ async function executeForMode(
       symbol,
       side,
       signal: side === 'BUY' ? 'BUY NOW' : 'SELL NOW',
-      entry: orderPrice,
-      stop: protectiveStop,
-      target: targetPrice,
+      entry: executionPrice,
+      stop: configuredStop ?? stopPrice,
+      target: configuredTarget ?? targetPrice,
       accepted: true,
       submitted: true,
       mode,
@@ -326,18 +351,33 @@ async function executeForMode(
       qty,
       orderId: result.orderId,
       orderStatus,
+      protectionStarted: isClose ? undefined : protectionStarted,
       estimatedTotal,
       estimatedTransactionFee,
       maximumQuantityToBuy: maxQty,
     };
   } catch (error) {
+    if (protectionPausedForClose && qty > 0) {
+      try {
+        await startTradeProtection(env, {
+          mode,
+          symbol,
+          signalId: `${signalId}-restore`.slice(0, 190),
+          quantity: qty,
+          settings,
+        });
+      } catch {
+        // The primary close failure remains the user-visible error. The Durable
+        // Object keeps its own diagnostics if restoring protection also fails.
+      }
+    }
     return reject(env, {
       mode, signalId, symbol, side, qty: qty || undefined,
       estimatedTotal,
       estimatedTransactionFee,
       maximumQuantityToBuy: maxQty,
       error: String(error),
-    }, orderPrice, stopPrice, targetPrice);
+    }, executionPrice || orderPrice, stopPrice, targetPrice);
   }
 }
 

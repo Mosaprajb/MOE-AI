@@ -16,6 +16,7 @@ import {
   getTradingSettings,
   isCurrentTradingWindowAllowed,
   isTradingSettingsConfigured,
+  protectionPreview,
   saveTradingSettings,
   type TradingSettings,
 } from './trading-settings';
@@ -81,6 +82,13 @@ function maxQuantityFor(
   return Math.max(0, Math.min(byConfiguredShares, byTradeCap, byBuyingPower));
 }
 
+function protectionSessionBlocker(settings: TradingSettings): string | null {
+  if (settings.allowedSessions.some(session => session !== 'CORE')) {
+    return 'Broker-managed Stop Loss, Take Profit, and trailing protection currently require the CORE session. Select Regular hours only before arming TradingView.';
+  }
+  return null;
+}
+
 async function liveBlockers(env: TradingControlEnv): Promise<string[]> {
   const policy = await getLiveExecutionPolicy(env);
   return [
@@ -102,8 +110,11 @@ mobileTradingControl.get('/:mode', async c => {
   let broker: Record<string, unknown> = { connected: false };
 
   if (!isTradingSettingsConfigured(settings)) {
-    blockers.push('Choose at least one session, a share quantity, and a maximum dollar amount before enabling TradingView.');
+    blockers.push('Choose at least one session, a share quantity, a maximum dollar amount, and valid protection settings before enabling TradingView.');
   }
+  const sessionBlocker = protectionSessionBlocker(settings);
+  if (sessionBlocker) blockers.push(sessionBlocker);
+
   if (!client) {
     blockers.push(`${mode} Webull credentials are not configured.`);
   } else {
@@ -164,7 +175,7 @@ mobileTradingControl.post('/:mode/settings', async c => {
 
   try {
     const settings = await saveTradingSettings(c.env, mode, body);
-    // Any sizing/session/TIF change requires an explicit re-arm.
+    // Any sizing/session/TIF/protection change requires an explicit re-arm.
     await setMobileReceptionState(c.env, false, accountType(mode));
     await writeMobileAudit(c.env, {
       type: 'MOBILE_TRADING_SETTINGS_UPDATED',
@@ -174,6 +185,13 @@ mobileTradingControl.post('/:mode/settings', async c => {
         timeInForce: settings.timeInForce,
         shareQuantity: settings.shareQuantity,
         maxTradeAmountUsd: settings.maxTradeAmountUsd,
+        stopLossPct: settings.stopLossPct,
+        takeProfitPct: settings.takeProfitPct,
+        trailingEnabled: settings.trailingEnabled,
+        trailingTriggerCents: settings.trailingTriggerCents,
+        trailingInitialStopProfitCents: settings.trailingInitialStopProfitCents,
+        trailingTriggerStepCents: settings.trailingTriggerStepCents,
+        trailingStopStepCents: settings.trailingStopStepCents,
       }),
       requestId: c.req.header('x-moe-request-id'),
     });
@@ -258,6 +276,7 @@ mobileTradingControl.post('/:mode/preview', async c => {
       orderType: preview.orderType,
       tradingSession: preview.tradingSession,
       timeInForce: preview.timeInForce,
+      protection: side === 'BUY' ? protectionPreview(settings, price) : null,
       intradayBuyingPower: account.dayBuyingPower,
       overnightBuyingPower: account.overnightBuyingPower,
       nightTradingBuyingPower: effectiveNightBuyingPower(account),
@@ -292,8 +311,10 @@ mobileTradingControl.post('/:mode/reception', async c => {
   const settings = await getTradingSettings(c.env, mode);
   const blockers: string[] = [];
   if (!isTradingSettingsConfigured(settings)) {
-    blockers.push('Configure sessions, share quantity, and maximum trade amount first.');
+    blockers.push('Configure sessions, share quantity, maximum trade amount, Stop Loss, Take Profit, and trailing settings first.');
   }
+  const sessionBlocker = protectionSessionBlocker(settings);
+  if (sessionBlocker) blockers.push(sessionBlocker);
   if (await getKillSwitch(c.env)) blockers.push('Kill Switch is active.');
 
   const client = WebullClient.fromEnv(c.env, mode);
@@ -324,7 +345,15 @@ mobileTradingControl.post('/:mode/reception', async c => {
   await writeMobileAudit(c.env, {
     type: 'MOBILE_RECEPTION_ENABLED',
     accountType: accountType(mode),
-    reason: `${settings.allowedSessions.join('+')}|${settings.shareQuantity}|${settings.maxTradeAmountUsd}|${settings.timeInForce}`,
+    reason: [
+      settings.allowedSessions.join('+'),
+      settings.shareQuantity,
+      settings.maxTradeAmountUsd,
+      settings.timeInForce,
+      `SL${settings.stopLossPct}`,
+      `TP${settings.takeProfitPct}`,
+      `TR${settings.trailingTriggerCents}/${settings.trailingInitialStopProfitCents}/${settings.trailingTriggerStepCents}/${settings.trailingStopStepCents}`,
+    ].join('|'),
     requestId: c.req.header('x-moe-request-id'),
   });
   return c.json({ ok: true, mode, reception: state, settings });
