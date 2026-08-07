@@ -13,6 +13,12 @@ import {
   type OcoCancellationCycleGuard,
 } from './trade-protection-transition-guard';
 import {
+  pendingStopProtectionOrderIds,
+  prioritizeStopCancellationTransitions,
+  stopProtectionOrderIdsForPhase,
+  type StopProtectionSourcePhase,
+} from './trade-protection-stop-verification';
+import {
   protectionPreview,
   trailingStopForPrice,
   type TradingSettings,
@@ -28,6 +34,7 @@ type ProtectionPhase =
   | 'WAITING_POSITION'
   | 'INITIAL_PROTECTION'
   | 'CANCELLING_INITIAL_PROTECTION'
+  | 'CANCELLING_ALL_PROTECTION'
   | 'TRAILING'
   | 'CLOSED'
   | 'ERROR';
@@ -71,6 +78,10 @@ type ProtectedTrade = {
   ocoCancellationRequestedAt?: string;
   takeProfitCancellationStatus?: string;
   stopLossCancellationStatus?: string;
+  stopRequestedAt?: string;
+  stopSourcePhase?: StopProtectionSourcePhase;
+  stopOrderClientIds?: string[];
+  stopOrderStatuses?: Record<string, string>;
   lastError?: string;
 };
 
@@ -153,6 +164,7 @@ function activePhase(phase: ProtectionPhase): boolean {
   return phase === 'WAITING_POSITION'
     || phase === 'INITIAL_PROTECTION'
     || phase === 'CANCELLING_INITIAL_PROTECTION'
+    || phase === 'CANCELLING_ALL_PROTECTION'
     || phase === 'TRAILING';
 }
 
@@ -172,6 +184,7 @@ function orderDetailFor(
 }
 
 async function safeCancel(client: WebullClient, ids: string[]): Promise<void> {
+  if (ids.length === 0) return;
   try {
     await client.cancelOrders(ids);
   } catch (error) {
@@ -220,8 +233,10 @@ export class TradeProtectionCoordinator {
 
   async alarm(): Promise<void> {
     const trades = await this.loadTrades();
-    const activeTrades = prioritizeOcoCancellationTransitions(
-      Object.values(trades).filter(trade => activePhase(trade.phase)),
+    const activeTrades = prioritizeStopCancellationTransitions(
+      prioritizeOcoCancellationTransitions(
+        Object.values(trades).filter(trade => activePhase(trade.phase)),
+      ),
     );
     if (activeTrades.length === 0) return;
 
@@ -239,9 +254,6 @@ export class TradeProtectionCoordinator {
 
     let positions: Position[];
     try {
-      // One coordinator exists per account mode, so all active symbols share a
-      // single positions request. Order-detail verification is separately
-      // budgeted to Webull's documented 2 requests / 2 seconds limit.
       positions = await client.getPositions();
     } catch (error) {
       for (const trade of activeTrades) {
@@ -351,19 +363,80 @@ export class TradeProtectionCoordinator {
     const trades = await this.loadTrades();
     const trade = trades[symbol];
     if (!trade) return Response.json({ ok: true, stopped: false });
-
-    const client = WebullClient.fromEnv(this.env, trade.mode);
-    if (client) {
-      await safeCancel(client, [
-        trade.takeProfitClientOrderId,
-        trade.stopLossClientOrderId,
-        trade.trailingStopClientOrderId,
-      ]);
+    if (trade.phase === 'CLOSED') {
+      return Response.json({ ok: true, stopped: true, idempotent: true, trade });
     }
-    trade.phase = 'CLOSED';
+    if (trade.phase === 'CANCELLING_ALL_PROTECTION') {
+      await this.ensureAlarm(250);
+      return Response.json({ ok: true, stopped: false, pending: true, idempotent: true, trade }, { status: 202 });
+    }
+
+    const sourcePhase = trade.phase as StopProtectionSourcePhase;
+    const targetIds = stopProtectionOrderIdsForPhase(sourcePhase, trade);
+    if (targetIds.length === 0) {
+      trade.phase = 'CLOSED';
+      trade.lastError = undefined;
+      trade.updatedAt = nowIso();
+      await this.saveTrades(trades);
+      return Response.json({ ok: true, stopped: true, trade });
+    }
+
+    trade.stopSourcePhase = sourcePhase;
+    trade.stopRequestedAt ??= nowIso();
+    trade.stopOrderClientIds = targetIds;
+    trade.stopOrderStatuses = {};
+    trade.phase = 'CANCELLING_ALL_PROTECTION';
+    trade.lastError = undefined;
     trade.updatedAt = nowIso();
     await this.saveTrades(trades);
-    return Response.json({ ok: true, stopped: true, trade });
+    await this.ensureAlarm(250);
+    return Response.json({ ok: true, stopped: false, pending: true, trade }, { status: 202 });
+  }
+
+  private async reconcileStopCancellation(
+    trade: ProtectedTrade,
+    client: WebullClient,
+    orderDetailBudget: OrderDetailBudget,
+  ): Promise<void> {
+    const targetIds = trade.stopOrderClientIds ?? [];
+    if (targetIds.length === 0) {
+      trade.phase = 'CLOSED';
+      trade.lastError = undefined;
+      trade.updatedAt = nowIso();
+      return;
+    }
+
+    const pendingIds = pendingStopProtectionOrderIds(targetIds, trade.stopOrderStatuses);
+    if (pendingIds.length === 0) {
+      trade.phase = 'CLOSED';
+      trade.lastError = undefined;
+      trade.updatedAt = nowIso();
+      return;
+    }
+
+    await safeCancel(client, pendingIds);
+    if (orderDetailBudget.remaining < pendingIds.length) return;
+    orderDetailBudget.remaining -= pendingIds.length;
+
+    const detailRows = await Promise.all(
+      pendingIds.map(clientOrderId => getWebullOrderDetail(this.env, trade.mode, clientOrderId)),
+    );
+    const statuses = { ...(trade.stopOrderStatuses ?? {}) };
+    for (let index = 0; index < pendingIds.length; index += 1) {
+      const clientOrderId = pendingIds[index];
+      const detail = orderDetailFor(detailRows[index], clientOrderId);
+      if (!detail) {
+        throw new Error(`Webull did not return protection order ${clientOrderId} during stop verification.`);
+      }
+      statuses[clientOrderId] = detail.status;
+    }
+    trade.stopOrderStatuses = statuses;
+    trade.updatedAt = nowIso();
+
+    if (pendingStopProtectionOrderIds(targetIds, statuses).length === 0) {
+      trade.phase = 'CLOSED';
+      trade.lastError = undefined;
+    }
   }
 
   private async reconcileTrade(
@@ -373,6 +446,11 @@ export class TradeProtectionCoordinator {
     orderDetailBudget: OrderDetailBudget,
     ocoCancellationCycle: OcoCancellationCycleGuard,
   ): Promise<void> {
+    if (trade.phase === 'CANCELLING_ALL_PROTECTION') {
+      await this.reconcileStopCancellation(trade, client, orderDetailBudget);
+      return;
+    }
+
     let position = positionFor(trade, positions);
 
     if (!position) {
@@ -439,9 +517,6 @@ export class TradeProtectionCoordinator {
     if (trade.phase === 'CANCELLING_INITIAL_PROTECTION') {
       await safeCancel(client, [trade.takeProfitClientOrderId, trade.stopLossClientOrderId]);
 
-      // Webull documents a 2 requests / 2 seconds limit for Order Detail. One
-      // trade therefore consumes the complete per-cycle budget for its two OCO
-      // legs; additional trades wait for the next alarm rather than burst.
       if (orderDetailBudget.remaining < 2) return;
       orderDetailBudget.remaining -= 2;
 
@@ -463,14 +538,9 @@ export class TradeProtectionCoordinator {
       const bothTerminal = isWebullOrderTerminal(takeProfitDetail.status)
         && isWebullOrderTerminal(stopLossDetail.status);
 
-      // A fully-filled OCO leg is an exit. Never submit another SELL while the
-      // broker may still be settling the position snapshot; wait for the next
-      // positions poll to report the long as closed.
       if (anyFullyFilled) return;
       if (!bothTerminal) return;
 
-      // Only after both initial legs are terminal do we re-read the broker
-      // position and create a standalone stop for the exact remaining quantity.
       const refreshedPositions = await client.getPositions();
       position = positionFor(trade, refreshedPositions);
       if (!position) {
@@ -492,9 +562,6 @@ export class TradeProtectionCoordinator {
       }
 
       if (refreshedPrice <= refreshedDesired.price) {
-        // The market crossed the stop while broker cancellation was settling.
-        // Close the currently confirmed long quantity instead of leaving it
-        // without the protection the user configured.
         await client.placeOrder({
           symbol: trade.symbol,
           side: 'SELL',
