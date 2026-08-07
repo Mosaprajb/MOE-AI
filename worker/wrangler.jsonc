@@ -17,7 +17,19 @@
     "TradingViewPositionCoordinator": {
       "type": "durable-object",
       "storage": "sqlite"
+    },
+    "StepTrailingCoordinator": {
+      "type": "durable-object",
+      "storage": "sqlite"
     }
+  },
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "STEP_TRAILING_COORDINATOR",
+        "class_name": "StepTrailingCoordinator"
+      }
+    ]
   },
   "env": {
     "production": {
