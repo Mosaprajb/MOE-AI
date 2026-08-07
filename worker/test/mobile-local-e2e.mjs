@@ -73,7 +73,7 @@ const liveReception = await jsonRequest('/api/tradingview/reception', {
   }),
 });
 assert.equal(liveReception.response.status, 423);
-assert.match(liveReception.payload.error, /disabled/i);
+assert.match(liveReception.payload.error, /blocked by the server policy/i);
 
 const pushRegistration = await jsonRequest('/api/mobile/push/register', {
   method: 'POST',
