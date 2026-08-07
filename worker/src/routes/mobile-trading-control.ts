@@ -108,8 +108,8 @@ mobileTradingControl.get('/:mode', async c => {
 
   const settingsBlocker = configurationBlocker(settings);
   if (settingsBlocker) blockers.push(settingsBlocker);
-  if (settings.trailingEnabled && !c.env.STEP_TRAILING_COORDINATOR) {
-    blockers.push('Step trailing coordinator binding is not configured.');
+  if (!c.env.STEP_TRAILING_COORDINATOR) {
+    blockers.push('Protection coordinator binding is not configured.');
   }
   if (!client) {
     blockers.push(`${mode} Webull credentials are not configured.`);
@@ -309,8 +309,8 @@ mobileTradingControl.post('/:mode/reception', async c => {
   const blockers: string[] = [];
   const settingsBlocker = configurationBlocker(settings);
   if (settingsBlocker) blockers.push(settingsBlocker);
-  if (settings.trailingEnabled && !c.env.STEP_TRAILING_COORDINATOR) {
-    blockers.push('Step trailing coordinator binding is not configured.');
+  if (!c.env.STEP_TRAILING_COORDINATOR) {
+    blockers.push('Protection coordinator binding is not configured.');
   }
   if (await getKillSwitch(c.env)) blockers.push('Kill Switch is active.');
 
