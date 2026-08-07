@@ -297,6 +297,15 @@ struct TradingControlBroker: Codable, Equatable {
   var overnightBuyingPower: Double?
   var nightTradingBuyingPower: Double?
   var currentSessionBuyingPower: Double?
+  var marginDataAvailable: Bool?
+  var maintenanceMargin: Double?
+  var openMarginCalls: [String]?
+  var usedMargin: Double?
+  var usedMarginForOpenOrder: Double?
+  var initialMargin: Double?
+  var intradayMargin: Double?
+  var marginExcess: Double?
+  var marginRatio: Double?
   var updatedAt: String?
 }
 
