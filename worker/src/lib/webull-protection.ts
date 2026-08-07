@@ -202,6 +202,19 @@ export async function replaceLimitPrice(
   );
 }
 
+export async function getOpenClientOrderIds(client: WebullClient): Promise<Set<string>> {
+  const access = transport(client);
+  const raw = await access.req<unknown>(
+    'GET',
+    '/openapi/trade/order/open',
+    { account_id: access.accountId, page_size: 50 },
+  );
+  const ids = extractRows(raw)
+    .map(row => String(row.client_order_id ?? '').trim())
+    .filter(Boolean);
+  return new Set(ids);
+}
+
 function snapshotRows(raw: unknown): Array<Record<string, unknown>> {
   if (Array.isArray(raw)) return raw as Array<Record<string, unknown>>;
   const object = raw as Record<string, unknown>;
