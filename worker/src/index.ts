@@ -27,6 +27,7 @@ export {
   SimulationDriver,
   TradingViewPositionCoordinator,
 } from './lib/legacy-durable-objects';
+export { TrailingStopCoordinator } from './lib/trailing-stop-coordinator';
 
 const app = new Hono<{ Bindings: WorkerEnv }>();
 
