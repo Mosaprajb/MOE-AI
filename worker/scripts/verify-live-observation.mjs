@@ -18,6 +18,7 @@ function sanitized(payload) {
     storedMode: payload?.storedMode ?? null,
     effectiveMode: payload?.effectiveMode ?? null,
     observation: payload?.observation ?? null,
+    diagnostics: payload?.diagnostics ?? null,
     blockerCodes: Array.isArray(payload?.blockerCodes) ? payload.blockerCodes : [],
     checkedAt: payload?.checkedAt ?? null,
   };
