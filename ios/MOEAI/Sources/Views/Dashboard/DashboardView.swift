@@ -28,6 +28,9 @@ struct DashboardView: View {
         accountPicker
         accountCard
         buyingPowerCard
+        if model.isLiveSelected {
+          MarginRiskCard(broker: control?.broker)
+        }
         tradingControlCard
         pnlMetrics
         safetyCard
@@ -258,6 +261,10 @@ struct DashboardView: View {
             keyboard: .decimalPad
           )
         }
+
+        Text("Max Trade $ هو سقف استخدام Buying Power للصفقة. أثناء الجلسة العادية لن تتجاوز الصفقة Intraday BP أو هذا السقف أو Quantity المحفوظة — يتم استخدام الحد الأقل.")
+          .font(.caption2)
+          .foregroundStyle(MOETheme.muted)
 
         VStack(alignment: .leading, spacing: 8) {
           Text("Time in Force")
@@ -588,6 +595,199 @@ struct DashboardView: View {
       enabled: true,
       liveConfirmation: confirmation
     )
+  }
+}
+
+private enum MarginRiskLevel {
+  case unavailable
+  case safe
+  case medium
+  case caution
+  case atRisk
+
+  var title: String {
+    switch self {
+    case .unavailable: return "Unavailable"
+    case .safe: return "Safe"
+    case .medium: return "Medium"
+    case .caution: return "Caution"
+    case .atRisk: return "At Risk"
+    }
+  }
+
+  var tint: Color {
+    switch self {
+    case .unavailable: return MOETheme.muted
+    case .safe: return MOETheme.positive
+    case .medium: return .yellow
+    case .caution: return MOETheme.warning
+    case .atRisk: return MOETheme.negative
+    }
+  }
+}
+
+private struct MarginRiskAssessment {
+  let level: MarginRiskLevel
+  let score: Double
+  let marginRatioPercent: Double?
+
+  init(broker: TradingControlBroker?) {
+    guard let broker, broker.marginDataAvailable == true else {
+      level = .unavailable
+      score = 0
+      marginRatioPercent = nil
+      return
+    }
+
+    let maintenance = max(0, broker.maintenanceMargin ?? 0)
+    let excess = broker.marginExcess ?? 0
+    let calls = broker.openMarginCalls ?? []
+
+    let bufferRisk: Double
+    if excess < 0 {
+      bufferRisk = 1
+    } else if maintenance <= 0 {
+      bufferRisk = 0
+    } else {
+      let bufferMultiple = excess / maintenance
+      bufferRisk = 1 - min(max(bufferMultiple / 2, 0), 1)
+    }
+
+    let rawRatio = broker.marginRatio ?? 0
+    let normalizedRatioPercent: Double? = rawRatio > 0
+      ? min(max(rawRatio <= 1 ? rawRatio * 100 : rawRatio, 0), 100)
+      : nil
+    let ratioRisk = normalizedRatioPercent.map { 1 - ($0 / 100) } ?? 0
+
+    var calculated = max(bufferRisk, ratioRisk)
+    if !calls.isEmpty {
+      calculated = max(calculated, 0.72)
+    }
+    if excess < 0 {
+      calculated = 1
+    }
+
+    score = min(max(calculated, 0), 1)
+    marginRatioPercent = normalizedRatioPercent
+
+    switch score {
+    case ..<0.30: level = .safe
+    case ..<0.55: level = .medium
+    case ..<0.80: level = .caution
+    default: level = .atRisk
+    }
+  }
+}
+
+private struct MarginRiskCard: View {
+  let broker: TradingControlBroker?
+
+  private var assessment: MarginRiskAssessment { MarginRiskAssessment(broker: broker) }
+
+  private var marginCalls: String {
+    guard broker?.marginDataAvailable == true else { return "—" }
+    let calls = broker?.openMarginCalls ?? []
+    return calls.isEmpty ? "None" : calls.joined(separator: ", ")
+  }
+
+  var body: some View {
+    GlassCard {
+      VStack(alignment: .leading, spacing: 14) {
+        HStack {
+          VStack(alignment: .leading, spacing: 3) {
+            SectionTitle(title: "Risk Level · Live Margin")
+            Text("تقدير MOE-AI من بيانات Webull الفعلية؛ Margin Calls تتقدم على المؤشر.")
+              .font(.caption2)
+              .foregroundStyle(MOETheme.muted)
+          }
+          Spacer()
+          StatusPill(
+            title: assessment.level.title,
+            isPositive: assessment.level == .safe
+          )
+        }
+
+        Gauge(value: assessment.score, in: 0...1) {
+          Text("Margin Risk")
+        } currentValueLabel: {
+          VStack(spacing: 2) {
+            Image(systemName: "gauge.with.dots.needle.67percent")
+              .font(.title3)
+            Text(assessment.level.title)
+              .font(.caption2.bold())
+          }
+          .foregroundStyle(assessment.level.tint)
+        } minimumValueLabel: {
+          Text("Safe").font(.caption2)
+        } maximumValueLabel: {
+          Text("At Risk").font(.caption2)
+        }
+        .gaugeStyle(.accessoryCircularCapacity)
+        .tint(
+          LinearGradient(
+            colors: [MOETheme.positive, .yellow, MOETheme.warning, MOETheme.negative],
+            startPoint: .leading,
+            endPoint: .trailing
+          )
+        )
+        .frame(maxWidth: .infinity)
+        .scaleEffect(1.25)
+        .padding(.vertical, 12)
+
+        HStack {
+          riskLegend("Safe", MOETheme.positive)
+          Spacer()
+          riskLegend("Medium", .yellow)
+          Spacer()
+          riskLegend("Caution", MOETheme.warning)
+          Spacer()
+          riskLegend("At Risk", MOETheme.negative)
+        }
+
+        Divider().overlay(Color.white.opacity(0.08))
+
+        riskRow("Net Account Value", formatCurrency(broker?.accountValue))
+        riskRow("Intraday Buying Power", formatCurrency(broker?.intradayBuyingPower))
+        riskRow("Overnight Buying Power", formatCurrency(broker?.overnightBuyingPower))
+        riskRow("Initial Margin", formatCurrency(broker?.initialMargin))
+        riskRow("Maintenance Margin", formatCurrency(broker?.maintenanceMargin))
+        riskRow("Intraday Margin", formatCurrency(broker?.intradayMargin))
+        riskRow("Margin Excess", formatCurrency(broker?.marginExcess))
+        riskRow("Used Margin", formatCurrency(broker?.usedMargin))
+        riskRow("Open Order Margin", formatCurrency(broker?.usedMarginForOpenOrder))
+        riskRow(
+          "Margin Ratio",
+          assessment.marginRatioPercent.map { String(format: "%.1f%%", $0) } ?? "—"
+        )
+        riskRow("Margin Notification", marginCalls, warning: !(broker?.openMarginCalls ?? []).isEmpty)
+
+        if broker?.marginDataAvailable != true {
+          Text("بيانات المارجن غير متاحة من Webull لهذا الحساب حاليًا، لذلك لن يعرض MOE-AI تصنيفًا تقديريًا.")
+            .font(.caption2)
+            .foregroundStyle(MOETheme.warning)
+        }
+      }
+    }
+  }
+
+  private func riskLegend(_ title: String, _ color: Color) -> some View {
+    VStack(spacing: 4) {
+      Capsule().fill(color).frame(width: 22, height: 4)
+      Text(title).font(.caption2).foregroundStyle(MOETheme.muted)
+    }
+  }
+
+  private func riskRow(_ title: String, _ value: String, warning: Bool = false) -> some View {
+    HStack {
+      Text(title)
+        .font(.caption)
+        .foregroundStyle(MOETheme.muted)
+      Spacer()
+      Text(value)
+        .font(.subheadline.monospacedDigit().weight(.semibold))
+        .foregroundStyle(warning ? MOETheme.warning : .white)
+        .multilineTextAlignment(.trailing)
+    }
   }
 }
 
