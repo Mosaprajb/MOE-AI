@@ -20,6 +20,7 @@ const requiredDurableObjects = [
   'AlertCoordinator',
   'SimulationDriver',
   'TradingViewPositionCoordinator',
+  'StepTrailingCoordinator',
 ];
 
 async function loadConfig() {
@@ -40,6 +41,11 @@ test('wrangler.jsonc is the only Durable Object lifecycle source', async () => {
       storage: 'sqlite',
     });
   }
+
+  assert.deepEqual(config.durable_objects.bindings, [{
+    name: 'STEP_TRAILING_COORDINATOR',
+    class_name: 'StepTrailingCoordinator',
+  }]);
 });
 
 test('all environments generate standalone Wrangler 4 configs locally', async () => {
@@ -56,6 +62,9 @@ test('all environments generate standalone Wrangler 4 configs locally', async ()
       for (const className of requiredDurableObjects) {
         assert.match(generated, new RegExp(`\\[exports\\.${className}\\]`));
       }
+      assert.match(generated, /\[\[durable_objects\.bindings\]\]/);
+      assert.match(generated, /name = "STEP_TRAILING_COORDINATOR"/);
+      assert.match(generated, /class_name = "StepTrailingCoordinator"/);
     }
   } finally {
     await rm(directory, { recursive: true, force: true });
@@ -81,6 +90,19 @@ test('future Durable Object removals require explicit storage-free tombstones', 
       },
     }),
     /must not declare storage/,
+  );
+});
+
+test('step trailing binding must target a live Durable Object export', async () => {
+  const config = await loadConfig();
+  const invalid = structuredClone(config);
+  invalid.exports.StepTrailingCoordinator = {
+    type: 'durable-object',
+    state: 'deleted',
+  };
+  assert.throws(
+    () => validateCanonicalConfig(invalid),
+    /must target a live class in exports/,
   );
 });
 
