@@ -245,11 +245,26 @@ struct AccountTradingSettings: Codable, Equatable {
   var maxPositionUsd: Double
   var stopLossEnabled: Bool
   var stopLossPct: Double
+  var takeProfitEnabled: Bool?
+  var takeProfitPct: Double?
+  var trailingEnabled: Bool?
+  var trailingTriggerCents: Int?
+  var trailingInitialStopProfitCents: Int?
+  var trailingTriggerStepCents: Int?
+  var trailingStopStepCents: Int?
   var blockIfPosition: Bool
   var sessionOpenOnly: Bool
   var sessionTz: String
   var sessionStart: String
   var sessionEnd: String
+
+  var effectiveTakeProfitEnabled: Bool { takeProfitEnabled ?? true }
+  var effectiveTakeProfitPct: Double { takeProfitPct ?? 3 }
+  var effectiveTrailingEnabled: Bool { trailingEnabled ?? true }
+  var effectiveTrailingTriggerCents: Int { trailingTriggerCents ?? 5 }
+  var effectiveTrailingInitialStopProfitCents: Int { trailingInitialStopProfitCents ?? 2 }
+  var effectiveTrailingTriggerStepCents: Int { trailingTriggerStepCents ?? 5 }
+  var effectiveTrailingStopStepCents: Int { trailingStopStepCents ?? 1 }
 
   static func empty(mode: String) -> AccountTradingSettings {
     AccountTradingSettings(
@@ -264,6 +279,13 @@ struct AccountTradingSettings: Codable, Equatable {
       maxPositionUsd: 0,
       stopLossEnabled: true,
       stopLossPct: 2,
+      takeProfitEnabled: true,
+      takeProfitPct: 3,
+      trailingEnabled: true,
+      trailingTriggerCents: 5,
+      trailingInitialStopProfitCents: 2,
+      trailingTriggerStepCents: 5,
+      trailingStopStepCents: 1,
       blockIfPosition: true,
       sessionOpenOnly: true,
       sessionTz: "America/New_York",
@@ -329,6 +351,16 @@ struct TradingControlSettingsResponse: Codable, Equatable {
   var receptionEnabled: Bool
 }
 
+struct TradeProtectionPreview: Codable, Equatable {
+  var entryPrice: Double?
+  var stopLossPrice: Double?
+  var takeProfitPrice: Double?
+  var trailingTriggerPrice: Double?
+  var trailingInitialStopPrice: Double?
+  var trailingStopPrice: Double?
+  var trailingLevels: Int?
+}
+
 struct TradingControlPreview: Codable, Equatable {
   var ok: Bool
   var mode: String?
@@ -344,6 +376,7 @@ struct TradingControlPreview: Codable, Equatable {
   var orderType: String?
   var tradingSession: String?
   var timeInForce: String?
+  var protection: TradeProtectionPreview?
   var intradayBuyingPower: Double?
   var overnightBuyingPower: Double?
   var nightTradingBuyingPower: Double?
@@ -367,6 +400,15 @@ struct TradingControlSettingsPayload: Codable, Equatable {
   var timeInForce: TradingTimeInForceOption
   var shareQuantity: Int
   var maxTradeAmountUsd: Double
+  var stopLossEnabled: Bool
+  var stopLossPct: Double
+  var takeProfitEnabled: Bool
+  var takeProfitPct: Double
+  var trailingEnabled: Bool
+  var trailingTriggerCents: Int
+  var trailingInitialStopProfitCents: Int
+  var trailingTriggerStepCents: Int
+  var trailingStopStepCents: Int
 }
 
 struct TradingControlPreviewPayload: Codable, Equatable {
