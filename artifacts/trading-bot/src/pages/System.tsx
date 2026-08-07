@@ -25,6 +25,7 @@ export default function SystemPage({ showToast }: Props) {
   const [copied, setCopied] = useState<'url' | 'payload' | null>(null);
 
   const h = (health ?? {}) as Record<string, unknown>;
+  const tradingMode = typeof h.tradingMode === 'string' ? h.tradingMode : null;
 
   const copy = async (text: string, which: 'url' | 'payload') => {
     await navigator.clipboard.writeText(text);
@@ -138,15 +139,15 @@ export default function SystemPage({ showToast }: Props) {
           </div>
         )}
 
-        {h.tradingMode && (
+        {tradingMode && (
           <div className="health-row">
-            <span className={`dot ${h.tradingMode === 'LIVE' ? 'red' : 'green'}`} />
+            <span className={`dot ${tradingMode === 'LIVE' ? 'red' : 'green'}`} />
             <div style={{ flex: 1 }}>
               <div className="health-label">Trading Mode</div>
               <div className="health-detail">Active account for webhook execution</div>
             </div>
-            <span className={`badge ${h.tradingMode === 'LIVE' ? 'badge-red' : 'badge-green'}`}>
-              {String(h.tradingMode)}
+            <span className={`badge ${tradingMode === 'LIVE' ? 'badge-red' : 'badge-green'}`}>
+              {tradingMode}
             </span>
           </div>
         )}
