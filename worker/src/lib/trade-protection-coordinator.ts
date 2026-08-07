@@ -7,6 +7,12 @@ import {
   type WebullOrderDetail,
 } from './webull-order-detail';
 import {
+  claimOcoCancellationTransition,
+  createOcoCancellationCycleGuard,
+  prioritizeOcoCancellationTransitions,
+  type OcoCancellationCycleGuard,
+} from './trade-protection-transition-guard';
+import {
   protectionPreview,
   trailingStopForPrice,
   type TradingSettings,
@@ -214,7 +220,9 @@ export class TradeProtectionCoordinator {
 
   async alarm(): Promise<void> {
     const trades = await this.loadTrades();
-    const activeTrades = Object.values(trades).filter(trade => activePhase(trade.phase));
+    const activeTrades = prioritizeOcoCancellationTransitions(
+      Object.values(trades).filter(trade => activePhase(trade.phase)),
+    );
     if (activeTrades.length === 0) return;
 
     const mode = activeTrades[0].mode;
@@ -248,10 +256,19 @@ export class TradeProtectionCoordinator {
     const orderDetailBudget: OrderDetailBudget = {
       remaining: ORDER_DETAIL_REQUESTS_PER_CYCLE,
     };
+    const ocoCancellationCycle = createOcoCancellationCycleGuard(
+      activeTrades.map(trade => trade.phase),
+    );
 
     for (const trade of activeTrades) {
       try {
-        await this.reconcileTrade(trade, positions, client, orderDetailBudget);
+        await this.reconcileTrade(
+          trade,
+          positions,
+          client,
+          orderDetailBudget,
+          ocoCancellationCycle,
+        );
       } catch (error) {
         trade.lastError = error instanceof Error ? error.message : String(error);
         trade.updatedAt = nowIso();
@@ -354,6 +371,7 @@ export class TradeProtectionCoordinator {
     positions: Position[],
     client: WebullClient,
     orderDetailBudget: OrderDetailBudget,
+    ocoCancellationCycle: OcoCancellationCycleGuard,
   ): Promise<void> {
     let position = positionFor(trade, positions);
 
@@ -412,7 +430,7 @@ export class TradeProtectionCoordinator {
     if (trade.phase === 'INITIAL_PROTECTION' && trade.settings.trailingEnabled) {
       const settings = asTradingSettings(trade);
       const desired = trailingStopForPrice(settings, trade.entryPrice, trade.highWaterPrice ?? currentPrice);
-      if (desired.price != null) {
+      if (desired.price != null && claimOcoCancellationTransition(ocoCancellationCycle)) {
         trade.phase = 'CANCELLING_INITIAL_PROTECTION';
         trade.ocoCancellationRequestedAt ??= nowIso();
       }
