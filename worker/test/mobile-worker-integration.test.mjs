@@ -129,7 +129,7 @@ test('Live reception remains blocked unless the dedicated server gate is enabled
     env,
   );
   assert.equal(response.status, 423);
-  assert.match((await response.json()).error, /disabled/u);
+  assert.match((await response.json()).error, /blocked by the server policy/u);
 });
 
 test('push registration accepts a valid iOS token while APNs sending remains disabled', async () => {
