@@ -1,6 +1,12 @@
 import type { Env, Position, TradingMode } from './types';
 import { WebullClient, type WebullTimeInForce } from './webull';
 import {
+  getWebullOrderDetail,
+  isWebullOrderFullyFilled,
+  isWebullOrderTerminal,
+  type WebullOrderDetail,
+} from './webull-order-detail';
+import {
   protectionPreview,
   trailingStopForPrice,
   type TradingSettings,
@@ -10,8 +16,15 @@ const STORAGE_KEY = 'active-trades';
 const POLL_INTERVAL_MS = 2_000;
 const RETRY_INTERVAL_MS = 2_000;
 const ENTRY_WAIT_TIMEOUT_MS = 2 * 60 * 1_000;
+const ORDER_DETAIL_REQUESTS_PER_CYCLE = 2;
 
-type ProtectionPhase = 'WAITING_POSITION' | 'INITIAL_PROTECTION' | 'TRAILING' | 'CLOSED' | 'ERROR';
+type ProtectionPhase =
+  | 'WAITING_POSITION'
+  | 'INITIAL_PROTECTION'
+  | 'CANCELLING_INITIAL_PROTECTION'
+  | 'TRAILING'
+  | 'CLOSED'
+  | 'ERROR';
 
 type ProtectionSettings = Pick<
   TradingSettings,
@@ -49,6 +62,9 @@ type ProtectedTrade = {
   protectionComboClientOrderId: string;
   trailingStopClientOrderId: string;
   closeClientOrderId: string;
+  ocoCancellationRequestedAt?: string;
+  takeProfitCancellationStatus?: string;
+  stopLossCancellationStatus?: string;
   lastError?: string;
 };
 
@@ -62,6 +78,10 @@ type StartProtectionPayload = {
 
 type ProtectionBindingEnv = Env & {
   TRADE_PROTECTION?: DurableObjectNamespace;
+};
+
+type OrderDetailBudget = {
+  remaining: number;
 };
 
 function nowIso(): string {
@@ -124,7 +144,10 @@ function asTradingSettings(trade: ProtectedTrade): TradingSettings {
 }
 
 function activePhase(phase: ProtectionPhase): boolean {
-  return phase === 'WAITING_POSITION' || phase === 'INITIAL_PROTECTION' || phase === 'TRAILING';
+  return phase === 'WAITING_POSITION'
+    || phase === 'INITIAL_PROTECTION'
+    || phase === 'CANCELLING_INITIAL_PROTECTION'
+    || phase === 'TRAILING';
 }
 
 function positionFor(trade: ProtectedTrade, positions: Position[]): Position | undefined {
@@ -133,6 +156,13 @@ function positionFor(trade: ProtectedTrade, positions: Position[]): Position | u
     && position.side === 'LONG'
     && position.quantity > 0
   ));
+}
+
+function orderDetailFor(
+  rows: WebullOrderDetail[],
+  clientOrderId: string,
+): WebullOrderDetail | undefined {
+  return rows.find(row => row.clientOrderId === clientOrderId) ?? rows[0];
 }
 
 async function safeCancel(client: WebullClient, ids: string[]): Promise<void> {
@@ -202,8 +232,8 @@ export class TradeProtectionCoordinator {
     let positions: Position[];
     try {
       // One coordinator exists per account mode, so all active symbols share a
-      // single positions request. A 2-second cycle also leaves room for the one
-      // safety re-read used while transitioning from OCO to the trailing stop.
+      // single positions request. Order-detail verification is separately
+      // budgeted to Webull's documented 2 requests / 2 seconds limit.
       positions = await client.getPositions();
     } catch (error) {
       for (const trade of activeTrades) {
@@ -215,9 +245,13 @@ export class TradeProtectionCoordinator {
       return;
     }
 
+    const orderDetailBudget: OrderDetailBudget = {
+      remaining: ORDER_DETAIL_REQUESTS_PER_CYCLE,
+    };
+
     for (const trade of activeTrades) {
       try {
-        await this.reconcileTrade(trade, positions, client);
+        await this.reconcileTrade(trade, positions, client, orderDetailBudget);
       } catch (error) {
         trade.lastError = error instanceof Error ? error.message : String(error);
         trade.updatedAt = nowIso();
@@ -319,6 +353,7 @@ export class TradeProtectionCoordinator {
     trade: ProtectedTrade,
     positions: Position[],
     client: WebullClient,
+    orderDetailBudget: OrderDetailBudget,
   ): Promise<void> {
     let position = positionFor(trade, positions);
 
@@ -378,62 +413,97 @@ export class TradeProtectionCoordinator {
       const settings = asTradingSettings(trade);
       const desired = trailingStopForPrice(settings, trade.entryPrice, trade.highWaterPrice ?? currentPrice);
       if (desired.price != null) {
-        await safeCancel(client, [trade.takeProfitClientOrderId, trade.stopLossClientOrderId]);
-
-        // A protection leg may have filled while cancellation was in flight.
-        // Re-read the account before creating a standalone trailing stop so a
-        // stale coordinator can never submit an uncovered short sell.
-        const refreshedPositions = await client.getPositions();
-        position = positionFor(trade, refreshedPositions);
-        if (!position) {
-          trade.phase = 'CLOSED';
-          trade.updatedAt = nowIso();
-          return;
-        }
-
-        const refreshedPrice = Number(position.currentPrice || trade.entryPrice);
-        trade.highWaterPrice = Math.max(trade.highWaterPrice ?? trade.entryPrice, refreshedPrice);
-        const refreshedDesired = trailingStopForPrice(
-          settings,
-          trade.entryPrice,
-          trade.highWaterPrice,
-        );
-        if (refreshedDesired.price == null) {
-          throw new Error('Trailing activation price was lost while replacing initial protection.');
-        }
-
-        if (refreshedPrice <= refreshedDesired.price) {
-          // The market crossed the stop while the two broker legs were being
-          // transitioned. Close immediately rather than leave the long position
-          // without the stop the user configured.
-          await client.placeOrder({
-            symbol: trade.symbol,
-            side: 'SELL',
-            type: 'MARKET',
-            qty: position.quantity,
-            price: refreshedPrice,
-            idempotencyKey: trade.closeClientOrderId,
-            tradingSession: 'CORE',
-            timeInForce: 'DAY',
-          });
-          trade.phase = 'CLOSED';
-          trade.currentStopPrice = refreshedDesired.price;
-          trade.updatedAt = nowIso();
-          return;
-        }
-
-        const trailing = await client.placeProtectiveStop({
-          symbol: trade.symbol,
-          qty: position.quantity,
-          stop: refreshedDesired.price,
-          idempotencyKey: trade.trailingStopClientOrderId,
-          timeInForce: trade.settings.timeInForce as WebullTimeInForce,
-        });
-        trade.trailingStopClientOrderId = trailing.clientOrderId;
-        trade.protectedQuantity = position.quantity;
-        trade.currentStopPrice = refreshedDesired.price;
-        trade.phase = 'TRAILING';
+        trade.phase = 'CANCELLING_INITIAL_PROTECTION';
+        trade.ocoCancellationRequestedAt ??= nowIso();
       }
+    }
+
+    if (trade.phase === 'CANCELLING_INITIAL_PROTECTION') {
+      await safeCancel(client, [trade.takeProfitClientOrderId, trade.stopLossClientOrderId]);
+
+      // Webull documents a 2 requests / 2 seconds limit for Order Detail. One
+      // trade therefore consumes the complete per-cycle budget for its two OCO
+      // legs; additional trades wait for the next alarm rather than burst.
+      if (orderDetailBudget.remaining < 2) return;
+      orderDetailBudget.remaining -= 2;
+
+      const [takeProfitRows, stopLossRows] = await Promise.all([
+        getWebullOrderDetail(this.env, trade.mode, trade.takeProfitClientOrderId),
+        getWebullOrderDetail(this.env, trade.mode, trade.stopLossClientOrderId),
+      ]);
+      const takeProfitDetail = orderDetailFor(takeProfitRows, trade.takeProfitClientOrderId);
+      const stopLossDetail = orderDetailFor(stopLossRows, trade.stopLossClientOrderId);
+      if (!takeProfitDetail || !stopLossDetail) {
+        throw new Error('Webull did not return both initial OCO legs during cancellation verification.');
+      }
+
+      trade.takeProfitCancellationStatus = takeProfitDetail.status;
+      trade.stopLossCancellationStatus = stopLossDetail.status;
+
+      const anyFullyFilled = isWebullOrderFullyFilled(takeProfitDetail)
+        || isWebullOrderFullyFilled(stopLossDetail);
+      const bothTerminal = isWebullOrderTerminal(takeProfitDetail.status)
+        && isWebullOrderTerminal(stopLossDetail.status);
+
+      // A fully-filled OCO leg is an exit. Never submit another SELL while the
+      // broker may still be settling the position snapshot; wait for the next
+      // positions poll to report the long as closed.
+      if (anyFullyFilled) return;
+      if (!bothTerminal) return;
+
+      // Only after both initial legs are terminal do we re-read the broker
+      // position and create a standalone stop for the exact remaining quantity.
+      const refreshedPositions = await client.getPositions();
+      position = positionFor(trade, refreshedPositions);
+      if (!position) {
+        trade.phase = 'CLOSED';
+        trade.updatedAt = nowIso();
+        return;
+      }
+
+      const settings = asTradingSettings(trade);
+      const refreshedPrice = Number(position.currentPrice || trade.entryPrice);
+      trade.highWaterPrice = Math.max(trade.highWaterPrice ?? trade.entryPrice, refreshedPrice);
+      const refreshedDesired = trailingStopForPrice(
+        settings,
+        trade.entryPrice,
+        trade.highWaterPrice,
+      );
+      if (refreshedDesired.price == null) {
+        throw new Error('Trailing activation price was lost while replacing initial protection.');
+      }
+
+      if (refreshedPrice <= refreshedDesired.price) {
+        // The market crossed the stop while broker cancellation was settling.
+        // Close the currently confirmed long quantity instead of leaving it
+        // without the protection the user configured.
+        await client.placeOrder({
+          symbol: trade.symbol,
+          side: 'SELL',
+          type: 'MARKET',
+          qty: position.quantity,
+          price: refreshedPrice,
+          idempotencyKey: trade.closeClientOrderId,
+          tradingSession: 'CORE',
+          timeInForce: 'DAY',
+        });
+        trade.phase = 'CLOSED';
+        trade.currentStopPrice = refreshedDesired.price;
+        trade.updatedAt = nowIso();
+        return;
+      }
+
+      const trailing = await client.placeProtectiveStop({
+        symbol: trade.symbol,
+        qty: position.quantity,
+        stop: refreshedDesired.price,
+        idempotencyKey: trade.trailingStopClientOrderId,
+        timeInForce: trade.settings.timeInForce as WebullTimeInForce,
+      });
+      trade.trailingStopClientOrderId = trailing.clientOrderId;
+      trade.protectedQuantity = position.quantity;
+      trade.currentStopPrice = refreshedDesired.price;
+      trade.phase = 'TRAILING';
     }
 
     if (trade.phase === 'TRAILING') {
