@@ -2,24 +2,36 @@ import SwiftUI
 
 struct MainTabView: View {
   @EnvironmentObject private var model: AppModel
+  @EnvironmentObject private var session: SessionStore
   @EnvironmentObject private var network: NetworkMonitor
+  @EnvironmentObject private var notifications: NotificationManager
+  @EnvironmentObject private var preferences: AppPreferences
+
+  private var activeErrorMessage: String? {
+    model.errorMessage ?? session.errorMessage
+  }
 
   var body: some View {
-    TabView {
+    TabView(selection: $notifications.selectedTab) {
       NavigationStack { DashboardView() }
         .tabItem { Label("الرئيسية", systemImage: "square.grid.2x2.fill") }
+        .tag(MainTab.dashboard)
 
       NavigationStack { ScannerView() }
         .tabItem { Label("الماسح", systemImage: "waveform.path.ecg") }
+        .tag(MainTab.scanner)
 
       NavigationStack { PositionsView() }
         .tabItem { Label("المراكز", systemImage: "chart.line.uptrend.xyaxis") }
+        .tag(MainTab.positions)
 
       NavigationStack { ActivityView() }
         .tabItem { Label("النشاط", systemImage: "bolt.horizontal.circle.fill") }
+        .tag(MainTab.activity)
 
       NavigationStack { SettingsView() }
         .tabItem { Label("الإعدادات", systemImage: "gearshape.fill") }
+        .tag(MainTab.settings)
     }
     .tint(MOETheme.accent)
     .safeAreaInset(edge: .top, spacing: 0) {
@@ -27,13 +39,17 @@ struct MainTabView: View {
         OfflineBanner(snapshot: network.snapshot)
       }
     }
-    .task {
+    .task(id: preferences.autoRefreshInterval) {
       if model.lastRefresh == nil, network.snapshot.isConnected {
         await model.loadAll()
       }
 
+      let seconds = preferences.autoRefreshInterval.seconds
+      guard seconds > 0 else { return }
+      let delay = UInt64(seconds * 1_000_000_000)
+
       while !Task.isCancelled {
-        try? await Task.sleep(for: .seconds(15))
+        try? await Task.sleep(nanoseconds: delay)
         guard !Task.isCancelled else { break }
         guard network.snapshot.isConnected else { continue }
         await model.refreshStatus(silently: true)
@@ -49,16 +65,30 @@ struct MainTabView: View {
         }
       }
     }
+    .onChange(of: notifications.lastOpenedNotificationAt) { _, openedAt in
+      guard openedAt != nil, network.snapshot.isConnected else { return }
+      Task {
+        await model.refreshStatus(silently: true)
+      }
+    }
     .alert(
       "MOE-AI",
       isPresented: Binding(
-        get: { model.errorMessage != nil },
-        set: { if !$0 { model.errorMessage = nil } }
+        get: { activeErrorMessage != nil },
+        set: { isPresented in
+          if !isPresented {
+            model.errorMessage = nil
+            session.errorMessage = nil
+          }
+        }
       )
     ) {
-      Button("حسنًا") { model.errorMessage = nil }
+      Button("حسنًا") {
+        model.errorMessage = nil
+        session.errorMessage = nil
+      }
     } message: {
-      Text(model.errorMessage ?? "")
+      Text(activeErrorMessage ?? "")
     }
   }
 }

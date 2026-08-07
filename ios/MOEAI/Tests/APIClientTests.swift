@@ -19,7 +19,46 @@ final class APIClientTests: XCTestCase {
     XCTAssertEqual(url.scheme, "https")
     XCTAssertEqual(url.host, "example.com")
     XCTAssertEqual(url.path, "/control/api/mobile/market-screener")
-    XCTAssertEqual(URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?.first?.value, "VOLUME")
+    XCTAssertEqual(
+      URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?.first?.value,
+      "VOLUME"
+    )
+  }
+
+  func testNormalizedWorkerURLRequiresHTTPSForRemoteHosts() throws {
+    XCTAssertNil(AppConfiguration.normalizedURL(from: "http://example.com"))
+
+    let secureURL = try XCTUnwrap(
+      AppConfiguration.normalizedURL(from: "https://example.com/control/")
+    )
+    XCTAssertEqual(secureURL.absoluteString, "https://example.com/control")
+  }
+
+  func testNormalizedWorkerURLRejectsEmbeddedCredentialsAndRemovesQuery() throws {
+    XCTAssertNil(
+      AppConfiguration.normalizedURL(from: "https://user:password@example.com")
+    )
+
+    let normalized = try XCTUnwrap(
+      AppConfiguration.normalizedURL(
+        from: "https://example.com/control/?token=secret#fragment"
+      )
+    )
+    XCTAssertNil(URLComponents(url: normalized, resolvingAgainstBaseURL: false)?.query)
+    XCTAssertNil(URLComponents(url: normalized, resolvingAgainstBaseURL: false)?.fragment)
+    XCTAssertEqual(normalized.path, "/control")
+  }
+
+  func testNormalizedWorkerURLAllowsLocalHTTPOnlyForDebugTesting() throws {
+    #if DEBUG
+    let localURL = try XCTUnwrap(
+      AppConfiguration.normalizedURL(from: "http://127.0.0.1:8787")
+    )
+    XCTAssertEqual(localURL.host, "127.0.0.1")
+    XCTAssertEqual(localURL.port, 8787)
+    #else
+    XCTAssertNil(AppConfiguration.normalizedURL(from: "http://127.0.0.1:8787"))
+    #endif
   }
 
   func testStatusRequestAddsNativeClientAndCorrelationHeaders() async throws {
@@ -160,6 +199,85 @@ final class APIClientTests: XCTestCase {
     XCTAssertEqual(diagnostics.statusCode, 503)
     XCTAssertEqual(diagnostics.attempts, 1)
     XCTAssertEqual(diagnostics.outcome, "server-error")
+  }
+}
+
+final class SecurityPreferencesTests: XCTestCase {
+  @MainActor
+  func testPreferencesUseSecureDefaultsAndPersistChanges() throws {
+    let suiteName = "MOEAI.SecurityPreferencesTests.\(UUID().uuidString)"
+    let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+    defer { defaults.removePersistentDomain(forName: suiteName) }
+
+    let preferences = AppPreferences(defaults: defaults)
+    XCTAssertEqual(preferences.autoLockInterval, .thirtySeconds)
+    XCTAssertEqual(preferences.autoRefreshInterval, .fifteenSeconds)
+    XCTAssertTrue(preferences.requiresAuthenticationForSensitiveActions)
+
+    preferences.autoLockInterval = .fiveMinutes
+    preferences.autoRefreshInterval = .off
+    preferences.requiresAuthenticationForSensitiveActions = false
+
+    let reloaded = AppPreferences(defaults: defaults)
+    XCTAssertEqual(reloaded.autoLockInterval, .fiveMinutes)
+    XCTAssertEqual(reloaded.autoRefreshInterval, .off)
+    XCTAssertFalse(reloaded.requiresAuthenticationForSensitiveActions)
+
+    reloaded.reset()
+    XCTAssertEqual(reloaded.autoLockInterval, .thirtySeconds)
+    XCTAssertEqual(reloaded.autoRefreshInterval, .fifteenSeconds)
+    XCTAssertTrue(reloaded.requiresAuthenticationForSensitiveActions)
+  }
+
+  @MainActor
+  func testSensitiveActionGateCanBeDisabledWithoutPrompting() async {
+    let authenticator = DeviceAuthenticatorStub(ownerAuthenticationResult: false)
+    let session = SessionStore(deviceAuthenticator: authenticator)
+
+    let allowed = await session.authorizeSensitiveAction(
+      reason: "test",
+      required: false
+    )
+
+    XCTAssertTrue(allowed)
+    XCTAssertEqual(authenticator.ownerAuthenticationCalls, 0)
+  }
+
+  @MainActor
+  func testSensitiveActionGateUsesDeviceOwnerAuthenticationWhenRequired() async {
+    let authenticator = DeviceAuthenticatorStub(ownerAuthenticationResult: true)
+    let session = SessionStore(deviceAuthenticator: authenticator)
+
+    let allowed = await session.authorizeSensitiveAction(
+      reason: "close position",
+      required: true
+    )
+
+    XCTAssertTrue(allowed)
+    XCTAssertEqual(authenticator.ownerAuthenticationCalls, 1)
+    XCTAssertEqual(authenticator.lastReason, "close position")
+  }
+}
+
+private final class DeviceAuthenticatorStub: DeviceAuthenticating {
+  let ownerAuthenticationResult: Bool
+  var ownerAuthenticationCalls = 0
+  var lastReason: String?
+
+  init(ownerAuthenticationResult: Bool) {
+    self.ownerAuthenticationResult = ownerAuthenticationResult
+  }
+
+  func biometricsAvailable() -> Bool { true }
+
+  func authenticateWithBiometrics(reason: String) async throws -> Bool {
+    true
+  }
+
+  func authenticateDeviceOwner(reason: String) async throws -> Bool {
+    ownerAuthenticationCalls += 1
+    lastReason = reason
+    return ownerAuthenticationResult
   }
 }
 

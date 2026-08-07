@@ -41,11 +41,11 @@ export interface Env {
   MAX_CASH_PCT?:      string;   // % of cash balance per trade (default 25)
   MAX_POSITION_USD?:  string;   // hard cap on position value in dollars (optional)
   BLOCK_IF_POSITION?: string;   // "true" (default) — reject BUY if symbol already held
-  // Regular-session gate (opening trades only; closes always allowed)
-  SESSION_OPEN_ONLY?: string;   // "true" (default) — only open trades inside the session window
-  SESSION_TZ?:        string;   // IANA timezone (default "America/Chicago")
-  SESSION_START?:     string;   // "HH:MM" (default "08:30")
-  SESSION_END?:       string;   // "HH:MM" (default "15:00")
+  // Legacy regular-session gate vars retained for compatibility.
+  SESSION_OPEN_ONLY?: string;
+  SESSION_TZ?:        string;
+  SESSION_START?:     string;
+  SESSION_END?:       string;
   // Scanner vars
   SCANNER_TP_PCT?:        string;   // take profit % (default 1.5)
   SCANNER_TRAIL_PCT?:     string;   // trailing stop % (default 1.0)
@@ -73,9 +73,9 @@ export interface ScannerPosition {
   entryPrice:    number;
   currentPrice:  number;
   highestPrice:  number;
-  stopLoss:      number;   // current trailing SL
+  stopLoss:      number;
   takeProfit:    number;
-  hardStop:      number;   // fixed floor SL
+  hardStop:      number;
   trailPct:      number;
   tpPct:         number;
   confidence:    'HIGH' | 'MEDIUM';
@@ -108,16 +108,18 @@ export interface WebullCredentials {
 }
 
 export interface AccountData {
-  accountValue:   number;
-  cash:           number;
-  buyingPower:    number;
-  dayBuyingPower: number;
-  marketValue:    number;
-  unrealizedPnl:  number;
-  realizedPnl:    number;
-  dayPnl:         number;
-  mode:           TradingMode;
-  updatedAt:      string;
+  accountValue:              number;
+  cash:                      number;
+  buyingPower:               number;
+  dayBuyingPower:            number;
+  overnightBuyingPower:      number;
+  nightTradingBuyingPower:   number;
+  marketValue:               number;
+  unrealizedPnl:             number;
+  realizedPnl:               number;
+  dayPnl:                    number;
+  mode:                      TradingMode;
+  updatedAt:                 string;
 }
 
 export interface Position {
@@ -201,7 +203,8 @@ export interface SafetyGates {
   manualArmRequired:     boolean;
 }
 
-// TradingView webhook payload
+// TradingView webhook payload. Account selection, sizing limits, trading windows,
+// and TIF are server-owned settings; an alert cannot override them.
 export interface TVWebhookPayload {
   secret?:    string;
   symbol:     string;
@@ -210,8 +213,8 @@ export interface TVWebhookPayload {
   // MOERAND TradingView indicator format
   side?:      'BUY' | 'SELL';
   orderType?: string;
-  qty?:       number;   // shares to trade
-  type?:      string;   // MARKET | LIMIT (default MARKET)
+  qty?:       number;
+  type?:      string;
   price?:     number;
   entry?:     number;
   limitPrice?: number;
@@ -221,7 +224,7 @@ export interface TVWebhookPayload {
   takeProfit?: number;
   signal?:    string;
   signalId?:  string;
-  closePosition?: boolean; // SELL closes the actual held quantity (no shorting)
+  closePosition?: boolean;
   session?:   string;
   submitSandbox?: boolean;
   riskPercent?: number;

@@ -4,18 +4,22 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "wrangler dev src/index.ts --local",
-    "deploy": "wrangler deploy",
-    "deploy:sandbox": "wrangler deploy --env sandbox",
+    "config:generate": "node scripts/generate-wrangler-config.mjs",
+    "dev": "node scripts/generate-wrangler-config.mjs sandbox && pnpm dlx wrangler@4.119.0 dev --local --config .wrangler.sandbox.ci.toml",
+    "deploy": "node scripts/generate-wrangler-config.mjs production && pnpm dlx wrangler@4.119.0 deploy --config .wrangler.production.ci.toml",
+    "deploy:staging": "node scripts/generate-wrangler-config.mjs staging && pnpm dlx wrangler@4.119.0 deploy --config .wrangler.staging.ci.toml",
+    "deploy:sandbox": "node scripts/generate-wrangler-config.mjs sandbox && pnpm dlx wrangler@4.119.0 deploy --config .wrangler.sandbox.ci.toml",
     "type-check": "tsc --noEmit",
     "test:mobile": "pnpm --dir ../scripts exec tsx --test ../worker/test/mobile-*.test.mjs",
-    "validate:mobile": "pnpm run type-check && pnpm run test:mobile && wrangler deploy --dry-run",
-    "db:migrate": "wrangler d1 execute moe-db --file=src/db/schema.sql"
+    "validate:mobile": "pnpm run type-check && pnpm run test:mobile && node scripts/generate-wrangler-config.mjs sandbox && pnpm dlx wrangler@4.119.0 deploy --dry-run --config .wrangler.sandbox.ci.toml",
+    "db:migrate": "node scripts/generate-wrangler-config.mjs production && pnpm dlx wrangler@4.119.0 d1 migrations apply DB --remote --config .wrangler.production.ci.toml",
+    "verify:sandbox": "node scripts/verify-deployment-safety.mjs sandbox",
+    "verify:staging": "node scripts/verify-deployment-safety.mjs staging",
+    "verify:production": "node scripts/verify-deployment-safety.mjs production"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^4.20260702.1",
-    "typescript": "^5.9.3",
-    "wrangler": "^3.114.17"
+    "typescript": "^5.9.3"
   },
   "dependencies": {
     "hono": "^4.7.11"

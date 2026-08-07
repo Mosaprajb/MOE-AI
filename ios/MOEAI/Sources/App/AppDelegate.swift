@@ -10,6 +10,12 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
     return true
   }
 
+  func applicationDidBecomeActive(_ application: UIApplication) {
+    Task {
+      try? await UNUserNotificationCenter.current().setBadgeCount(0)
+    }
+  }
+
   func application(
     _ application: UIApplication,
     didRegisterForRemoteNotificationsWithDeviceToken deviceToken: Data
@@ -39,5 +45,22 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
     withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void
   ) {
     completionHandler([.banner, .list, .sound, .badge])
+  }
+
+  func userNotificationCenter(
+    _ center: UNUserNotificationCenter,
+    didReceive response: UNNotificationResponse,
+    withCompletionHandler completionHandler: @escaping () -> Void
+  ) {
+    NotificationCenter.default.post(
+      name: .moeDidOpenPushNotification,
+      object: nil,
+      userInfo: ["payload": response.notification.request.content.userInfo]
+    )
+    completionHandler()
+
+    Task {
+      try? await UNUserNotificationCenter.current().setBadgeCount(0)
+    }
   }
 }
