@@ -136,7 +136,7 @@ export class StepTrailingCoordinator {
     if (request.method === 'POST' && url.pathname === '/arm') {
       let body: StepTrailingArmRequest;
       try {
-        body = await request.json<StepTrailingArmRequest>();
+        body = await request.json() as StepTrailingArmRequest;
       } catch {
         return responseJson({ ok: false, error: 'Valid JSON is required.' }, 400);
       }
@@ -162,7 +162,7 @@ export class StepTrailingCoordinator {
     if (request.method === 'POST' && url.pathname === '/disarm') {
       let body: { symbol?: string };
       try {
-        body = await request.json<{ symbol?: string }>();
+        body = await request.json() as { symbol?: string };
       } catch {
         return responseJson({ ok: false, error: 'Valid JSON is required.' }, 400);
       }
