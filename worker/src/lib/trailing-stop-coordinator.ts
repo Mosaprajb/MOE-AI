@@ -1,11 +1,13 @@
 import type { Env, TradingMode } from './types';
 import { WebullClient, type WebullTimeInForce, type WebullTradingSession } from './webull';
 import {
+  getClientOrderStatus,
   getLatestStockPrice,
-  getOpenClientOrderIds,
+  isWorkingProtectionOrder,
   placeStandaloneProtectiveStop,
   replaceLimitPrice,
   replaceStopPrice,
+  type WebullProtectionOrderStatus,
 } from './webull-protection';
 
 const STATE_KEY = 'managed-position-v1';
@@ -45,6 +47,7 @@ type ManagedPosition = {
   lastPrice?: number;
   protectionAdjusted?: boolean;
   takeProfitCancelled?: boolean;
+  recoveryGeneration?: number;
   lastError?: string;
   createdAt: string;
   updatedAt: string;
@@ -74,11 +77,12 @@ function doStub(env: Env, mode: TradingMode, symbol: string): DurableObjectStub 
   return env.TRAILING_STOP_COORDINATOR.get(env.TRAILING_STOP_COORDINATOR.idFromName(key));
 }
 
-function recoveryStopClientOrderId(managed: ManagedPosition): string {
+function recoveryStopClientOrderId(managed: ManagedPosition, generation: number): string {
+  const suffix = `T${Math.max(1, generation)}`;
   const base = managed.comboClientOrderId
     .replace(/[^A-Za-z0-9_-]/gu, '')
-    .slice(0, 27);
-  return `${base || 'moe-trailing'}-TR`.slice(0, 32);
+    .slice(0, Math.max(1, 31 - suffix.length));
+  return `${base || 'moe-trailing'}-${suffix}`.slice(0, 32);
 }
 
 export function trailingCoordinatorConfigured(env: Env): boolean {
@@ -250,24 +254,27 @@ export class TrailingStopCoordinator {
           return;
         }
 
-        // Move the existing stop into profit before touching take-profit.
+        // Move the existing stop into profit and persist that state before
+        // touching take-profit. An alarm retry then resumes from TRAILING.
         await replaceStopPrice(client, managed.stopLossClientOrderId, safeStop);
         managed.currentStopPrice = safeStop;
         managed.status = 'TRAILING';
+        managed.updatedAt = new Date().toISOString();
+        await this.state.storage.put(STATE_KEY, managed);
 
         try {
-          await this.cancelTakeProfitIfOpen(client, managed);
+          await this.cancelTakeProfitIfWorking(client, managed);
           managed.takeProfitCancelled = true;
+          managed.updatedAt = new Date().toISOString();
+          await this.state.storage.put(STATE_KEY, managed);
           // Some broker combo implementations may remove a sibling when one leg
-          // is cancelled. Verify the stop is still open and recreate a standalone
-          // stop with a deterministic ID when necessary.
+          // is cancelled. Verify the stop by Order Detail and recreate a
+          // standalone stop with a persisted deterministic ID when necessary.
           if (!(await this.ensureTrailingStopOpen(client, managed))) {
             await this.finishClosed(managed);
             return;
           }
         } catch (error) {
-          // The stop was already moved into profit before this transition. Keep
-          // retrying until both TP removal and stop verification succeed.
           managed.lastError = `Trailing transition will retry: ${errorText(error)}`;
         }
       }
@@ -275,15 +282,15 @@ export class TrailingStopCoordinator {
       if (managed.status === 'TRAILING') {
         if (!managed.takeProfitCancelled) {
           try {
-            await this.cancelTakeProfitIfOpen(client, managed);
+            await this.cancelTakeProfitIfWorking(client, managed);
             managed.takeProfitCancelled = true;
+            managed.updatedAt = new Date().toISOString();
+            await this.state.storage.put(STATE_KEY, managed);
           } catch (error) {
             managed.lastError = `TP cancellation retry failed: ${errorText(error)}`;
           }
         }
 
-        // Verify a protective SELL stop exists on every alarm before attempting
-        // another price step. This also covers eventual combo-cancellation effects.
         if (!(await this.ensureTrailingStopOpen(client, managed))) {
           await this.finishClosed(managed);
           return;
@@ -342,14 +349,15 @@ export class TrailingStopCoordinator {
     await this.state.storage.setAlarm(Date.now() + POLL_INTERVAL_MS);
   }
 
-  private async cancelTakeProfitIfOpen(
+  private async cancelTakeProfitIfWorking(
     client: WebullClient,
     managed: ManagedPosition,
-  ): Promise<void> {
-    const openIds = await getOpenClientOrderIds(client);
-    if (openIds.has(managed.takeProfitClientOrderId)) {
+  ): Promise<WebullProtectionOrderStatus | null> {
+    const status = await getClientOrderStatus(client, managed.takeProfitClientOrderId);
+    if (isWorkingProtectionOrder(status)) {
       await client.cancelOrder(managed.takeProfitClientOrderId);
     }
+    return status;
   }
 
   private async ensureTrailingStopOpen(
@@ -359,8 +367,8 @@ export class TrailingStopCoordinator {
     const stopPrice = Number(managed.currentStopPrice ?? 0);
     if (!(stopPrice > 0)) throw new Error('Trailing stop price is unavailable.');
 
-    let openIds = await getOpenClientOrderIds(client);
-    if (openIds.has(managed.stopLossClientOrderId)) return true;
+    const currentStatus = await getClientOrderStatus(client, managed.stopLossClientOrderId);
+    if (isWorkingProtectionOrder(currentStatus)) return true;
 
     // Before creating a recovery SELL, re-check the broker position to avoid a
     // stale stop opening a short after TP/SL closed the long between API calls.
@@ -372,10 +380,43 @@ export class TrailingStopCoordinator {
     ));
     if (!livePosition) return false;
 
-    const recoveryId = recoveryStopClientOrderId(managed);
-    if (openIds.has(recoveryId)) {
-      managed.stopLossClientOrderId = recoveryId;
-      return true;
+    // A fully filled stop should have removed the managed long. Treat any
+    // remaining position snapshot as stale rather than submitting another SELL.
+    if (currentStatus === 'FILLED') return false;
+
+    let generation = Math.max(0, managed.recoveryGeneration ?? 0);
+    let recoveryId = generation > 0
+      ? recoveryStopClientOrderId(managed, generation)
+      : '';
+
+    if (generation === 0 || managed.stopLossClientOrderId !== recoveryId) {
+      generation = Math.max(1, generation);
+      recoveryId = recoveryStopClientOrderId(managed, generation);
+    } else if (currentStatus === 'CANCELLED' || currentStatus === 'FAILED') {
+      generation += 1;
+      recoveryId = recoveryStopClientOrderId(managed, generation);
+    }
+
+    // Persist the intended recovery ID before broker submission. If an alarm is
+    // retried after a Worker failure, Order Detail can safely determine whether
+    // that deterministic ID is already live without relying on lagging open-order lists.
+    managed.recoveryGeneration = generation;
+    managed.stopLossClientOrderId = recoveryId;
+    managed.updatedAt = new Date().toISOString();
+    await this.state.storage.put(STATE_KEY, managed);
+
+    const recoveryStatus = await getClientOrderStatus(client, recoveryId);
+    if (isWorkingProtectionOrder(recoveryStatus)) return true;
+    if (recoveryStatus === 'FILLED') return false;
+    if (recoveryStatus === 'CANCELLED' || recoveryStatus === 'FAILED') {
+      managed.recoveryGeneration = generation + 1;
+      managed.stopLossClientOrderId = recoveryStopClientOrderId(
+        managed,
+        managed.recoveryGeneration,
+      );
+      managed.updatedAt = new Date().toISOString();
+      await this.state.storage.put(STATE_KEY, managed);
+      recoveryId = managed.stopLossClientOrderId;
     }
 
     const recoveryQuantity = Math.max(
@@ -384,37 +425,28 @@ export class TrailingStopCoordinator {
     );
     if (recoveryQuantity < 1) return false;
 
-    try {
-      await placeStandaloneProtectiveStop(client, {
-        symbol: managed.symbol,
-        qty: recoveryQuantity,
-        stopPrice,
-        clientOrderId: recoveryId,
-        tradingSession: managed.tradingSession,
-        timeInForce: managed.timeInForce,
-      });
-      managed.stopLossClientOrderId = recoveryId;
-      return true;
-    } catch (error) {
-      // Durable Object alarms are at-least-once. If a retry races a successful
-      // prior placement, confirm the deterministic recovery ID before failing.
-      openIds = await getOpenClientOrderIds(client);
-      if (openIds.has(recoveryId)) {
-        managed.stopLossClientOrderId = recoveryId;
-        return true;
-      }
-      throw error;
-    }
+    await placeStandaloneProtectiveStop(client, {
+      symbol: managed.symbol,
+      qty: recoveryQuantity,
+      stopPrice,
+      clientOrderId: recoveryId,
+      tradingSession: managed.tradingSession,
+      timeInForce: managed.timeInForce,
+    });
+    return true;
   }
 
   private async cancelOpenProtectiveOrders(managed: ManagedPosition): Promise<void> {
     const client = WebullClient.fromEnv(this.env, managed.mode);
     if (!client) throw new Error(`${managed.mode} Webull credentials are not configured.`);
-    const openIds = await getOpenClientOrderIds(client);
-    if (openIds.has(managed.takeProfitClientOrderId)) {
+
+    const takeProfitStatus = await getClientOrderStatus(client, managed.takeProfitClientOrderId);
+    if (isWorkingProtectionOrder(takeProfitStatus)) {
       await client.cancelOrder(managed.takeProfitClientOrderId);
     }
-    if (openIds.has(managed.stopLossClientOrderId)) {
+
+    const stopStatus = await getClientOrderStatus(client, managed.stopLossClientOrderId);
+    if (isWorkingProtectionOrder(stopStatus)) {
       await client.cancelOrder(managed.stopLossClientOrderId);
     }
   }
