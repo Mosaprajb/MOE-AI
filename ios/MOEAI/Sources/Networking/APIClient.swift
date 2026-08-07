@@ -322,6 +322,18 @@ actor APIClient {
       do {
         (data, response) = try await session.data(for: request)
       } catch {
+        if Self.isCancellation(error) {
+          recordDiagnostics(
+            requestID: requestID,
+            method: method,
+            path: path,
+            statusCode: nil,
+            attempts: attemptCount,
+            outcome: "cancelled"
+          )
+          throw CancellationError()
+        }
+
         if allowsRetry,
           attempt < retryCount,
           Self.isRetryableTransportError(error)
@@ -485,6 +497,13 @@ actor APIClient {
     }
     guard let url = components.url else { throw APIError.invalidBaseURL }
     return url
+  }
+
+  private static func isCancellation(_ error: Error) -> Bool {
+    if error is CancellationError { return true }
+    if let urlError = error as? URLError, urlError.code == .cancelled { return true }
+    let nsError = error as NSError
+    return nsError.domain == NSURLErrorDomain && nsError.code == NSURLErrorCancelled
   }
 
   private static func isRetryableStatusCode(_ statusCode: Int) -> Bool {
