@@ -66,6 +66,9 @@ jobs:
       - name: Verify deployed safety policy
         run: node scripts/verify-deployment-safety.mjs production
 
+      - name: Verify Live read-only broker observation
+        run: node scripts/verify-live-observation.mjs
+
       - name: Remove generated Wrangler config
         if: always()
         run: rm -f .wrangler.production.ci.toml
