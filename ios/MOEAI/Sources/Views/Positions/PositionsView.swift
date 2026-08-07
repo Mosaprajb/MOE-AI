@@ -17,14 +17,16 @@ struct PositionsView: View {
           InlineErrorView(message: refreshError)
         }
 
-        if model.status.safePositions.isEmpty {
+        if model.activePositions.isEmpty {
           EmptyStateView(
             icon: "briefcase",
             title: "لا توجد مراكز مفتوحة",
-            message: "ستظهر مراكز TradingView النشطة هنا بعد تأكيدها من الخادم."
+            message: model.isLiveSelected
+              ? "لا توجد مراكز مفتوحة في الحساب الحقيقي."
+              : "لا توجد مراكز مفتوحة في حساب Paper Trading."
           )
         } else {
-          ForEach(model.status.safePositions) { position in
+          ForEach(model.activePositions) { position in
             PositionCard(
               position: position,
               isClosing: model.pendingAction == "close-\(position.symbol ?? "")"
@@ -41,7 +43,7 @@ struct PositionsView: View {
     }
     .background(AppBackground())
     .foregroundStyle(.white)
-    .navigationTitle("المراكز")
+    .navigationTitle(model.isLiveSelected ? "مراكز Live" : "مراكز Paper")
     .refreshable {
       guard network.snapshot.isConnected else { return }
       await model.refreshStatusFromPullToRefresh()
@@ -80,7 +82,7 @@ struct PositionsView: View {
     GlassCard {
       HStack(spacing: 10) {
         Button {
-          Task { await model.refreshPositions() }
+          Task { await model.refreshStatus(silently: true) }
         } label: {
           Label("تحديث الوسيط", systemImage: "arrow.clockwise")
             .frame(maxWidth: .infinity)
