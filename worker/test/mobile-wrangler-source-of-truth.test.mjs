@@ -20,6 +20,7 @@ const requiredDurableObjects = [
   'AlertCoordinator',
   'SimulationDriver',
   'TradingViewPositionCoordinator',
+  'TradeProtectionCoordinator',
 ];
 
 async function loadConfig() {
@@ -40,6 +41,11 @@ test('wrangler.jsonc is the only Durable Object lifecycle source', async () => {
       storage: 'sqlite',
     });
   }
+
+  assert.deepEqual(config.durable_objects?.bindings, [{
+    name: 'TRADE_PROTECTION',
+    class_name: 'TradeProtectionCoordinator',
+  }]);
 });
 
 test('all environments generate standalone Wrangler 4 configs locally', async () => {
@@ -56,6 +62,9 @@ test('all environments generate standalone Wrangler 4 configs locally', async ()
       for (const className of requiredDurableObjects) {
         assert.match(generated, new RegExp(`\\[exports\\.${className}\\]`));
       }
+      assert.match(generated, /\[\[durable_objects\.bindings\]\]/);
+      assert.match(generated, /name = "TRADE_PROTECTION"/);
+      assert.match(generated, /class_name = "TradeProtectionCoordinator"/);
     }
   } finally {
     await rm(directory, { recursive: true, force: true });
