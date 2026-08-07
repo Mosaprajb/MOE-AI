@@ -16,6 +16,13 @@ export type TradingSettings = {
   maxPositionUsd: number;
   stopLossEnabled: boolean;
   stopLossPct: number;
+  takeProfitEnabled: boolean;
+  takeProfitPct: number;
+  trailingEnabled: boolean;
+  trailingActivationCents: number;
+  trailingInitialLockCents: number;
+  trailingStepTriggerCents: number;
+  trailingStepMoveCents: number;
   blockIfPosition: boolean;
   sessionOpenOnly: boolean;
   sessionTz: string;
@@ -50,6 +57,16 @@ function defaultsForMode(mode: TradingMode): TradingSettings {
     maxPositionUsd: 0,
     stopLossEnabled: true,
     stopLossPct: 2,
+    // Fail closed for accounts saved before take-profit support existed. The
+    // native app must explicitly save the new protection settings before the
+    // account is considered configured again.
+    takeProfitEnabled: false,
+    takeProfitPct: 2,
+    trailingEnabled: false,
+    trailingActivationCents: 5,
+    trailingInitialLockCents: 2,
+    trailingStepTriggerCents: 5,
+    trailingStepMoveCents: 1,
     blockIfPosition: true,
     sessionOpenOnly: true,
     sessionTz: 'America/New_York',
@@ -61,6 +78,10 @@ function defaultsForMode(mode: TradingMode): TradingSettings {
 function asFiniteNumber(value: unknown, fallback: number): number {
   const numberValue = Number(value);
   return Number.isFinite(numberValue) ? numberValue : fallback;
+}
+
+function clamp(value: number, minimum: number, maximum: number): number {
+  return Math.max(minimum, Math.min(maximum, value));
 }
 
 function sanitizeSessions(value: unknown, fallback: TradingWindow[]): TradingWindow[] {
@@ -86,10 +107,44 @@ export function sanitizeTradingSettings(
   // Webull overnight trading supports LIMIT + DAY orders only. If NIGHT is
   // selected, keep the account fail-safe by normalizing TIF to DAY instead of
   // allowing a GTC value that the broker can reject during the overnight window.
-  const requestedTimeInForce = input.timeInForce === 'GTC' ? 'GTC' : 'DAY';
+  const requestedTimeInForce = input.timeInForce === 'GTC'
+    ? 'GTC'
+    : input.timeInForce === 'DAY'
+      ? 'DAY'
+      : current.timeInForce;
   const timeInForce: TradingTimeInForce = allowedSessions.includes('NIGHT')
     ? 'DAY'
     : requestedTimeInForce;
+
+  const trailingActivationCents = clamp(
+    asFiniteNumber(input.trailingActivationCents, current.trailingActivationCents),
+    0.01,
+    10_000,
+  );
+  const requestedInitialLock = clamp(
+    asFiniteNumber(input.trailingInitialLockCents, current.trailingInitialLockCents),
+    0,
+    10_000,
+  );
+  // A sell stop must remain below the activation market level. The initial
+  // locked-profit offset is therefore always strictly smaller than activation.
+  const trailingInitialLockCents = Math.min(
+    requestedInitialLock,
+    Math.max(0, trailingActivationCents - 0.01),
+  );
+  const trailingStepTriggerCents = clamp(
+    asFiniteNumber(input.trailingStepTriggerCents, current.trailingStepTriggerCents),
+    0.01,
+    10_000,
+  );
+  const trailingStepMoveCents = Math.min(
+    clamp(
+      asFiniteNumber(input.trailingStepMoveCents, current.trailingStepMoveCents),
+      0.01,
+      10_000,
+    ),
+    trailingStepTriggerCents,
+  );
 
   return {
     mode,
@@ -104,22 +159,46 @@ export function sanitizeTradingSettings(
       ? 'buying_power'
       : input.sizingSource === 'cash'
         ? 'cash'
-        : 'cash_plus_margin',
-    maxCashPct: Math.max(
+        : input.sizingSource === 'cash_plus_margin'
+          ? 'cash_plus_margin'
+          : current.sizingSource,
+    maxCashPct: clamp(
+      asFiniteNumber(input.maxCashPct, current.maxCashPct),
       1,
-      Math.min(100, asFiniteNumber(input.maxCashPct, current.maxCashPct)),
+      100,
     ),
-    marginPct: Math.max(
+    marginPct: clamp(
+      asFiniteNumber(input.marginPct, current.marginPct),
       0,
-      Math.min(100, asFiniteNumber(input.marginPct, current.marginPct)),
+      100,
     ),
     maxPositionUsd: maxTradeAmountUsd,
-    stopLossEnabled: input.stopLossEnabled !== false,
-    stopLossPct: Math.max(
+    stopLossEnabled: input.stopLossEnabled === undefined
+      ? current.stopLossEnabled
+      : input.stopLossEnabled !== false,
+    stopLossPct: clamp(
+      asFiniteNumber(input.stopLossPct, current.stopLossPct),
       0.1,
-      Math.min(50, asFiniteNumber(input.stopLossPct, current.stopLossPct)),
+      50,
     ),
-    blockIfPosition: input.blockIfPosition !== false,
+    takeProfitEnabled: input.takeProfitEnabled === undefined
+      ? current.takeProfitEnabled
+      : input.takeProfitEnabled !== false,
+    takeProfitPct: clamp(
+      asFiniteNumber(input.takeProfitPct, current.takeProfitPct),
+      0.1,
+      100,
+    ),
+    trailingEnabled: input.trailingEnabled === undefined
+      ? current.trailingEnabled
+      : input.trailingEnabled === true,
+    trailingActivationCents,
+    trailingInitialLockCents,
+    trailingStepTriggerCents,
+    trailingStepMoveCents,
+    blockIfPosition: input.blockIfPosition === undefined
+      ? current.blockIfPosition
+      : input.blockIfPosition !== false,
     sessionOpenOnly: true,
     sessionTz: 'America/New_York',
     sessionStart: '09:30',
@@ -128,9 +207,24 @@ export function sanitizeTradingSettings(
 }
 
 export function isTradingSettingsConfigured(settings: TradingSettings): boolean {
+  const baseProtectionConfigured = settings.stopLossEnabled
+    && settings.stopLossPct > 0
+    && settings.takeProfitEnabled
+    && settings.takeProfitPct > 0;
+  const trailingConfigured = !settings.trailingEnabled || (
+    settings.trailingActivationCents > 0
+    && settings.trailingInitialLockCents >= 0
+    && settings.trailingInitialLockCents < settings.trailingActivationCents
+    && settings.trailingStepTriggerCents > 0
+    && settings.trailingStepMoveCents > 0
+    && settings.trailingStepMoveCents <= settings.trailingStepTriggerCents
+  );
+
   return settings.allowedSessions.length > 0
     && settings.shareQuantity >= 1
-    && settings.maxTradeAmountUsd > 0;
+    && settings.maxTradeAmountUsd > 0
+    && baseProtectionConfigured
+    && trailingConfigured;
 }
 
 export async function getTradingSettings(
