@@ -160,7 +160,14 @@ final class AppModel: ObservableObject {
     sessions: [TradingSessionOption],
     timeInForce: TradingTimeInForceOption,
     shareQuantity: Int,
-    maxTradeAmountUsd: Double
+    maxTradeAmountUsd: Double,
+    stopLossPct: Double,
+    takeProfitPct: Double,
+    trailingEnabled: Bool,
+    trailingTriggerCents: Int,
+    trailingInitialStopProfitCents: Int,
+    trailingTriggerStepCents: Int,
+    trailingStopStepCents: Int
   ) async {
     let mode = isLiveSelected ? "LIVE" : "SANDBOX"
     await performAction("trading-control-save") {
@@ -170,13 +177,22 @@ final class AppModel: ObservableObject {
           allowedSessions: sessions,
           timeInForce: timeInForce,
           shareQuantity: shareQuantity,
-          maxTradeAmountUsd: maxTradeAmountUsd
+          maxTradeAmountUsd: maxTradeAmountUsd,
+          stopLossEnabled: true,
+          stopLossPct: stopLossPct,
+          takeProfitEnabled: true,
+          takeProfitPct: takeProfitPct,
+          trailingEnabled: trailingEnabled,
+          trailingTriggerCents: trailingTriggerCents,
+          trailingInitialStopProfitCents: trailingInitialStopProfitCents,
+          trailingTriggerStepCents: trailingTriggerStepCents,
+          trailingStopStepCents: trailingStopStepCents
         )
       )
       self.tradingPreview = nil
       await self.loadTradingControl(for: mode, silently: true)
       if !response.configured {
-        self.tradingControlErrorMessage = "يجب اختيار جلسة واحدة على الأقل وكمية أسهم ومبلغ أقصى أكبر من صفر."
+        self.tradingControlErrorMessage = "تحقق من Quantity وMax Trade وإعدادات Stop Loss وTake Profit وTrailing Stop."
       }
     }
   }
