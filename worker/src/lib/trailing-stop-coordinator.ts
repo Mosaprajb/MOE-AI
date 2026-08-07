@@ -121,9 +121,9 @@ export class TrailingStopCoordinator {
         updatedAt: now,
       };
       await this.state.storage.put(STATE_KEY, managed);
-      if (managed.settings.trailingEnabled) {
-        await this.state.storage.setAlarm(Date.now() + POLL_INTERVAL_MS);
-      }
+      // Always poll until the broker reports the actual fill so static TP/SL
+      // percentages are calibrated to the real average entry price as well.
+      await this.state.storage.setAlarm(Date.now() + POLL_INTERVAL_MS);
       return Response.json({ ok: true });
     }
 
@@ -155,7 +155,7 @@ export class TrailingStopCoordinator {
 
   async alarm(): Promise<void> {
     const managed = await this.load();
-    if (!managed || !managed.settings.trailingEnabled) return;
+    if (!managed) return;
     if (managed.status === 'CLOSING' || managed.status === 'CLOSED') return;
 
     const client = WebullClient.fromEnv(this.env, managed.mode);
@@ -210,6 +210,16 @@ export class TrailingStopCoordinator {
         );
         managed.protectionAdjusted = true;
         managed.status = 'BRACKET';
+      }
+
+      if (!managed.settings.trailingEnabled) {
+        // Static protection is now based on the real fill. No continuous Worker
+        // polling is needed when stepped trailing is disabled.
+        managed.updatedAt = new Date().toISOString();
+        managed.lastError = undefined;
+        await this.state.storage.put(STATE_KEY, managed);
+        await this.state.storage.deleteAlarm();
+        return;
       }
 
       let currentPrice = Number(position.currentPrice || 0);
