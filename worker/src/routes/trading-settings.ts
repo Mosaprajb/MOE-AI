@@ -82,10 +82,19 @@ export function sanitizeTradingSettings(
     0,
     asFiniteNumber(input.maxTradeAmountUsd ?? input.maxPositionUsd, current.maxTradeAmountUsd),
   );
+  const allowedSessions = sanitizeSessions(input.allowedSessions, current.allowedSessions);
+  // Webull overnight trading supports LIMIT + DAY orders only. If NIGHT is
+  // selected, keep the account fail-safe by normalizing TIF to DAY instead of
+  // allowing a GTC value that the broker can reject during the overnight window.
+  const requestedTimeInForce = input.timeInForce === 'GTC' ? 'GTC' : 'DAY';
+  const timeInForce: TradingTimeInForce = allowedSessions.includes('NIGHT')
+    ? 'DAY'
+    : requestedTimeInForce;
+
   return {
     mode,
-    allowedSessions: sanitizeSessions(input.allowedSessions, current.allowedSessions),
-    timeInForce: input.timeInForce === 'GTC' ? 'GTC' : 'DAY',
+    allowedSessions,
+    timeInForce,
     shareQuantity: Math.max(
       0,
       Math.floor(asFiniteNumber(input.shareQuantity, current.shareQuantity)),
