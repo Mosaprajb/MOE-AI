@@ -2,6 +2,7 @@ import type { Env, TradingMode } from './types';
 import { WebullClient, type WebullTimeInForce, type WebullTradingSession } from './webull';
 import {
   getLatestStockPrice,
+  getOpenClientOrderIds,
   replaceLimitPrice,
   replaceStopPrice,
 } from './webull-protection';
@@ -312,8 +313,8 @@ export class TrailingStopCoordinator {
     client: WebullClient,
     managed: ManagedPosition,
   ): Promise<void> {
-    const orders = await client.getOrders();
-    if (orders.some(order => order.id === managed.takeProfitClientOrderId)) {
+    const openIds = await getOpenClientOrderIds(client);
+    if (openIds.has(managed.takeProfitClientOrderId)) {
       await client.cancelOrder(managed.takeProfitClientOrderId);
     }
   }
@@ -321,8 +322,7 @@ export class TrailingStopCoordinator {
   private async cancelOpenProtectiveOrders(managed: ManagedPosition): Promise<void> {
     const client = WebullClient.fromEnv(this.env, managed.mode);
     if (!client) throw new Error(`${managed.mode} Webull credentials are not configured.`);
-    const orders = await client.getOrders();
-    const openIds = new Set(orders.map(order => order.id));
+    const openIds = await getOpenClientOrderIds(client);
     if (openIds.has(managed.takeProfitClientOrderId)) {
       await client.cancelOrder(managed.takeProfitClientOrderId);
     }
