@@ -14,6 +14,7 @@ export type TradingSettings = {
   maxCashPct: number;
   marginPct: number;
   maxPositionUsd: number;
+  protectionConfigured: boolean;
   stopLossEnabled: boolean;
   stopLossPct: number;
   takeProfitEnabled: boolean;
@@ -55,6 +56,9 @@ function defaultsForMode(mode: TradingMode): TradingSettings {
     maxCashPct: 25,
     marginPct: 50,
     maxPositionUsd: 0,
+    // Defaults are shown in the UI, but cannot arm execution until the user
+    // explicitly saves the new protection fields for this account.
+    protectionConfigured: false,
     stopLossEnabled: true,
     stopLossPct: 2,
     takeProfitEnabled: true,
@@ -91,6 +95,18 @@ function clamp(value: unknown, fallback: number, minimum: number, maximum: numbe
   return Math.max(minimum, Math.min(maximum, asFiniteNumber(value, fallback)));
 }
 
+function hasExplicitProtectionPayload(input: Partial<TradingSettings>): boolean {
+  return [
+    'stopLossPct',
+    'takeProfitPct',
+    'trailingEnabled',
+    'trailActivationUsd',
+    'trailInitialStopOffsetUsd',
+    'trailTriggerStepUsd',
+    'trailStopMoveUsd',
+  ].every(key => Object.hasOwn(input, key));
+}
+
 export function sanitizeTradingSettings(
   mode: TradingMode,
   input: Partial<TradingSettings>,
@@ -104,7 +120,9 @@ export function sanitizeTradingSettings(
   // Webull overnight trading supports LIMIT + DAY orders only. If NIGHT is
   // selected, keep the account fail-safe by normalizing TIF to DAY instead of
   // allowing a GTC value that the broker can reject during the overnight window.
-  const requestedTimeInForce = input.timeInForce === 'GTC' ? 'GTC' : 'DAY';
+  const requestedTimeInForce = input.timeInForce === undefined
+    ? current.timeInForce
+    : input.timeInForce === 'GTC' ? 'GTC' : 'DAY';
   const timeInForce: TradingTimeInForce = allowedSessions.includes('NIGHT')
     ? 'DAY'
     : requestedTimeInForce;
@@ -133,6 +151,9 @@ export function sanitizeTradingSettings(
     0.01,
     100,
   );
+  const protectionConfigured = current.protectionConfigured === true
+    || input.protectionConfigured === true
+    || hasExplicitProtectionPayload(input);
 
   return {
     mode,
@@ -143,11 +164,13 @@ export function sanitizeTradingSettings(
       Math.floor(asFiniteNumber(input.shareQuantity, current.shareQuantity)),
     ),
     maxTradeAmountUsd,
-    sizingSource: input.sizingSource === 'buying_power'
-      ? 'buying_power'
-      : input.sizingSource === 'cash'
-        ? 'cash'
-        : 'cash_plus_margin',
+    sizingSource: input.sizingSource === undefined
+      ? current.sizingSource
+      : input.sizingSource === 'buying_power'
+        ? 'buying_power'
+        : input.sizingSource === 'cash'
+          ? 'cash'
+          : 'cash_plus_margin',
     maxCashPct: Math.max(
       1,
       Math.min(100, asFiniteNumber(input.maxCashPct, current.maxCashPct)),
@@ -157,16 +180,25 @@ export function sanitizeTradingSettings(
       Math.min(100, asFiniteNumber(input.marginPct, current.marginPct)),
     ),
     maxPositionUsd: maxTradeAmountUsd,
-    stopLossEnabled: input.stopLossEnabled !== false,
+    protectionConfigured,
+    stopLossEnabled: input.stopLossEnabled === undefined
+      ? current.stopLossEnabled
+      : input.stopLossEnabled !== false,
     stopLossPct: clamp(input.stopLossPct, current.stopLossPct, 0.01, 50),
-    takeProfitEnabled: input.takeProfitEnabled !== false,
+    takeProfitEnabled: input.takeProfitEnabled === undefined
+      ? current.takeProfitEnabled
+      : input.takeProfitEnabled !== false,
     takeProfitPct: clamp(input.takeProfitPct, current.takeProfitPct, 0.01, 100),
-    trailingEnabled: input.trailingEnabled === true,
+    trailingEnabled: input.trailingEnabled === undefined
+      ? current.trailingEnabled
+      : input.trailingEnabled === true,
     trailActivationUsd,
     trailInitialStopOffsetUsd,
     trailTriggerStepUsd,
     trailStopMoveUsd,
-    blockIfPosition: input.blockIfPosition !== false,
+    blockIfPosition: input.blockIfPosition === undefined
+      ? current.blockIfPosition
+      : input.blockIfPosition !== false,
     sessionOpenOnly: true,
     sessionTz: 'America/New_York',
     sessionStart: '09:30',
@@ -175,7 +207,8 @@ export function sanitizeTradingSettings(
 }
 
 export function isTradingSettingsConfigured(settings: TradingSettings): boolean {
-  const baseConfigured = settings.allowedSessions.length > 0
+  const baseConfigured = settings.protectionConfigured
+    && settings.allowedSessions.length > 0
     && settings.shareQuantity >= 1
     && settings.maxTradeAmountUsd > 0
     && settings.stopLossEnabled
