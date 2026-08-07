@@ -36,6 +36,15 @@ export type StandaloneStopResult = {
   status: string;
 };
 
+export type WebullProtectionOrderStatus =
+  | 'PENDING'
+  | 'SUBMITTED'
+  | 'PARTIAL_FILLED'
+  | 'FILLED'
+  | 'CANCELLED'
+  | 'FAILED'
+  | string;
+
 function transport(client: WebullClient): WebullTransport {
   // WebullClient owns signing/token handling. Keep the advanced order adapter in
   // the same authenticated transport instead of duplicating credentials here.
@@ -64,13 +73,21 @@ function extractRows(raw: unknown): Array<Record<string, unknown>> {
       ? object.data as unknown[]
       : Array.isArray(object?.orders)
         ? object.orders as unknown[]
-        : [];
+        : object?.data && typeof object.data === 'object'
+          ? [object.data]
+          : isRecord(raw)
+            ? [raw]
+            : [];
   return root.flatMap(item => {
     const row = item as Record<string, unknown>;
     return Array.isArray(row.orders)
       ? row.orders as Array<Record<string, unknown>>
       : [row];
   });
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
 }
 
 function resultFrom(raw: unknown, fallbackId: string): OrderResult {
@@ -256,6 +273,63 @@ export async function replaceLimitPrice(
   );
 }
 
+function missingOrderFrom(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  try {
+    const diagnostic = JSON.parse(message) as {
+      response?: {
+        status?: number;
+        parsedBody?: { error_code?: string; message?: string };
+      };
+    };
+    const status = Number(diagnostic.response?.status ?? 0);
+    const code = String(diagnostic.response?.parsedBody?.error_code ?? '').toUpperCase();
+    const bodyMessage = String(diagnostic.response?.parsedBody?.message ?? '').toLowerCase();
+    return status === 417
+      && (code === 'INVALID_PARAMETER'
+        || code === 'ORDER_NOT_FOUND'
+        || bodyMessage.includes('not found')
+        || bodyMessage.includes('does not exist'));
+  } catch {
+    return false;
+  }
+}
+
+export async function getClientOrderStatus(
+  client: WebullClient,
+  clientOrderId: string,
+): Promise<WebullProtectionOrderStatus | null> {
+  const access = transport(client);
+  let raw: unknown;
+  try {
+    raw = await access.req<unknown>(
+      'GET',
+      '/openapi/trade/order/detail',
+      {
+        account_id: access.accountId,
+        client_order_id: clientOrderId,
+      },
+    );
+  } catch (error) {
+    if (missingOrderFrom(error)) return null;
+    throw error;
+  }
+
+  const rows = extractRows(raw);
+  const row = rows.find(item => String(item.client_order_id ?? '') === clientOrderId)
+    ?? rows[0];
+  const status = String(row?.status ?? '').trim().toUpperCase();
+  return status || null;
+}
+
+export function isWorkingProtectionOrder(status: WebullProtectionOrderStatus | null): boolean {
+  return status === 'PENDING'
+    || status === 'SUBMITTED'
+    || status === 'PARTIAL_FILLED';
+}
+
+// Diagnostic only. Webull documents that Open Orders may lag recent changes;
+// correctness-sensitive trailing logic uses Order Detail instead.
 export async function getOpenClientOrderIds(client: WebullClient): Promise<Set<string>> {
   const access = transport(client);
   const raw = await access.req<unknown>(
