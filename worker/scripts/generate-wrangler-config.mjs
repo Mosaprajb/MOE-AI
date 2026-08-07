@@ -142,6 +142,21 @@ export function validateExports(exportsMap, moduleExports = null) {
   }
 }
 
+function validateDurableObjectBindings(config) {
+  if (!isObject(config.durable_objects) || !Array.isArray(config.durable_objects.bindings)) {
+    throw new Error('wrangler.jsonc must define durable_objects.bindings');
+  }
+  for (const binding of config.durable_objects.bindings) {
+    if (!isObject(binding) || !binding.name || !binding.class_name) {
+      throw new Error('Each durable_objects binding must define name and class_name');
+    }
+    const declaration = config.exports?.[binding.class_name];
+    if (!isObject(declaration) || declaration.type !== 'durable-object' || declaration.state !== undefined) {
+      throw new Error(`Durable Object binding ${binding.name} must target a live class in exports`);
+    }
+  }
+}
+
 export function validateCanonicalConfig(config, moduleExports = null) {
   if (!isObject(config)) throw new Error('wrangler.jsonc must contain an object');
 
@@ -151,6 +166,7 @@ export function validateCanonicalConfig(config, moduleExports = null) {
   }
 
   validateExports(config.exports, moduleExports);
+  validateDurableObjectBindings(config);
 
   if (!isObject(config.env)) throw new Error('wrangler.jsonc must define env');
   for (const environment of supportedEnvironments) {
@@ -206,7 +222,13 @@ export function serializeToml(config) {
     '# Regenerate with: node scripts/generate-wrangler-config.mjs <environment>',
   ];
 
-  const reserved = new Set(['exports', 'kv_namespaces', 'd1_databases', 'vars']);
+  const reserved = new Set([
+    'exports',
+    'durable_objects',
+    'kv_namespaces',
+    'd1_databases',
+    'vars',
+  ]);
   for (const [key, value] of Object.entries(config)) {
     if (reserved.has(key) || value === undefined || value === null) continue;
     if (isObject(value)) throw new Error(`Unsupported top-level object ${key} in generated Wrangler TOML`);
@@ -220,6 +242,7 @@ export function serializeToml(config) {
     }
   }
 
+  appendArrayTables(lines, 'durable_objects.bindings', config.durable_objects?.bindings);
   appendArrayTables(lines, 'kv_namespaces', config.kv_namespaces);
   appendArrayTables(lines, 'd1_databases', config.d1_databases);
 
