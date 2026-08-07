@@ -30,6 +30,12 @@ export type ProtectiveBracketResult = {
   status: string;
 };
 
+export type StandaloneStopResult = {
+  clientOrderId: string;
+  orderId: string;
+  status: string;
+};
+
 function transport(client: WebullClient): WebullTransport {
   // WebullClient owns signing/token handling. Keep the advanced order adapter in
   // the same authenticated transport instead of duplicating credentials here.
@@ -81,6 +87,24 @@ function resultFrom(raw: unknown, fallbackId: string): OrderResult {
   };
 }
 
+function exitOrderBase(params: {
+  symbol: string;
+  qty: number;
+  tradingSession: WebullTradingSession;
+  timeInForce: WebullTimeInForce;
+}) {
+  return {
+    symbol: params.symbol,
+    side: 'SELL',
+    quantity: String(params.qty),
+    instrument_type: 'EQUITY',
+    entrust_type: 'QTY',
+    time_in_force: params.timeInForce,
+    market: 'US',
+    support_trading_session: params.tradingSession,
+  };
+}
+
 export async function placeProtectiveBracket(
   client: WebullClient,
   params: {
@@ -115,16 +139,7 @@ export async function placeProtectiveBracket(
   };
   if (!isCore) entryOrder.limit_price = String(entryLimitPrice(params.requestedEntryPrice));
 
-  const exitBase = {
-    symbol: params.symbol,
-    side: 'SELL',
-    quantity: String(params.qty),
-    instrument_type: 'EQUITY',
-    entrust_type: 'QTY',
-    time_in_force: params.timeInForce,
-    market: 'US',
-    support_trading_session: params.tradingSession,
-  };
+  const exitBase = exitOrderBase(params);
   const takeProfitOrder = {
     ...exitBase,
     client_order_id: takeProfitId,
@@ -157,6 +172,45 @@ export async function placeProtectiveBracket(
     entryClientOrderId: entryId,
     takeProfitClientOrderId: takeProfitId,
     stopLossClientOrderId: stopLossId,
+    orderId: result.orderId,
+    status: result.status,
+  };
+}
+
+export async function placeStandaloneProtectiveStop(
+  client: WebullClient,
+  params: {
+    symbol: string;
+    qty: number;
+    stopPrice: number;
+    clientOrderId: string;
+    tradingSession: WebullTradingSession;
+    timeInForce: WebullTimeInForce;
+  },
+): Promise<StandaloneStopResult> {
+  const access = transport(client);
+  const normalizedClientOrderId = params.clientOrderId
+    .replace(/[^A-Za-z0-9_-]/gu, '')
+    .slice(0, 32);
+  if (!normalizedClientOrderId) throw new Error('A valid client order ID is required for the protective stop.');
+  const raw = await access.req<Record<string, unknown>>(
+    'POST',
+    '/openapi/trade/order/place',
+    {},
+    {
+      account_id: access.accountId,
+      new_orders: [{
+        ...exitOrderBase(params),
+        client_order_id: normalizedClientOrderId,
+        combo_type: 'NORMAL',
+        order_type: 'STOP_LOSS',
+        stop_price: String(fixedPrice(params.stopPrice)),
+      }],
+    },
+  );
+  const result = resultFrom(raw, normalizedClientOrderId);
+  return {
+    clientOrderId: normalizedClientOrderId,
     orderId: result.orderId,
     status: result.status,
   };
