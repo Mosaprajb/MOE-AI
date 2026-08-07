@@ -50,8 +50,11 @@ test('Live sessions require the PIN and reject tampering', async () => {
   assert.equal(await verifyLivePin('000000', enabledEnv), false);
   const session = await createLiveSession(enabledEnv);
   assert.equal((await verifyLiveSessionToken(session.token, enabledEnv)).ok, true);
-  const replacement = session.token.endsWith('a') ? 'b' : 'a';
-  const tampered = `${session.token.slice(0, -1)}${replacement}`;
+  const [body, signature] = session.token.split('.');
+  assert.ok(body);
+  assert.ok(signature);
+  const tamperedSignature = `${signature[0] === 'A' ? 'B' : 'A'}${signature.slice(1)}`;
+  const tampered = `${body}.${tamperedSignature}`;
   assert.equal((await verifyLiveSessionToken(tampered, enabledEnv)).ok, false);
 });
 
