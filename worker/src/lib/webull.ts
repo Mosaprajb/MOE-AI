@@ -558,6 +558,28 @@ export class WebullClient {
     } satisfies Order));
   }
 
+  async getOrderStatus(clientOrderId: string): Promise<string> {
+    const raw = await this.req<Record<string, unknown>>(
+      'GET',
+      '/openapi/trade/order/detail',
+      {
+        account_id: this.accountId,
+        client_order_id: clientOrderId,
+      },
+    );
+    const rows = extractOrderRows(raw);
+    const row = rows.find(item => String(item.client_order_id ?? '') === clientOrderId)
+      ?? rows[0]
+      ?? raw;
+    return String(
+      row.status
+      ?? row.order_status
+      ?? raw.status
+      ?? raw.order_status
+      ?? '',
+    ).trim().toUpperCase();
+  }
+
   private buildOrder(params: WebullOrderRequest): {
     order: Record<string, unknown>;
     orderType: 'MARKET' | 'LIMIT';
