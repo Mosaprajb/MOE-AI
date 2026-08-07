@@ -135,6 +135,60 @@ actor APIClient {
     )
   }
 
+  func tradingControl(mode: String) async throws -> TradingControlStatus {
+    let normalized = mode.uppercased() == "LIVE" ? "LIVE" : "SANDBOX"
+    return try await send(
+      path: "/api/mobile/trading-control/\(normalized)",
+      method: "GET"
+    )
+  }
+
+  func saveTradingControl(
+    mode: String,
+    payload: TradingControlSettingsPayload
+  ) async throws -> TradingControlSettingsResponse {
+    let normalized = mode.uppercased() == "LIVE" ? "LIVE" : "SANDBOX"
+    return try await send(
+      path: "/api/mobile/trading-control/\(normalized)/settings",
+      method: "POST",
+      body: payload
+    )
+  }
+
+  func previewTradingControl(
+    mode: String,
+    symbol: String,
+    price: Double,
+    side: String = "BUY"
+  ) async throws -> TradingControlPreview {
+    let normalized = mode.uppercased() == "LIVE" ? "LIVE" : "SANDBOX"
+    return try await send(
+      path: "/api/mobile/trading-control/\(normalized)/preview",
+      method: "POST",
+      body: TradingControlPreviewPayload(
+        symbol: symbol,
+        price: price,
+        side: side
+      )
+    )
+  }
+
+  func setTradingControlReception(
+    mode: String,
+    enabled: Bool,
+    confirmation: String? = nil
+  ) async throws -> TradingControlReceptionResponse {
+    let normalized = mode.uppercased() == "LIVE" ? "LIVE" : "SANDBOX"
+    return try await send(
+      path: "/api/mobile/trading-control/\(normalized)/reception",
+      method: "POST",
+      body: TradingControlReceptionPayload(
+        enabled: enabled,
+        confirmation: confirmation
+      )
+    )
+  }
+
   func activateKillSwitch() async throws -> RuntimeResponse {
     struct Payload: Encodable { let action: String }
     return try await send(
