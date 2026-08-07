@@ -1,32 +1,98 @@
 // MOE-AI Webull API Adapter — HMAC-SHA1 signed requests (Webull Open API)
-import type { Env, TradingMode, AccountData, Position, Order, OrderSide, OrderType } from './types';
+import type {
+  Env,
+  TradingMode,
+  AccountData,
+  Position,
+  Order,
+  OrderSide,
+  OrderType,
+} from './types';
 
 const WEBULL_BASE_SANDBOX = 'https://api.sandbox.webull.com';
 const WEBULL_BASE_LIVE = 'https://api.webull.com';
 const encoder = new TextEncoder();
 
-type WebullTradingSession = 'CORE' | 'ALL' | 'NIGHT';
+export type WebullTradingSession = 'CORE' | 'ALL' | 'NIGHT';
+export type WebullTimeInForce = 'DAY' | 'GTC';
 
-function getUsTradingSession(date = new Date()): WebullTradingSession {
+export interface WebullOrderRequest {
+  symbol: string;
+  side: OrderSide;
+  type: OrderType;
+  qty: number;
+  price?: number;
+  stop?: number;
+  idempotencyKey: string;
+  tradingSession?: WebullTradingSession;
+  timeInForce?: WebullTimeInForce;
+}
+
+export interface WebullOrderPreview {
+  estimatedCost: number;
+  estimatedTransactionFee: number;
+  orderType: 'MARKET' | 'LIMIT';
+  tradingSession: WebullTradingSession;
+  timeInForce: WebullTimeInForce;
+}
+
+export interface WebullMarginSnapshot {
+  marginDataAvailable: boolean;
+  maintenanceMargin: number;
+  openMarginCalls: string[];
+  usedMargin: number;
+  usedMarginForOpenOrder: number;
+  initialMargin: number;
+  intradayMargin: number;
+  marginExcess: number;
+  marginRatio: number;
+}
+
+function currentWebullSession(date = new Date()): WebullTradingSession | null {
   const parts = new Intl.DateTimeFormat('en-US', {
     timeZone: 'America/New_York',
+    weekday: 'short',
     hour: '2-digit',
     minute: '2-digit',
     hourCycle: 'h23',
   }).formatToParts(date);
-  const hour = Number(parts.find(part => part.type === 'hour')?.value ?? 0);
-  const minute = Number(parts.find(part => part.type === 'minute')?.value ?? 0);
+  const value = (type: string) => parts.find(part => part.type === type)?.value ?? '';
+  const weekday = value('weekday');
+  const hour = Number(value('hour') === '24' ? '0' : value('hour'));
+  const minute = Number(value('minute'));
   const minutes = hour * 60 + minute;
+  const isWeekday = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri'].includes(weekday);
+  const isOvernightMorning = isWeekday && minutes < 4 * 60;
+  const isOvernightEvening = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu'].includes(weekday)
+    && minutes >= 20 * 60;
 
-  if (minutes >= 9 * 60 + 30 && minutes < 16 * 60) return 'CORE';
-  if ((minutes >= 4 * 60 && minutes < 9 * 60 + 30) || (minutes >= 16 * 60 && minutes < 20 * 60)) return 'ALL';
-  return 'NIGHT';
+  if (isOvernightMorning || isOvernightEvening) return 'NIGHT';
+  if (isWeekday && minutes >= 4 * 60 && minutes < 9 * 60 + 30) return 'ALL';
+  if (isWeekday && minutes >= 9 * 60 + 30 && minutes < 16 * 60) return 'CORE';
+  if (isWeekday && minutes >= 16 * 60 && minutes < 20 * 60) return 'ALL';
+  return null;
 }
 
 function limitPriceWithSlippage(entry: number, side: OrderSide): number {
   const adjusted = side === 'BUY' ? entry * 1.001 : entry * 0.999;
   const decimals = adjusted >= 1 ? 2 : 4;
   return Number(adjusted.toFixed(decimals));
+}
+
+function parseMarginCalls(value: unknown): string[] {
+  const allowed = new Set(['EM', 'RM', 'RT', 'DT']);
+  if (Array.isArray(value)) {
+    return [...new Set(
+      value
+        .map(item => String(item).trim().toUpperCase())
+        .filter(item => allowed.has(item)),
+    )];
+  }
+  const text = String(value ?? '').trim().toUpperCase();
+  if (!text || text === '[]') return [];
+  return [...new Set(
+    (text.match(/[A-Z]{2}/gu) ?? []).filter(item => allowed.has(item)),
+  )];
 }
 
 function toBase64(buffer: ArrayBuffer): string {
@@ -156,6 +222,23 @@ async function createSignature(params: {
   return toBase64(await crypto.subtle.sign('HMAC', signingKey, encoder.encode(encodedString)));
 }
 
+function extractOrderRows(raw: unknown): Array<Record<string, unknown>> {
+  const object = raw as Record<string, unknown>;
+  const root = Array.isArray(raw)
+    ? raw
+    : Array.isArray(object?.data)
+      ? object.data as unknown[]
+      : Array.isArray(object?.orders)
+        ? object.orders as unknown[]
+        : [];
+  return root.flatMap(item => {
+    const row = item as Record<string, unknown>;
+    return Array.isArray(row.orders)
+      ? row.orders as Array<Record<string, unknown>>
+      : [row];
+  });
+}
+
 export class WebullClient {
   private base: string;
   private appKey: string;
@@ -164,7 +247,14 @@ export class WebullClient {
   private accountId: string;
   readonly mode: TradingMode;
 
-  constructor(opts: { base: string; appKey: string; appSecret: string; accessToken: string; accountId: string; mode: TradingMode }) {
+  constructor(opts: {
+    base: string;
+    appKey: string;
+    appSecret: string;
+    accessToken: string;
+    accountId: string;
+    mode: TradingMode;
+  }) {
     this.base = opts.base.replace(/\/$/, '');
     this.appKey = opts.appKey;
     this.appSecret = opts.appSecret;
@@ -175,37 +265,42 @@ export class WebullClient {
 
   static fromEnv(env: Env, mode: TradingMode): WebullClient | null {
     if (mode === 'LIVE') {
-      const k = env.WEBULL_LIVE_APP_KEY;
-      const s = env.WEBULL_LIVE_APP_SECRET;
-      const t = env.WEBULL_LIVE_ACCESS_TOKEN;
-      const a = env.WEBULL_LIVE_ACCOUNT_ID;
-      if (!k || !s || !t || !a) return null;
+      const appKey = env.WEBULL_LIVE_APP_KEY;
+      const appSecret = env.WEBULL_LIVE_APP_SECRET;
+      const accessToken = env.WEBULL_LIVE_ACCESS_TOKEN;
+      const accountId = env.WEBULL_LIVE_ACCOUNT_ID;
+      if (!appKey || !appSecret || !accessToken || !accountId) return null;
       return new WebullClient({
         base: env.WEBULL_LIVE_API_BASE_URL?.replace(/\/$/, '') ?? WEBULL_BASE_LIVE,
-        appKey: k,
-        appSecret: s,
-        accessToken: t,
-        accountId: a,
+        appKey,
+        appSecret,
+        accessToken,
+        accountId,
         mode: 'LIVE',
       });
     }
 
-    const k = env.WEBULL_SANDBOX_APP_KEY ?? env.WEBULL_APP_KEY;
-    const s = env.WEBULL_SANDBOX_APP_SECRET ?? env.WEBULL_APP_SECRET;
-    const t = env.WEBULL_SANDBOX_ACCESS_TOKEN ?? env.WEBULL_ACCESS_TOKEN;
-    const a = env.WEBULL_SANDBOX_ACCOUNT_ID ?? env.WEBULL_ACCOUNT_ID;
-    if (!k || !s || !t || !a) return null;
+    const appKey = env.WEBULL_SANDBOX_APP_KEY ?? env.WEBULL_APP_KEY;
+    const appSecret = env.WEBULL_SANDBOX_APP_SECRET ?? env.WEBULL_APP_SECRET;
+    const accessToken = env.WEBULL_SANDBOX_ACCESS_TOKEN ?? env.WEBULL_ACCESS_TOKEN;
+    const accountId = env.WEBULL_SANDBOX_ACCOUNT_ID ?? env.WEBULL_ACCOUNT_ID;
+    if (!appKey || !appSecret || !accessToken || !accountId) return null;
     return new WebullClient({
       base: env.WEBULL_SANDBOX_API_BASE_URL?.replace(/\/$/, '') ?? WEBULL_BASE_SANDBOX,
-      appKey: k,
-      appSecret: s,
-      accessToken: t,
-      accountId: a,
+      appKey,
+      appSecret,
+      accessToken,
+      accountId,
       mode: 'SANDBOX',
     });
   }
 
-  private async req<T>(method: string, path: string, query: Record<string, string | number> = {}, body?: unknown): Promise<T> {
+  private async req<T>(
+    method: string,
+    path: string,
+    query: Record<string, string | number> = {},
+    body?: unknown,
+  ): Promise<T> {
     const url = new URL(path, `${this.base}/`);
     for (const [key, value] of Object.entries(query)) {
       if (value != null && value !== '') url.searchParams.set(key, String(value));
@@ -225,7 +320,7 @@ export class WebullClient {
       nonce,
     });
 
-    const res = await fetch(url.toString(), {
+    const response = await fetch(url.toString(), {
       method,
       headers: {
         Accept: 'application/json',
@@ -242,7 +337,7 @@ export class WebullClient {
       ...(bodyText ? { body: bodyText } : {}),
     });
 
-    const rawBody = await res.text();
+    const rawBody = await response.text();
     let parsedBody: unknown = null;
     try {
       parsedBody = rawBody ? JSON.parse(rawBody) : null;
@@ -250,7 +345,7 @@ export class WebullClient {
       parsedBody = null;
     }
 
-    if (!res.ok) {
+    if (!response.ok) {
       const diagnostic = {
         request: {
           method,
@@ -264,9 +359,9 @@ export class WebullClient {
           nonce,
         },
         response: {
-          status: res.status,
-          statusText: res.statusText,
-          headers: Object.fromEntries(res.headers.entries()),
+          status: response.status,
+          statusText: response.statusText,
+          headers: Object.fromEntries(response.headers.entries()),
           rawBody,
           parsedBody,
         },
@@ -278,113 +373,192 @@ export class WebullClient {
     return parsedBody as T;
   }
 
-  async getAccount(): Promise<AccountData> {
-    const raw = await this.req<Record<string, unknown>>('GET', '/openapi/assets/balance', { account_id: this.accountId });
-    const bal = (raw?.data && !Array.isArray(raw.data) ? raw.data : raw) as Record<string, unknown>;
-    const assets = Array.isArray(bal.account_currency_assets) ? bal.account_currency_assets as Record<string, unknown>[] : [];
-    const usd = assets.find(x => String(x.currency ?? '').toUpperCase() === 'USD') ?? assets[0] ?? {};
+  async getAccount(): Promise<AccountData & WebullMarginSnapshot> {
+    const raw = await this.req<Record<string, unknown>>(
+      'GET',
+      '/openapi/assets/balance',
+      { account_id: this.accountId },
+    );
+    const balance = (raw?.data && !Array.isArray(raw.data) ? raw.data : raw) as Record<string, unknown>;
+    const assets = Array.isArray(balance.account_currency_assets)
+      ? balance.account_currency_assets as Record<string, unknown>[]
+      : [];
+    const usd = assets.find(item => String(item.currency ?? '').toUpperCase() === 'USD') ?? assets[0] ?? {};
     const first = (...keys: string[]) => {
       for (const key of keys) {
-        const n = Number(usd[key] ?? bal[key]);
-        if (Number.isFinite(n)) return n;
+        const value = Number(usd[key] ?? balance[key]);
+        if (Number.isFinite(value)) return value;
       }
       return 0;
     };
+    const hasMarginField = [
+      'maintenance_margin',
+      'open_margin_calls',
+      'used_margin',
+      'init_margin',
+      'intraday_margin',
+      'margin_excess',
+      'margin_ratio',
+    ].some(key => usd[key] != null || balance[key] != null);
+    const openMarginCalls = parseMarginCalls(
+      usd.open_margin_calls ?? balance.open_margin_calls,
+    );
+
     return {
-      accountValue: first('net_liquidation_value', 'total_net_liquidation_value', 'total_asset', 'equity'),
-      cash: first('settled_funds', 'cash_balance', 'cash'),
+      accountValue: first(
+        'net_liquidation_value',
+        'total_net_liquidation_value',
+        'total_asset',
+        'equity',
+      ),
+      cash: first('settled_cash', 'settled_funds', 'cash_balance', 'total_cash_balance', 'cash'),
       buyingPower: first('buying_power', 'day_buying_power'),
       dayBuyingPower: first('day_buying_power', 'buying_power'),
-      marketValue: first('market_value', 'stock_value'),
-      unrealizedPnl: first('unrealized_profit_loss', 'unrealized_pl', 'unrealized_pnl'),
+      overnightBuyingPower: first('overnight_buying_power', 'buying_power'),
+      nightTradingBuyingPower: first(
+        'night_trading_buying_power',
+        'overnight_buying_power',
+        'buying_power',
+      ),
+      marketValue: first('market_value', 'total_market_value', 'stock_value'),
+      unrealizedPnl: first(
+        'unrealized_profit_loss',
+        'total_unrealized_profit_loss',
+        'unrealized_pl',
+        'unrealized_pnl',
+      ),
       realizedPnl: first('realized_profit_loss', 'realized_pl', 'realized_pnl'),
-      dayPnl: first('day_profit_loss', 'day_pl', 'day_pnl'),
+      dayPnl: first('day_profit_loss', 'total_day_profit_loss', 'day_pl', 'day_pnl'),
+      marginDataAvailable: hasMarginField,
+      maintenanceMargin: first('maintenance_margin'),
+      openMarginCalls,
+      usedMargin: first('used_margin'),
+      usedMarginForOpenOrder: first('used_margin_for_open_order'),
+      initialMargin: first('init_margin'),
+      intradayMargin: first('intraday_margin'),
+      marginExcess: first('margin_excess'),
+      marginRatio: first('margin_ratio'),
       mode: this.mode,
       updatedAt: new Date().toISOString(),
     };
   }
 
   async getPositions(): Promise<Position[]> {
-    const raw = await this.req<unknown>('GET', '/openapi/assets/positions', { account_id: this.accountId });
-    const r = raw as Record<string, unknown>;
+    const raw = await this.req<unknown>(
+      'GET',
+      '/openapi/assets/positions',
+      { account_id: this.accountId },
+    );
+    const object = raw as Record<string, unknown>;
     const list: Array<Record<string, unknown>> = Array.isArray(raw)
       ? raw
-      : Array.isArray(r?.data)
-        ? r.data as Array<Record<string, unknown>>
-        : Array.isArray(r?.positions)
-          ? r.positions as Array<Record<string, unknown>>
+      : Array.isArray(object?.data)
+        ? object.data as Array<Record<string, unknown>>
+        : Array.isArray(object?.positions)
+          ? object.positions as Array<Record<string, unknown>>
           : [];
-    return list.map(p => {
-      const qty = Number(p.quantity ?? p.qty ?? p.position ?? p.holding_quantity ?? 0);
-      const avg = Number(p.cost_price ?? p.average_price ?? p.avg_cost ?? 0);
-      const cur = Number(p.last_price ?? p.current_price ?? avg);
-      const mv = Number(p.market_value ?? p.position_value ?? qty * cur);
-      const pnl = Number(p.unrealized_profit_loss ?? p.unrealized_pl ?? (cur - avg) * qty);
-      const sym = String((p.ticker as Record<string, unknown> | undefined)?.symbol ?? p.symbol ?? '').toUpperCase();
+
+    return list.map(position => {
+      const quantity = Number(
+        position.quantity
+        ?? position.qty
+        ?? position.position
+        ?? position.holding_quantity
+        ?? 0,
+      );
+      const averagePrice = Number(
+        position.cost_price
+        ?? position.average_price
+        ?? position.avg_cost
+        ?? 0,
+      );
+      const currentPrice = Number(position.last_price ?? position.current_price ?? averagePrice);
+      const marketValue = Number(position.market_value ?? position.position_value ?? quantity * currentPrice);
+      const unrealizedPnl = Number(
+        position.unrealized_profit_loss
+        ?? position.unrealized_pl
+        ?? (currentPrice - averagePrice) * quantity,
+      );
+      const symbol = String(
+        (position.ticker as Record<string, unknown> | undefined)?.symbol
+        ?? position.symbol
+        ?? '',
+      ).toUpperCase();
+
       return {
-        id: String(p.id ?? p.ticker_id ?? sym),
-        symbol: sym,
-        side: qty >= 0 ? 'LONG' : 'SHORT',
-        quantity: Math.abs(qty),
-        averagePrice: avg,
-        currentPrice: cur,
-        marketValue: mv,
-        unrealizedPnl: pnl,
-        pnlPercent: avg ? (pnl / (avg * Math.abs(qty))) * 100 : 0,
+        id: String(position.position_id ?? position.id ?? position.ticker_id ?? symbol),
+        symbol,
+        side: quantity >= 0 ? 'LONG' : 'SHORT',
+        quantity: Math.abs(quantity),
+        averagePrice,
+        currentPrice,
+        marketValue,
+        unrealizedPnl,
+        pnlPercent: averagePrice
+          ? (unrealizedPnl / (averagePrice * Math.abs(quantity))) * 100
+          : 0,
         mode: this.mode,
       } satisfies Position;
     });
   }
 
   async getOrders(): Promise<Order[]> {
-    const raw = await this.req<unknown>('GET', '/openapi/trade/order/open', { account_id: this.accountId, page_size: 50 });
-    const r = raw as Record<string, unknown>;
-    const list: Array<Record<string, unknown>> = Array.isArray(raw)
-      ? raw
-      : Array.isArray(r?.data)
-        ? r.data as Array<Record<string, unknown>>
-        : Array.isArray(r?.orders)
-          ? r.orders as Array<Record<string, unknown>>
-          : [];
-    return list.map(o => ({
-      id: String(o.order_id ?? o.client_order_id ?? o.id),
-      symbol: String((o.ticker as Record<string, unknown> | undefined)?.symbol ?? o.symbol ?? '').toUpperCase(),
-      side: String(o.side ?? o.action ?? 'BUY').toUpperCase() as OrderSide,
-      type: String(o.order_type ?? 'MARKET').toUpperCase() as OrderType,
-      quantity: Number(o.quantity ?? o.total_quantity ?? 0),
-      price: o.limit_price ? Number(o.limit_price) : undefined,
-      stopPrice: o.stop_price ? Number(o.stop_price) : undefined,
-      status: String(o.status ?? 'PENDING').toUpperCase(),
-      filled: o.filled_quantity ? Number(o.filled_quantity) : undefined,
-      avgFillPrice: o.avg_filled_price ? Number(o.avg_filled_price) : undefined,
+    const raw = await this.req<unknown>(
+      'GET',
+      '/openapi/trade/order/open',
+      { account_id: this.accountId, page_size: 50 },
+    );
+    return extractOrderRows(raw).map(order => ({
+      id: String(order.order_id ?? order.client_order_id ?? order.id),
+      symbol: String(
+        (order.ticker as Record<string, unknown> | undefined)?.symbol
+        ?? order.symbol
+        ?? '',
+      ).toUpperCase(),
+      side: String(order.side ?? order.action ?? 'BUY').toUpperCase() as OrderSide,
+      type: String(order.order_type ?? 'MARKET').toUpperCase() as OrderType,
+      quantity: Number(order.total_quantity ?? order.quantity ?? 0),
+      price: order.limit_price != null ? Number(order.limit_price) : undefined,
+      stopPrice: order.stop_price != null ? Number(order.stop_price) : undefined,
+      status: String(order.status ?? 'PENDING').toUpperCase(),
+      filled: order.filled_quantity != null ? Number(order.filled_quantity) : undefined,
+      avgFillPrice: order.filled_price != null
+        ? Number(order.filled_price)
+        : order.avg_filled_price != null
+          ? Number(order.avg_filled_price)
+          : undefined,
       mode: this.mode,
-      createdAt: String(o.create_time ?? o.created_at ?? new Date().toISOString()),
+      createdAt: String(
+        order.place_time_at
+        ?? order.create_time
+        ?? order.created_at
+        ?? new Date().toISOString(),
+      ),
     } satisfies Order));
   }
 
-  private async submitOrder(order: Record<string, unknown>): Promise<{ orderId: string; status: string }> {
-    const raw = await this.req<Record<string, unknown>>('POST', '/openapi/trade/order/place', {}, {
-      account_id: this.accountId,
-      new_orders: [order],
-    });
-    const orders = Array.isArray(raw.orders)
-      ? raw.orders as Record<string, unknown>[]
-      : Array.isArray(raw.data)
-        ? raw.data as Record<string, unknown>[]
-        : [];
-    const result = orders[0] ?? raw;
-    return {
-      orderId: String(result.order_id ?? result.client_order_id ?? raw.order_id ?? order.client_order_id ?? 'unknown'),
-      status: String(result.status ?? raw.status ?? 'PENDING'),
-    };
-  }
+  private buildOrder(params: WebullOrderRequest): {
+    order: Record<string, unknown>;
+    orderType: 'MARKET' | 'LIMIT';
+    tradingSession: WebullTradingSession;
+    timeInForce: WebullTimeInForce;
+  } {
+    const tradingSession = params.tradingSession ?? currentWebullSession();
+    if (!tradingSession) {
+      throw new Error('The U.S. equity market is currently outside supported trading sessions.');
+    }
 
-  async placeOrder(params: { symbol: string; side: OrderSide; type: OrderType; qty: number; price?: number; stop?: number; idempotencyKey: string }): Promise<{ orderId: string; status: string }> {
-    const tradingSession = getUsTradingSession();
-    const orderType: OrderType = tradingSession === 'CORE' ? 'MARKET' : 'LIMIT';
+    // Extended and overnight execution is sent as a limit order to avoid an
+    // unbounded fill when liquidity is thin. Core may use the requested MARKET.
+    const requestedType = String(params.type ?? 'MARKET').toUpperCase();
+    const orderType: 'MARKET' | 'LIMIT' = tradingSession === 'CORE' && requestedType === 'MARKET'
+      ? 'MARKET'
+      : 'LIMIT';
+    const timeInForce: WebullTimeInForce = params.timeInForce === 'GTC' ? 'GTC' : 'DAY';
 
-    if (orderType === 'LIMIT' && (params.price == null || !Number.isFinite(params.price) || params.price <= 0)) {
-      throw new Error(`A valid entry price is required for ${tradingSession} session limit orders.`);
+    if (orderType === 'LIMIT'
+      && (params.price == null || !Number.isFinite(params.price) || params.price <= 0)) {
+      throw new Error(`A valid price is required for ${tradingSession} limit orders.`);
     }
 
     const order: Record<string, unknown> = {
@@ -396,19 +570,73 @@ export class WebullClient {
       quantity: String(params.qty),
       instrument_type: 'EQUITY',
       entrust_type: 'QTY',
-      time_in_force: 'DAY',
+      time_in_force: timeInForce,
       market: 'US',
       support_trading_session: tradingSession,
     };
-
     if (orderType === 'LIMIT') {
       order.limit_price = String(limitPriceWithSlippage(params.price as number, params.side));
     }
     if (params.stop != null) order.stop_price = String(params.stop);
-    return this.submitOrder(order);
+    return { order, orderType, tradingSession, timeInForce };
   }
 
-  async placeProtectiveStop(params: { symbol: string; qty: number; stop: number; idempotencyKey: string }): Promise<{ orderId: string; status: string }> {
+  async previewOrder(params: WebullOrderRequest): Promise<WebullOrderPreview> {
+    const built = this.buildOrder(params);
+    const raw = await this.req<Record<string, unknown>>(
+      'POST',
+      '/openapi/trade/order/preview',
+      {},
+      {
+        account_id: this.accountId,
+        new_orders: [built.order],
+      },
+    );
+    return {
+      estimatedCost: Number(raw.estimated_cost ?? 0),
+      estimatedTransactionFee: Number(raw.estimated_transaction_fee ?? 0),
+      orderType: built.orderType,
+      tradingSession: built.tradingSession,
+      timeInForce: built.timeInForce,
+    };
+  }
+
+  private async submitOrder(order: Record<string, unknown>): Promise<{ orderId: string; status: string }> {
+    const raw = await this.req<Record<string, unknown>>(
+      'POST',
+      '/openapi/trade/order/place',
+      {},
+      {
+        account_id: this.accountId,
+        new_orders: [order],
+      },
+    );
+    const rows = extractOrderRows(raw);
+    const result = rows[0] ?? raw;
+    return {
+      orderId: String(
+        result.order_id
+        ?? result.client_order_id
+        ?? raw.order_id
+        ?? order.client_order_id
+        ?? 'unknown',
+      ),
+      status: String(result.status ?? raw.status ?? 'PENDING'),
+    };
+  }
+
+  async placeOrder(params: WebullOrderRequest): Promise<{ orderId: string; status: string }> {
+    const built = this.buildOrder(params);
+    return this.submitOrder(built.order);
+  }
+
+  async placeProtectiveStop(params: {
+    symbol: string;
+    qty: number;
+    stop: number;
+    idempotencyKey: string;
+    timeInForce?: WebullTimeInForce;
+  }): Promise<{ orderId: string; status: string }> {
     return this.submitOrder({
       client_order_id: params.idempotencyKey.slice(0, 32),
       combo_type: 'NORMAL',
@@ -418,7 +646,7 @@ export class WebullClient {
       quantity: String(params.qty),
       instrument_type: 'EQUITY',
       entrust_type: 'QTY',
-      time_in_force: 'DAY',
+      time_in_force: params.timeInForce === 'GTC' ? 'GTC' : 'DAY',
       market: 'US',
       support_trading_session: 'CORE',
       stop_price: String(params.stop),

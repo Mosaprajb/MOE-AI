@@ -6,6 +6,8 @@ struct MOEAIApp: App {
   @StateObject private var session = SessionStore()
   @StateObject private var model = AppModel()
   @StateObject private var notifications = NotificationManager.shared
+  @StateObject private var network = NetworkMonitor()
+  @StateObject private var preferences = AppPreferences()
   @Environment(\.scenePhase) private var scenePhase
   @State private var backgroundedAt: Date?
   @State private var privacyShieldVisible = false
@@ -16,6 +18,8 @@ struct MOEAIApp: App {
         .environmentObject(session)
         .environmentObject(model)
         .environmentObject(notifications)
+        .environmentObject(network)
+        .environmentObject(preferences)
         .preferredColorScheme(.dark)
         .overlay {
           if privacyShieldVisible {
@@ -42,8 +46,9 @@ struct MOEAIApp: App {
   private func handleScenePhase(_ phase: ScenePhase) {
     switch phase {
     case .active:
+      let lockTimeout = preferences.autoLockInterval.seconds
       let shouldLock = backgroundedAt.map {
-        Date().timeIntervalSince($0) >= AppConfiguration.privacyLockTimeout
+        Date().timeIntervalSince($0) >= lockTimeout
       } ?? false
       backgroundedAt = nil
 
@@ -56,7 +61,7 @@ struct MOEAIApp: App {
         return
       }
 
-      guard session.isAuthenticated else { return }
+      guard session.isAuthenticated, network.snapshot.isConnected else { return }
       Task {
         await model.refreshStatus(silently: true)
         await notifications.refreshAuthorizationStatus()

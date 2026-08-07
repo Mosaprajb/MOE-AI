@@ -46,9 +46,16 @@ struct AuthenticationView: View {
                 in: RoundedRectangle(cornerRadius: 15)
               )
 
-            Toggle("حفظ الرمز في Keychain", isOn: $rememberPIN)
+            Toggle("حفظ الرمز بأمان على هذا الجهاز", isOn: $rememberPIN)
               .font(.subheadline)
               .tint(MOETheme.accent)
+
+            if rememberPIN {
+              Text("يتطلب الحفظ تفعيل رمز قفل الآيفون، ولا ينتقل الرمز إلى جهاز آخر أو iCloud Keychain.")
+                .font(.caption)
+                .foregroundStyle(MOETheme.muted)
+                .multilineTextAlignment(.leading)
+            }
 
             Button(action: authenticate) {
               LoadingButtonLabel(
@@ -64,6 +71,7 @@ struct AuthenticationView: View {
 
             if session.faceIDAvailable && session.hasSavedPIN {
               Button {
+                pinFocused = false
                 Task { await session.unlockWithFaceID() }
               } label: {
                 Label("فتح باستخدام Face ID", systemImage: "faceid")
@@ -75,23 +83,35 @@ struct AuthenticationView: View {
               .disabled(session.isBusy)
             }
 
-            DisclosureGroup("إعدادات الخادم", isExpanded: $showServerSettings) {
-              VStack(alignment: .leading, spacing: 10) {
-                TextField("Cloudflare Worker URL", text: $session.baseURLText)
-                  .textInputAutocapitalization(.never)
-                  .autocorrectionDisabled()
-                  .keyboardType(.URL)
-                  .textFieldStyle(.roundedBorder)
+            if AppConfiguration.allowsCustomWorkerURL {
+              DisclosureGroup("إعدادات خادم الاختبار", isExpanded: $showServerSettings) {
+                VStack(alignment: .leading, spacing: 10) {
+                  TextField("Cloudflare Worker URL", text: $session.baseURLText)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                    .keyboardType(.URL)
+                    .textFieldStyle(.roundedBorder)
 
-                Button("حفظ رابط الخادم") {
-                  Task { _ = await session.saveServerURL() }
+                  Button("حفظ رابط الخادم") {
+                    Task { _ = await session.saveServerURL() }
+                  }
+                  .font(.footnote.bold())
+
+                  Text("يُسمح بـHTTPS فقط، أو localhost عبر HTTP أثناء Debug.")
+                    .font(.caption)
                 }
-                .font(.footnote.bold())
+                .padding(.top, 10)
               }
-              .padding(.top, 10)
+              .font(.subheadline)
+              .foregroundStyle(MOETheme.muted)
+            } else {
+              Label(
+                "متصل بخادم MOE-AI المعتمد",
+                systemImage: "lock.shield.fill"
+              )
+              .font(.footnote)
+              .foregroundStyle(MOETheme.muted)
             }
-            .font(.subheadline)
-            .foregroundStyle(MOETheme.muted)
 
             if let error = session.errorMessage {
               InlineErrorView(message: error)
@@ -119,6 +139,7 @@ struct AuthenticationView: View {
   }
 
   private func authenticate() {
+    pinFocused = false
     let currentPIN = pin
     Task {
       await session.login(pin: currentPIN, remember: rememberPIN)

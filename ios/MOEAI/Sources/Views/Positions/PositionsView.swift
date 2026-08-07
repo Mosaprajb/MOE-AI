@@ -2,24 +2,37 @@ import SwiftUI
 
 struct PositionsView: View {
   @EnvironmentObject private var model: AppModel
+  @EnvironmentObject private var session: SessionStore
+  @EnvironmentObject private var network: NetworkMonitor
+  @EnvironmentObject private var preferences: AppPreferences
   @State private var closingPosition: TradingPosition?
+  @State private var authorizingSymbol: String?
 
   var body: some View {
     ScrollView {
       VStack(spacing: 13) {
         actionBar
 
-        if model.status.safePositions.isEmpty {
+        if let refreshError = model.statusRefreshErrorMessage {
+          InlineErrorView(message: refreshError)
+        }
+
+        if model.activePositions.isEmpty {
           EmptyStateView(
             icon: "briefcase",
             title: "لا توجد مراكز مفتوحة",
-            message: "ستظهر مراكز TradingView النشطة هنا بعد تأكيدها من الخادم."
+            message: model.isLiveSelected
+              ? "لا توجد مراكز مفتوحة في الحساب الحقيقي."
+              : "لا توجد مراكز مفتوحة في حساب Paper Trading."
           )
         } else {
-          ForEach(model.status.safePositions) { position in
+          ForEach(model.activePositions) { position in
             PositionCard(
               position: position,
               isClosing: model.pendingAction == "close-\(position.symbol ?? "")"
+                || authorizingSymbol == position.symbol,
+              isUnavailable: !network.snapshot.isConnected
+                || session.isAuthorizingSensitiveAction
             ) {
               closingPosition = position
             }
@@ -30,8 +43,11 @@ struct PositionsView: View {
     }
     .background(AppBackground())
     .foregroundStyle(.white)
-    .navigationTitle("المراكز")
-    .refreshable { await model.refreshStatus() }
+    .navigationTitle(model.isLiveSelected ? "مراكز Live" : "مراكز Paper")
+    .refreshable {
+      guard network.snapshot.isConnected else { return }
+      await model.refreshStatusFromPullToRefresh()
+    }
     .confirmationDialog(
       "تأكيد إغلاق المركز",
       isPresented: Binding(
@@ -43,7 +59,17 @@ struct PositionsView: View {
       if let symbol = closingPosition?.symbol {
         Button("إغلاق \(symbol) فورًا", role: .destructive) {
           closingPosition = nil
-          Task { await model.closePosition(symbol: symbol) }
+          Task {
+            authorizingSymbol = symbol
+            defer { authorizingSymbol = nil }
+
+            let authorized = await session.authorizeSensitiveAction(
+              reason: "تأكيد إغلاق مركز \(symbol) وإرسال أمر بيع إلى الوسيط",
+              required: preferences.requiresAuthenticationForSensitiveActions
+            )
+            guard authorized else { return }
+            await model.closePosition(symbol: symbol)
+          }
         }
       }
       Button("إلغاء", role: .cancel) { closingPosition = nil }
@@ -56,24 +82,24 @@ struct PositionsView: View {
     GlassCard {
       HStack(spacing: 10) {
         Button {
-          Task { await model.refreshPositions() }
+          Task { await model.refreshStatus(silently: true) }
         } label: {
           Label("تحديث الوسيط", systemImage: "arrow.clockwise")
             .frame(maxWidth: .infinity)
         }
         .buttonStyle(.borderedProminent)
         .tint(MOETheme.accent)
-        .disabled(model.pendingAction != nil)
+        .disabled(model.pendingAction != nil || !network.snapshot.isConnected)
 
         Button {
           Task { await model.refreshPositions(repair: true) }
         } label: {
-          Label("إصلاح الحماية", systemImage: "shield.lefthalf.filled")
+          Label("فحص الحماية", systemImage: "shield.lefthalf.filled")
             .frame(maxWidth: .infinity)
         }
         .buttonStyle(.bordered)
         .tint(MOETheme.warning)
-        .disabled(model.pendingAction != nil)
+        .disabled(model.pendingAction != nil || !network.snapshot.isConnected)
       }
       .font(.caption.bold())
     }
@@ -83,6 +109,7 @@ struct PositionsView: View {
 private struct PositionCard: View {
   let position: TradingPosition
   let isClosing: Bool
+  let isUnavailable: Bool
   let onClose: () -> Void
 
   var body: some View {
@@ -150,7 +177,7 @@ private struct PositionCard: View {
 
         Button(role: .destructive, action: onClose) {
           LoadingButtonLabel(
-            title: isClosing ? "جارٍ الإغلاق…" : "إغلاق المركز فورًا",
+            title: isClosing ? "جارٍ التحقق…" : "إغلاق المركز فورًا",
             icon: "xmark.octagon.fill",
             loading: isClosing
           )
@@ -158,7 +185,12 @@ private struct PositionCard: View {
         }
         .buttonStyle(.borderedProminent)
         .tint(MOETheme.negative)
-        .disabled(isClosing)
+        .disabled(isClosing || isUnavailable)
+        .accessibilityHint(
+          isUnavailable
+            ? "يتطلب اتصالًا بالإنترنت"
+            : "سيطلب تأكيد Face ID أو رمز قفل الجهاز عند تفعيل الحماية"
+        )
       }
     }
   }
