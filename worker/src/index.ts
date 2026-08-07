@@ -4,6 +4,7 @@ import type { MobileEnv } from './lib/mobile-env';
 import type { LiveControlEnv } from './lib/live-policy';
 import { corsMiddleware } from './lib/cors';
 import { getRecentTelemetry } from './lib/telemetry';
+import { readValidMobileSession } from './lib/mobile-session';
 import { health } from './routes/health';
 import { webhook } from './routes/webhook';
 import { trading } from './routes/trading';
@@ -15,9 +16,9 @@ import {
   authorizeLiveExecution,
   getLiveExecutionPolicy,
 } from './lib/live-control';
-import { getMobileReceptionState } from './lib/mobile-control';
 import { broadcastMobilePush, getAPNsConfigurationStatus } from './lib/apns';
 import { mobileApi, mobileTradingView } from './routes/mobile';
+import { mobileTradingControl } from './routes/mobile-trading-control';
 
 type WorkerEnv = MobileEnv & LiveControlEnv;
 
@@ -57,9 +58,9 @@ function liveAuthorizationPayload(authorization: Awaited<ReturnType<typeof autho
   };
 }
 
-// The authenticated mobile API contains the third order path in addition to
-// direct trading orders and TradingView webhooks. Protect it at the app edge so
-// future changes inside the mobile router cannot bypass the central Live policy.
+// Direct mobile order paths remain protected by the short-lived Live control
+// session. TradingView automation is separately guarded by the webhook secret,
+// per-account arming state, and the static/runtime Live policy.
 app.use('/api/tradingview/position/close', async (c, next) => {
   if (c.req.method === 'POST') {
     const policy = await getLiveExecutionPolicy(c.env);
@@ -119,34 +120,17 @@ app.use('/api/tradingview/kill-switch', async (c, next) => {
   return undefined;
 });
 
+// Decisions expose trading history, so keep them behind the authenticated
+// native mobile session even though the TradingView webhook itself is public
+// and authenticated with MOE_WEBHOOK_SECRET in its JSON body.
+app.use('/api/tradingview/decisions', async (c, next) => {
+  const session = await readValidMobileSession(c.req.raw, c.env);
+  if (!session) return c.json({ ok: false, error: 'Authentication required' }, 401);
+  await next();
+  return undefined;
+});
+
 app.use('/api/tradingview/webhook', async (c, next) => {
-  if (c.req.method === 'POST') {
-    const storedMode = await getTradingMode(c.env);
-    if (storedMode === 'LIVE') {
-      const livePolicy = await getLiveExecutionPolicy(c.env);
-      if (!livePolicy.webhookExecutionAllowed) {
-        return c.json({
-          ok: false,
-          accepted: false,
-          code: 'LIVE_WEBHOOK_EXECUTION_BLOCKED',
-          error: 'TradingView Live execution is blocked by the server policy.',
-          mode: 'SANDBOX',
-          storedMode,
-          blockers: [...livePolicy.blockers, ...livePolicy.webhookBlockers],
-        }, 423);
-      }
-    }
-
-    const reception = await getMobileReceptionState(c.env);
-    if (!reception.enabled) {
-      return c.json({
-        ok: false,
-        code: 'TRADINGVIEW_RECEPTION_DISABLED',
-        error: 'TradingView alert reception is disabled by the mobile control session.',
-      }, 423);
-    }
-  }
-
   await next();
 
   if (c.req.method === 'POST') {
@@ -162,30 +146,49 @@ app.use('/api/tradingview/webhook', async (c, next) => {
           orderStatus?: string;
           reason?: string;
           error?: string;
+          executions?: Array<{
+            accepted?: boolean;
+            mode?: string;
+            qty?: number;
+            orderStatus?: string;
+            error?: string;
+          }>;
         };
         const symbol = String(payload.symbol ?? '').toUpperCase();
-        const accepted = payload.accepted === true;
         const side = String(payload.side ?? '').toUpperCase();
-        const quantity = Number(payload.qty ?? 0);
-        const mode = String(payload.mode ?? 'SANDBOX').toUpperCase();
-        const notificationType = accepted
-          ? side === 'BUY' ? 'POSITION_OPEN_SUBMITTED' : 'POSITION_CLOSE_SUBMITTED'
-          : 'TRADINGVIEW_ORDER_REJECTED';
-        const title = accepted
-          ? `${side || 'ORDER'} ${symbol || 'trade'} submitted`
-          : `${symbol || 'TradingView'} alert rejected`;
-        const body = accepted
-          ? `${quantity > 0 ? `${quantity} share${quantity === 1 ? '' : 's'} - ` : ''}${mode}${payload.orderStatus ? ` - ${payload.orderStatus}` : ''}`
-          : String(payload.error ?? payload.reason ?? 'The Worker rejected the alert.').slice(0, 180);
-        c.executionCtx.waitUntil(broadcastMobilePush(c.env, {
-          type: notificationType,
-          title,
-          body,
-          symbol: symbol || undefined,
-          accountType: mode === 'LIVE' ? 'LIVE' : 'DEMO',
-          deepLink: symbol ? `moeai://positions/${encodeURIComponent(symbol)}` : 'moeai://activity',
-          collapseId: symbol ? `trade-${symbol}` : 'tradingview-event',
-        }));
+        const executions = Array.isArray(payload.executions) && payload.executions.length > 0
+          ? payload.executions
+          : [{
+              accepted: payload.accepted,
+              mode: payload.mode,
+              qty: payload.qty,
+              orderStatus: payload.orderStatus,
+              error: payload.error ?? payload.reason,
+            }];
+
+        for (const execution of executions) {
+          const accepted = execution.accepted === true;
+          const quantity = Number(execution.qty ?? 0);
+          const mode = String(execution.mode ?? 'SANDBOX').toUpperCase();
+          const notificationType = accepted
+            ? side === 'BUY' ? 'POSITION_OPEN_SUBMITTED' : 'POSITION_CLOSE_SUBMITTED'
+            : 'TRADINGVIEW_ORDER_REJECTED';
+          const title = accepted
+            ? `${side || 'ORDER'} ${symbol || 'trade'} submitted`
+            : `${symbol || 'TradingView'} alert rejected`;
+          const body = accepted
+            ? `${quantity > 0 ? `${quantity} share${quantity === 1 ? '' : 's'} - ` : ''}${mode}${execution.orderStatus ? ` - ${execution.orderStatus}` : ''}`
+            : String(execution.error ?? payload.error ?? payload.reason ?? 'The Worker rejected the alert.').slice(0, 180);
+          c.executionCtx.waitUntil(broadcastMobilePush(c.env, {
+            type: notificationType,
+            title,
+            body,
+            symbol: symbol || undefined,
+            accountType: mode === 'LIVE' ? 'LIVE' : 'DEMO',
+            deepLink: symbol ? `moeai://positions/${encodeURIComponent(symbol)}` : 'moeai://activity',
+            collapseId: symbol ? `trade-${mode}-${symbol}` : `tradingview-event-${mode}`,
+          }));
+        }
       } catch {
         // The webhook response was not JSON; do not interfere with trading.
       }
@@ -197,9 +200,12 @@ app.use('/api/tradingview/webhook', async (c, next) => {
 
 app.route('/api/health', health);
 app.route('/api/system/health', health);
-app.route('/api/tradingview', mobileTradingView);
+// Register webhook routes before the native mobile sub-router so the public
+// TradingView POST is authenticated by MOE_WEBHOOK_SECRET, not by an iPhone cookie.
 app.route('/api/tradingview', webhook);
+app.route('/api/tradingview', mobileTradingView);
 app.route('/api/mobile', mobileApi);
+app.route('/api/mobile/trading-control', mobileTradingControl);
 app.route('/api/trading/live', liveControl);
 app.route('/api/trading', trading);
 app.route('/api/scanner', scanner);
@@ -227,6 +233,10 @@ app.get('/', c => c.json({
     'POST /api/tradingview/position/close',
     'POST /api/tradingview/reception',
     'POST /api/tradingview/kill-switch',
+    'GET  /api/mobile/trading-control/:mode',
+    'POST /api/mobile/trading-control/:mode/settings',
+    'POST /api/mobile/trading-control/:mode/preview',
+    'POST /api/mobile/trading-control/:mode/reception',
     'POST /api/mobile/push/register',
     'DELETE /api/mobile/push/register',
     'GET  /api/mobile/push/status',

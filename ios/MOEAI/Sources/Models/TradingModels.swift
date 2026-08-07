@@ -198,6 +198,188 @@ struct TradingSettings: Codable, Equatable {
   var autoFlattenTimezone: String?
 }
 
+// MARK: - Per-account TradingView controls
+
+enum TradingSessionOption: String, Codable, CaseIterable, Identifiable {
+  case regular = "CORE"
+  case extended = "EXTENDED"
+  case overnight = "NIGHT"
+
+  var id: String { rawValue }
+
+  var title: String {
+    switch self {
+    case .regular: return "الساعات العادية"
+    case .extended: return "Extended Hours"
+    case .overnight: return "Overnight"
+    }
+  }
+
+  var subtitle: String {
+    switch self {
+    case .regular: return "9:30 AM – 4:00 PM ET"
+    case .extended: return "4:00–9:30 AM + 4:00–8:00 PM ET"
+    case .overnight: return "8:00 PM – 4:00 AM ET"
+    }
+  }
+}
+
+enum TradingTimeInForceOption: String, Codable, CaseIterable, Identifiable {
+  case day = "DAY"
+  case gtc = "GTC"
+
+  var id: String { rawValue }
+  var title: String { self == .day ? "Day" : "GTC" }
+  var detail: String { self == .day ? "ينتهي بنهاية يوم التداول" : "يبقى حتى التنفيذ أو الإلغاء" }
+}
+
+struct AccountTradingSettings: Codable, Equatable {
+  var mode: String
+  var allowedSessions: [TradingSessionOption]
+  var timeInForce: TradingTimeInForceOption
+  var shareQuantity: Int
+  var maxTradeAmountUsd: Double
+  var sizingSource: String
+  var maxCashPct: Double
+  var marginPct: Double
+  var maxPositionUsd: Double
+  var stopLossEnabled: Bool
+  var stopLossPct: Double
+  var blockIfPosition: Bool
+  var sessionOpenOnly: Bool
+  var sessionTz: String
+  var sessionStart: String
+  var sessionEnd: String
+
+  static func empty(mode: String) -> AccountTradingSettings {
+    AccountTradingSettings(
+      mode: mode,
+      allowedSessions: [.regular],
+      timeInForce: .day,
+      shareQuantity: 0,
+      maxTradeAmountUsd: 0,
+      sizingSource: "cash_plus_margin",
+      maxCashPct: 25,
+      marginPct: 50,
+      maxPositionUsd: 0,
+      stopLossEnabled: true,
+      stopLossPct: 2,
+      blockIfPosition: true,
+      sessionOpenOnly: true,
+      sessionTz: "America/New_York",
+      sessionStart: "09:30",
+      sessionEnd: "16:00"
+    )
+  }
+}
+
+struct TradingControlReception: Codable, Equatable {
+  var enabled: Bool
+  var accountType: String
+  var updatedAt: String
+}
+
+struct TradingControlMarket: Codable, Equatable {
+  var window: String
+  var webullSession: String?
+  var label: String
+  var weekday: String
+  var minutesET: Int
+  var allowedNow: Bool?
+}
+
+struct TradingControlBroker: Codable, Equatable {
+  var connected: Bool?
+  var accountValue: Double?
+  var cash: Double?
+  var buyingPower: Double?
+  var intradayBuyingPower: Double?
+  var overnightBuyingPower: Double?
+  var nightTradingBuyingPower: Double?
+  var currentSessionBuyingPower: Double?
+  var marginDataAvailable: Bool?
+  var maintenanceMargin: Double?
+  var openMarginCalls: [String]?
+  var usedMargin: Double?
+  var usedMarginForOpenOrder: Double?
+  var initialMargin: Double?
+  var intradayMargin: Double?
+  var marginExcess: Double?
+  var marginRatio: Double?
+  var updatedAt: String?
+}
+
+struct TradingControlStatus: Codable, Equatable {
+  var ok: Bool
+  var mode: String
+  var accountType: String
+  var settings: AccountTradingSettings
+  var configured: Bool
+  var reception: TradingControlReception
+  var market: TradingControlMarket
+  var broker: TradingControlBroker
+  var blockers: [String]
+}
+
+struct TradingControlSettingsResponse: Codable, Equatable {
+  var ok: Bool
+  var mode: String
+  var settings: AccountTradingSettings
+  var configured: Bool
+  var receptionEnabled: Bool
+}
+
+struct TradingControlPreview: Codable, Equatable {
+  var ok: Bool
+  var mode: String?
+  var symbol: String?
+  var side: String?
+  var price: Double?
+  var quantity: Int?
+  var maximumQuantityToBuy: Int?
+  var configuredShareQuantity: Int?
+  var maxTradeAmountUsd: Double?
+  var estimatedTotal: Double?
+  var estimatedTransactionFee: Double?
+  var orderType: String?
+  var tradingSession: String?
+  var timeInForce: String?
+  var intradayBuyingPower: Double?
+  var overnightBuyingPower: Double?
+  var nightTradingBuyingPower: Double?
+  var availableBuyingPower: Double?
+  var market: TradingControlMarket?
+  var error: String?
+}
+
+struct TradingControlReceptionResponse: Codable, Equatable {
+  var ok: Bool
+  var mode: String?
+  var reception: TradingControlReception?
+  var settings: AccountTradingSettings?
+  var code: String?
+  var error: String?
+  var blockers: [String]?
+}
+
+struct TradingControlSettingsPayload: Codable, Equatable {
+  var allowedSessions: [TradingSessionOption]
+  var timeInForce: TradingTimeInForceOption
+  var shareQuantity: Int
+  var maxTradeAmountUsd: Double
+}
+
+struct TradingControlPreviewPayload: Codable, Equatable {
+  var symbol: String
+  var price: Double
+  var side: String
+}
+
+struct TradingControlReceptionPayload: Codable, Equatable {
+  var enabled: Bool
+  var confirmation: String?
+}
+
 struct ScreenerResponse: Codable, Equatable {
   var ok: Bool?
   var degraded: Bool?
