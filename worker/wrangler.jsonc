@@ -1,0 +1,126 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "moerand-alerts",
+  "account_id": "7b6f3b27137cb7bca26fc1de40a2e7a8",
+  "main": "src/index.ts",
+  "compatibility_date": "2024-11-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "exports": {
+    "AlertCoordinator": {
+      "type": "durable-object",
+      "storage": "sqlite"
+    },
+    "SimulationDriver": {
+      "type": "durable-object",
+      "storage": "sqlite"
+    },
+    "TradingViewPositionCoordinator": {
+      "type": "durable-object",
+      "storage": "sqlite"
+    }
+  },
+  "env": {
+    "production": {
+      "name": "moerand-alerts",
+      "kv_namespaces": [
+        {
+          "binding": "CONFIG",
+          "id": "74e96387146345c3b424838696d814b5"
+        }
+      ],
+      "d1_databases": [
+        {
+          "binding": "DB",
+          "database_name": "moe-ai",
+          "database_id": "0c9f645b-da53-4f80-aaa8-ad04f86393a3",
+          "migrations_dir": "migrations"
+        }
+      ],
+      "vars": {
+        "WORKER_VERSION": "6.2.0",
+        "RISK_PCT": "5",
+        "SCANNER_TP_PCT": "1.5",
+        "SCANNER_TRAIL_PCT": "1.0",
+        "SCANNER_HARD_STOP_PCT": "1.5",
+        "SCANNER_PRICE_MIN": "10",
+        "SCANNER_PRICE_MAX": "100",
+        "MAX_OPEN_POSITIONS": "4",
+        "MAX_DAILY_TRADES": "8",
+        "MAX_DAILY_LOSS_PCT": "2",
+        "MAX_OPEN_RISK_PCT": "2",
+        "MAX_PORTFOLIO_HEAT": "6",
+        "MOE_MOBILE_SESSION_TTL_SECONDS": "28800",
+        "MOE_MOBILE_LIVE_CONTROL_ENABLED": "false",
+        "APNS_ENABLED": "false",
+        "APNS_BUNDLE_ID": "com.moerand.moeai",
+        "ALLOWED_ORIGINS": "https://moerand-alerts.mosaprajb.workers.dev,https://moe-ai.replit.app,https://*.replit.dev,https://*.replit.app,http://127.0.0.1"
+      }
+    },
+    "staging": {
+      "name": "moerand-alerts-staging",
+      "kv_namespaces": [
+        {
+          "binding": "CONFIG"
+        }
+      ],
+      "d1_databases": [
+        {
+          "binding": "DB",
+          "migrations_dir": "migrations"
+        }
+      ],
+      "vars": {
+        "WORKER_VERSION": "6.2.0-staging",
+        "RISK_PCT": "5",
+        "SCANNER_TP_PCT": "1.5",
+        "SCANNER_TRAIL_PCT": "1.0",
+        "SCANNER_HARD_STOP_PCT": "1.5",
+        "SCANNER_PRICE_MIN": "10",
+        "SCANNER_PRICE_MAX": "100",
+        "MAX_OPEN_POSITIONS": "4",
+        "MAX_DAILY_TRADES": "8",
+        "MAX_DAILY_LOSS_PCT": "2",
+        "MAX_OPEN_RISK_PCT": "2",
+        "MAX_PORTFOLIO_HEAT": "6",
+        "MOE_MOBILE_SESSION_TTL_SECONDS": "28800",
+        "MOE_MOBILE_LIVE_CONTROL_ENABLED": "false",
+        "APNS_ENABLED": "false",
+        "APNS_BUNDLE_ID": "com.moerand.moeai",
+        "ALLOWED_ORIGINS": "https://moerand-alerts-staging.mosaprajb.workers.dev,https://moerand-alerts.mosaprajb.workers.dev,https://moe-ai.replit.app,https://*.replit.dev,https://*.replit.app,http://127.0.0.1"
+      }
+    },
+    "sandbox": {
+      "name": "moerand-alerts-sandbox",
+      "kv_namespaces": [
+        {
+          "binding": "CONFIG"
+        }
+      ],
+      "d1_databases": [
+        {
+          "binding": "DB",
+          "migrations_dir": "migrations"
+        }
+      ],
+      "vars": {
+        "WORKER_VERSION": "6.2.0-sandbox",
+        "RISK_PCT": "5",
+        "SCANNER_TP_PCT": "1.5",
+        "SCANNER_TRAIL_PCT": "1.0",
+        "SCANNER_HARD_STOP_PCT": "1.5",
+        "SCANNER_PRICE_MIN": "10",
+        "SCANNER_PRICE_MAX": "100",
+        "MAX_OPEN_POSITIONS": "4",
+        "MAX_DAILY_TRADES": "8",
+        "MAX_DAILY_LOSS_PCT": "2",
+        "MAX_OPEN_RISK_PCT": "2",
+        "MAX_PORTFOLIO_HEAT": "6",
+        "MOE_MOBILE_SESSION_TTL_SECONDS": "28800",
+        "MOE_MOBILE_LIVE_CONTROL_ENABLED": "false",
+        "APNS_ENABLED": "false",
+        "APNS_BUNDLE_ID": "com.moerand.moeai",
+        "ALLOWED_ORIGINS": "https://moerand-alerts-sandbox.mosaprajb.workers.dev,https://moerand-alerts.mosaprajb.workers.dev,https://moe-ai.replit.app,https://*.replit.dev,https://*.replit.app,http://127.0.0.1"
+      }
+    }
+  }
+}

@@ -1,4 +1,4 @@
-name: Deploy Cloudflare Worker (Sandbox)
+name: Deploy Cloudflare Worker (Non-production)
 
 on:
   push:
@@ -12,15 +12,15 @@ permissions:
   contents: read
 
 concurrency:
-  group: deploy-cloudflare-sandbox
+  group: deploy-cloudflare-${{ github.ref_name }}
   cancel-in-progress: false
 
 env:
   WRANGLER_VERSION: "4.119.0"
 
 jobs:
-  deploy-sandbox:
-    name: Deploy Worker (isolated Sandbox env)
+  deploy:
+    name: Deploy Worker from local source of truth
     runs-on: ubuntu-latest
     timeout-minutes: 20
     defaults:
@@ -30,6 +30,16 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Select deployment environment
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "${GITHUB_REF_NAME}" == "staging" ]]; then
+            echo "DEPLOY_ENV=staging" >> "$GITHUB_ENV"
+          else
+            echo "DEPLOY_ENV=sandbox" >> "$GITHUB_ENV"
+          fi
 
       - name: Set up pnpm 10
         uses: pnpm/action-setup@v4
@@ -53,60 +63,27 @@ jobs:
       - name: Run mobile Worker tests
         run: pnpm run test:mobile
 
-      - name: Resolve isolated Sandbox resources
-        run: node scripts/prepare-sandbox-config-from-settings.mjs
+      - name: Generate deployment config from wrangler.jsonc
+        run: node scripts/generate-wrangler-config.mjs "$DEPLOY_ENV"
+
+      - name: Deploy Worker
+        run: pnpm dlx wrangler@${WRANGLER_VERSION} deploy --config ".wrangler.${DEPLOY_ENV}.ci.toml"
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
 
-      - name: Validate generated Durable Object exports
-        shell: bash
-        run: |
-          set -euo pipefail
-          config=.wrangler.sandbox.ci.toml
-          test -s "$config"
-
-          for class_name in AlertCoordinator SimulationDriver TradingViewPositionCoordinator; do
-            grep -Fq "[env.sandbox.exports.${class_name}]" "$config"
-            section="$(awk -v header="[env.sandbox.exports.${class_name}]" '
-              $0 == header { active=1; print; next }
-              active && /^\[/ { exit }
-              active { print }
-            ' "$config")"
-            grep -Fq 'type = "durable-object"' <<<"$section"
-            grep -Eq '^storage = "(sqlite|legacy-kv)"$' <<<"$section"
-          done
-
-          if grep -Eq '^\s*\[\[migrations\]\]' "$config"; then
-            echo "Generated Sandbox config unexpectedly contains legacy migrations" >&2
-            exit 1
-          fi
-
-          echo "Validated Sandbox Durable Object exports:"
-          awk '
-            /^\[env\.sandbox\.exports\./ { print; active=1; next }
-            active && /^(type|storage) = / { print "  " $0; next }
-            active && /^\[/ { active=0 }
-          ' "$config"
-
-      - name: Deploy isolated Sandbox worker
-        run: pnpm dlx wrangler@${WRANGLER_VERSION} deploy --config .wrangler.sandbox.ci.toml --env sandbox
+      - name: Apply D1 migrations
+        run: pnpm dlx wrangler@${WRANGLER_VERSION} d1 migrations apply DB --remote --config ".wrangler.${DEPLOY_ENV}.ci.toml"
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
 
-      - name: Apply Sandbox D1 migrations
-        run: pnpm dlx wrangler@${WRANGLER_VERSION} d1 migrations apply DB --remote --config .wrangler.sandbox.ci.toml --env sandbox
-        env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-
-      - name: Redeploy after migrations
-        run: pnpm dlx wrangler@${WRANGLER_VERSION} deploy --config .wrangler.sandbox.ci.toml --env sandbox
+      - name: Redeploy after D1 migrations
+        run: pnpm dlx wrangler@${WRANGLER_VERSION} deploy --config ".wrangler.${DEPLOY_ENV}.ci.toml"
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
 
       - name: Remove generated Wrangler config
         if: always()
-        run: rm -f .wrangler.sandbox.ci.toml
+        run: rm -f ".wrangler.${DEPLOY_ENV}.ci.toml"
