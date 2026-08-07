@@ -12,6 +12,7 @@ final class AppModel: ObservableObject {
   @Published private(set) var lastErrorMessage: String?
   @Published private(set) var lastErrorAt: Date?
   @Published private(set) var consecutiveRequestFailures = 0
+  @Published private(set) var statusRefreshErrorMessage: String?
   @Published var errorMessage: String?
   @Published var lastRefresh: Date?
   @Published var selectedAccount: String {
@@ -51,25 +52,40 @@ final class AppModel: ObservableObject {
       status = newStatus
       scannerRows = newScanner.safeRows
       lastRefresh = Date()
+      statusRefreshErrorMessage = nil
       markSuccess()
     } catch {
+      guard !Self.isCancellation(error) else { return }
       handle(error)
     }
   }
 
-  func refreshStatus(silently: Bool = false) async {
+  func refreshStatus(
+    silently: Bool = false,
+    showInlineError: Bool = false
+  ) async {
     guard !isRefreshingStatus else { return }
     isRefreshingStatus = true
+    if showInlineError { statusRefreshErrorMessage = nil }
     if !silently { errorMessage = nil }
     defer { isRefreshingStatus = false }
 
     do {
       status = try await APIClient.shared.status()
       lastRefresh = Date()
+      statusRefreshErrorMessage = nil
       markSuccess()
     } catch {
+      guard !Self.isCancellation(error) else { return }
       handle(error, presentToUser: !silently)
+      if showInlineError {
+        statusRefreshErrorMessage = error.localizedDescription
+      }
     }
+  }
+
+  func refreshStatusFromPullToRefresh() async {
+    await refreshStatus(silently: true, showInlineError: true)
   }
 
   func loadScanner(search: String = "", sort: String = "VOLUME") async {
@@ -86,6 +102,7 @@ final class AppModel: ObservableObject {
       scannerRows = response.safeRows
       markSuccess()
     } catch {
+      guard !Self.isCancellation(error) else { return }
       handle(error)
     }
   }
@@ -144,6 +161,7 @@ final class AppModel: ObservableObject {
     status = .empty
     scannerRows = []
     errorMessage = nil
+    statusRefreshErrorMessage = nil
     lastRefresh = nil
     lastErrorMessage = nil
     lastErrorAt = nil
@@ -164,6 +182,7 @@ final class AppModel: ObservableObject {
       try await operation()
       markSuccess()
     } catch {
+      guard !Self.isCancellation(error) else { return }
       handle(error)
     }
   }
@@ -180,5 +199,23 @@ final class AppModel: ObservableObject {
     if presentToUser {
       errorMessage = message
     }
+  }
+
+  private static func isCancellation(_ error: Error) -> Bool {
+    if error is CancellationError {
+      return true
+    }
+
+    if let urlError = error as? URLError, urlError.code == .cancelled {
+      return true
+    }
+
+    if let apiError = error as? APIError,
+      case let .transport(message) = apiError
+    {
+      return message == URLError(.cancelled).localizedDescription
+    }
+
+    return false
   }
 }
