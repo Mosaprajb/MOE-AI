@@ -245,6 +245,13 @@ struct AccountTradingSettings: Codable, Equatable {
   var maxPositionUsd: Double
   var stopLossEnabled: Bool
   var stopLossPct: Double
+  var takeProfitEnabled: Bool
+  var takeProfitPct: Double
+  var trailingEnabled: Bool
+  var trailActivationUsd: Double
+  var trailInitialStopOffsetUsd: Double
+  var trailTriggerStepUsd: Double
+  var trailStopMoveUsd: Double
   var blockIfPosition: Bool
   var sessionOpenOnly: Bool
   var sessionTz: String
@@ -264,6 +271,13 @@ struct AccountTradingSettings: Codable, Equatable {
       maxPositionUsd: 0,
       stopLossEnabled: true,
       stopLossPct: 2,
+      takeProfitEnabled: true,
+      takeProfitPct: 3,
+      trailingEnabled: false,
+      trailActivationUsd: 0.05,
+      trailInitialStopOffsetUsd: 0.02,
+      trailTriggerStepUsd: 0.05,
+      trailStopMoveUsd: 0.01,
       blockIfPosition: true,
       sessionOpenOnly: true,
       sessionTz: "America/New_York",
@@ -367,6 +381,13 @@ struct TradingControlSettingsPayload: Codable, Equatable {
   var timeInForce: TradingTimeInForceOption
   var shareQuantity: Int
   var maxTradeAmountUsd: Double
+  var stopLossPct: Double
+  var takeProfitPct: Double
+  var trailingEnabled: Bool
+  var trailActivationUsd: Double
+  var trailInitialStopOffsetUsd: Double
+  var trailTriggerStepUsd: Double
+  var trailStopMoveUsd: Double
 }
 
 struct TradingControlPreviewPayload: Codable, Equatable {

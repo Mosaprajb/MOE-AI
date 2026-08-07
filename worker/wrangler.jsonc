@@ -17,7 +17,19 @@
     "TradingViewPositionCoordinator": {
       "type": "durable-object",
       "storage": "sqlite"
+    },
+    "TrailingStopCoordinator": {
+      "type": "durable-object",
+      "storage": "sqlite"
     }
+  },
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "TRAILING_STOP_COORDINATOR",
+        "class_name": "TrailingStopCoordinator"
+      }
+    ]
   },
   "env": {
     "production": {
@@ -37,7 +49,7 @@
         }
       ],
       "vars": {
-        "WORKER_VERSION": "6.3.0-live-read-only",
+        "WORKER_VERSION": "6.4.0-live-read-only",
         "RISK_PCT": "5",
         "SCANNER_TP_PCT": "1.5",
         "SCANNER_TRAIL_PCT": "1.0",
@@ -80,7 +92,7 @@
         }
       ],
       "vars": {
-        "WORKER_VERSION": "6.3.0-staging-live-blocked",
+        "WORKER_VERSION": "6.4.0-staging-live-blocked",
         "RISK_PCT": "5",
         "SCANNER_TP_PCT": "1.5",
         "SCANNER_TRAIL_PCT": "1.0",
@@ -123,7 +135,7 @@
         }
       ],
       "vars": {
-        "WORKER_VERSION": "6.3.0-sandbox-live-blocked",
+        "WORKER_VERSION": "6.4.0-sandbox-live-blocked",
         "RISK_PCT": "5",
         "SCANNER_TP_PCT": "1.5",
         "SCANNER_TRAIL_PCT": "1.0",

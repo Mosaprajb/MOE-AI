@@ -2,14 +2,18 @@
 import { Hono } from 'hono';
 import type { MobileEnv } from './lib/mobile-env';
 import type { LiveControlEnv } from './lib/live-policy';
+import type { TradingMode } from './lib/types';
 import { corsMiddleware } from './lib/cors';
 import { getRecentTelemetry } from './lib/telemetry';
 import { readValidMobileSession } from './lib/mobile-session';
+import { WebullClient } from './lib/webull';
+import { prepareTrailingManagedClose } from './lib/trailing-stop-coordinator';
 import { health } from './routes/health';
 import { webhook } from './routes/webhook';
 import { trading } from './routes/trading';
 import { liveControl } from './routes/live-control';
 import { scanner } from './routes/scanner';
+import { currentTradingWindow, getTradingSettings } from './routes/trading-settings';
 import { getTradingMode, setTradingMode } from './lib/risk';
 import {
   authorizeLiveControl,
@@ -19,6 +23,7 @@ import {
 import { broadcastMobilePush, getAPNsConfigurationStatus } from './lib/apns';
 import { mobileApi, mobileTradingView } from './routes/mobile';
 import { mobileTradingControl } from './routes/mobile-trading-control';
+import { mobileAccountTypeForMode, writeMobileAudit } from './lib/mobile-control';
 
 type WorkerEnv = MobileEnv & LiveControlEnv;
 
@@ -27,6 +32,7 @@ export {
   SimulationDriver,
   TradingViewPositionCoordinator,
 } from './lib/legacy-durable-objects';
+export { TrailingStopCoordinator } from './lib/trailing-stop-coordinator';
 
 const app = new Hono<{ Bindings: WorkerEnv }>();
 
@@ -58,11 +64,37 @@ function liveAuthorizationPayload(authorization: Awaited<ReturnType<typeof autho
   };
 }
 
-// Direct mobile order paths remain protected by the short-lived Live control
-// session. TradingView automation is separately guarded by the webhook secret,
-// per-account arming state, and the static/runtime Live policy.
+function roundProtectivePrice(value: number): number {
+  return Number(value.toFixed(value >= 1 ? 2 : 4));
+}
+
+// Intercept the native close path before the legacy mobile route. Managed TP/SL
+// legs are cancelled first so a stale SELL cannot remain after a manual close.
+// Manual mobile closes remain regular-session only because the underlying route
+// submits MARKET; outside CORE we leave protection untouched and fail closed.
 app.use('/api/tradingview/position/close', async (c, next) => {
-  if (c.req.method === 'POST') {
+  if (c.req.method !== 'POST') {
+    await next();
+    return undefined;
+  }
+
+  const session = await readValidMobileSession(c.req.raw, c.env);
+  if (!session) return c.json({ ok: false, error: 'Authentication required' }, 401);
+
+  let request: { symbol?: string; confirmation?: string };
+  try {
+    request = await c.req.raw.clone().json() as { symbol?: string; confirmation?: string };
+  } catch {
+    return c.json({ ok: false, error: 'Valid JSON is required' }, 400);
+  }
+  if (request.confirmation !== 'CLOSE') {
+    return c.json({ ok: false, error: 'confirmation=CLOSE is required' }, 400);
+  }
+  const symbol = String(request.symbol ?? '').toUpperCase().replace(/[^A-Z0-9.-]/gu, '');
+  if (!symbol) return c.json({ ok: false, error: 'A valid symbol is required' }, 400);
+
+  const mode = await getTradingMode(c.env) as TradingMode;
+  if (mode === 'LIVE') {
     const policy = await getLiveExecutionPolicy(c.env);
     if (policy.storedMode === 'LIVE' || policy.currentMode === 'LIVE') {
       const authorization = await authorizeLiveExecution(c.req.raw, c.env);
@@ -71,8 +103,102 @@ app.use('/api/tradingview/position/close', async (c, next) => {
       }
     }
   }
-  await next();
-  return undefined;
+
+  const market = currentTradingWindow();
+  if (market.webullSession !== 'CORE') {
+    return c.json({
+      ok: false,
+      code: 'MOBILE_MARKET_CLOSE_OUTSIDE_CORE_BLOCKED',
+      error: 'Manual mobile MARKET close is restricted to the regular CORE session; protective orders were left unchanged.',
+      market,
+    }, 423);
+  }
+
+  const client = WebullClient.fromEnv(c.env, mode);
+  if (!client) {
+    return c.json({ ok: false, error: `${mode} Webull credentials are not configured` }, 503);
+  }
+  const positions = await client.getPositions();
+  const position = positions.find(item => (
+    item.symbol === symbol
+    && item.side === 'LONG'
+    && item.quantity > 0
+  ));
+  if (!position) return c.json({ ok: false, error: 'No open long position was found' }, 404);
+
+  const requestId = c.req.header('x-moe-request-id') ?? crypto.randomUUID();
+  const referencePrice = Number(position.currentPrice || position.averagePrice || 0);
+  const settings = await getTradingSettings(c.env, mode);
+  let protectionPrepared = false;
+
+  try {
+    await prepareTrailingManagedClose(c.env, mode, symbol);
+    protectionPrepared = true;
+    const result = await client.placeOrder({
+      symbol,
+      side: 'SELL',
+      type: 'MARKET',
+      qty: position.quantity,
+      price: referencePrice,
+      idempotencyKey: `mobile-close-${requestId}`,
+      tradingSession: 'CORE',
+      timeInForce: settings.timeInForce,
+    });
+
+    await writeMobileAudit(c.env, {
+      type: 'MOBILE_POSITION_CLOSE_SUBMITTED',
+      symbol,
+      accountType: mobileAccountTypeForMode(mode),
+      reason: result.orderId,
+      requestId,
+    });
+
+    const apns = getAPNsConfigurationStatus(c.env);
+    if (apns.enabled && apns.configured && c.env.DB) {
+      c.executionCtx.waitUntil(broadcastMobilePush(c.env, {
+        type: 'POSITION_CLOSE_SUBMITTED',
+        title: 'MOE-AI',
+        body: `Close order submitted for ${symbol}`,
+        symbol,
+        accountType: mobileAccountTypeForMode(mode),
+        price: referencePrice,
+        collapseId: `close-${symbol}`,
+      }));
+    }
+
+    return c.json({ ok: true, message: 'Close order submitted', orderId: result.orderId });
+  } catch (error) {
+    let recovery = 'Protective orders were not changed.';
+    if (protectionPrepared && referencePrice > 0) {
+      try {
+        const emergencyStop = roundProtectivePrice(
+          referencePrice * (1 - settings.stopLossPct / 100),
+        );
+        await client.placeProtectiveStop({
+          symbol,
+          qty: position.quantity,
+          stop: emergencyStop,
+          idempotencyKey: `mobile-close-recovery-${requestId}`,
+          timeInForce: settings.timeInForce,
+        });
+        recovery = `Close failed; emergency stop restored at ${emergencyStop}.`;
+      } catch (restoreError) {
+        recovery = `CRITICAL: close failed and emergency stop restoration failed: ${String(restoreError)}`;
+      }
+    }
+    await writeMobileAudit(c.env, {
+      type: 'MOBILE_POSITION_CLOSE_FAILED',
+      symbol,
+      accountType: mobileAccountTypeForMode(mode),
+      reason: `${String(error)} | ${recovery}`,
+      requestId,
+    });
+    return c.json({
+      ok: false,
+      error: `Close failed: ${String(error)}`,
+      recovery,
+    }, 502);
+  }
 });
 
 app.use('/api/tradingview/reception', async (c, next) => {

@@ -5,6 +5,8 @@ export interface Env {
   CONFIG?: KVNamespace;
   // D1 (optional until database is created)
   DB?: D1Database;
+  // Durable Object used only for active stepped trailing-stop positions.
+  TRAILING_STOP_COORDINATOR?: DurableObjectNamespace;
   // API base URLs (optional — falls back to defaults)
   WEBULL_LIVE_API_BASE_URL?:   string;
   WEBULL_SANDBOX_API_BASE_URL?:string;
@@ -35,26 +37,21 @@ export interface Env {
   MAX_OPEN_RISK_PCT:  string;
   MAX_PORTFOLIO_HEAT: string;
   ALLOWED_ORIGINS:    string;
-  RISK_PCT?:          string;   // legacy — % of buying power per trade (default 5)
-  // Position sizing (cash-based)
-  SIZING_SOURCE?:     string;   // "cash" (default — no margin) | "buying_power"
-  MAX_CASH_PCT?:      string;   // % of cash balance per trade (default 25)
-  MAX_POSITION_USD?:  string;   // hard cap on position value in dollars (optional)
-  BLOCK_IF_POSITION?: string;   // "true" (default) — reject BUY if symbol already held
-  // Legacy regular-session gate vars retained for compatibility.
+  RISK_PCT?:          string;
+  SIZING_SOURCE?:     string;
+  MAX_CASH_PCT?:      string;
+  MAX_POSITION_USD?:  string;
+  BLOCK_IF_POSITION?: string;
   SESSION_OPEN_ONLY?: string;
   SESSION_TZ?:        string;
   SESSION_START?:     string;
   SESSION_END?:       string;
-  // Scanner vars
-  SCANNER_TP_PCT?:        string;   // take profit % (default 1.5)
-  SCANNER_TRAIL_PCT?:     string;   // trailing stop % (default 1.0)
-  SCANNER_HARD_STOP_PCT?: string;   // hard stop % (default 1.5)
-  SCANNER_PRICE_MIN?:     string;   // min stock price (default 10)
-  SCANNER_PRICE_MAX?:     string;   // max stock price (default 100)
+  SCANNER_TP_PCT?:        string;
+  SCANNER_TRAIL_PCT?:     string;
+  SCANNER_HARD_STOP_PCT?: string;
+  SCANNER_PRICE_MIN?:     string;
+  SCANNER_PRICE_MAX?:     string;
 }
-
-// ── Scanner types ─────────────────────────────────────────────────────────────
 
 export interface ScannerConfig {
   tpPct:        number;
@@ -93,7 +90,14 @@ export interface ScannerPosition {
 
 export type TradingMode = 'SANDBOX' | 'LIVE';
 export type OrderSide   = 'BUY' | 'SELL';
-export type OrderType   = 'MARKET' | 'LIMIT' | 'STOP' | 'STOP_LIMIT';
+export type OrderType   =
+  | 'MARKET'
+  | 'LIMIT'
+  | 'STOP'
+  | 'STOP_LIMIT'
+  | 'STOP_LOSS'
+  | 'STOP_LOSS_LIMIT'
+  | 'TRAILING_STOP_LOSS';
 export type SignalType  =
   | 'BUY NOW' | 'BUY AGAIN' | 'SELL NOW'
   | 'HOLD'    | 'WAIT'      | 'WARMING UP' | 'WATCH NOW';
@@ -118,6 +122,15 @@ export interface AccountData {
   unrealizedPnl:             number;
   realizedPnl:               number;
   dayPnl:                    number;
+  maintenanceMargin:         number;
+  openMarginCalls:           string[];
+  usedMargin:                number;
+  usedMarginForOpenOrder:    number;
+  initialMargin:             number;
+  intradayMargin:            number;
+  marginExcess:              number;
+  marginRatio:               number;
+  marginDataAvailable:       boolean;
   mode:                      TradingMode;
   updatedAt:                 string;
 }
@@ -204,13 +217,11 @@ export interface SafetyGates {
 }
 
 // TradingView webhook payload. Account selection, sizing limits, trading windows,
-// and TIF are server-owned settings; an alert cannot override them.
+// TIF, and exit protection are server-owned settings; an alert cannot override them.
 export interface TVWebhookPayload {
   secret?:    string;
   symbol:     string;
-  // Legacy dashboard format
   action?:    'buy' | 'sell' | 'close' | 'alert';
-  // MOERAND TradingView indicator format
   side?:      'BUY' | 'SELL';
   orderType?: string;
   qty?:       number;
