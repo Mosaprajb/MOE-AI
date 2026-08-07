@@ -20,6 +20,8 @@ test('TradingView BUY uses saved bracket protection instead of alert-provided ex
   assert.match(webhook, /settings\.stopLossPct/);
   assert.match(webhook, /settings\.takeProfitPct/);
   assert.match(webhook, /placeBracketEntry/);
+  assert.match(webhook, /armStepTrailingCoordinator/);
+  assert.match(webhook, /trailingEnabled:\s*settings\.trailingEnabled/);
   assert.doesNotMatch(webhook, /payload\.stop\s*\?\?/);
   assert.doesNotMatch(webhook, /payload\.takeProfit\s*\?\?/);
 
@@ -28,9 +30,10 @@ test('TradingView BUY uses saved bracket protection instead of alert-provided ex
   assert.match(webull, /combo_type:\s*'STOP_LOSS'/);
   assert.match(webull, /client_combo_order_id/);
   assert.match(webull, /\/openapi\/trade\/order\/replace/);
+  assert.match(webull, /\/openapi\/trade\/order\/detail/);
 });
 
-test('custom step trailing activates from entry lock and advances by configurable staircase', async () => {
+test('custom step trailing verifies cancellation and advances only after a full fill in CORE', async () => {
   const coordinator = await source('src/lib/step-trailing-coordinator.ts');
 
   assert.match(coordinator, /entryPrice \+ managed\.trailingInitialLockCents \/ 100/);
@@ -39,6 +42,12 @@ test('custom step trailing activates from entry lock and advances by configurabl
   assert.match(coordinator, /steps \* managed\.trailingStepMoveCents \/ 100/);
   assert.match(coordinator, /cancelOrder\(managed\.takeProfitClientOrderId\)/);
   assert.match(coordinator, /cancelOrder\(managed\.stopLossClientOrderId\)/);
+  assert.match(coordinator, /getOrderStatus\(managed\.takeProfitClientOrderId\)/);
+  assert.match(coordinator, /getOrderStatus\(managed\.stopLossClientOrderId\)/);
+  assert.match(coordinator, /isCoreTradingNow\(\)/);
+  assert.match(coordinator, /broker bracket left intact/);
+  assert.match(coordinator, /const fullyFilled = observedQty >= requestedQty/);
+  assert.match(coordinator, /waiting for full configured quantity/);
   assert.match(coordinator, /fallback-stop/);
   assert.match(coordinator, /POLL_INTERVAL_MS = 2_500/);
 });
