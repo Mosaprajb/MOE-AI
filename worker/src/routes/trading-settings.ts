@@ -16,6 +16,13 @@ export type TradingSettings = {
   maxPositionUsd: number;
   stopLossEnabled: boolean;
   stopLossPct: number;
+  takeProfitEnabled: boolean;
+  takeProfitPct: number;
+  trailingEnabled: boolean;
+  trailActivationUsd: number;
+  trailInitialStopOffsetUsd: number;
+  trailTriggerStepUsd: number;
+  trailStopMoveUsd: number;
   blockIfPosition: boolean;
   sessionOpenOnly: boolean;
   sessionTz: string;
@@ -50,6 +57,13 @@ function defaultsForMode(mode: TradingMode): TradingSettings {
     maxPositionUsd: 0,
     stopLossEnabled: true,
     stopLossPct: 2,
+    takeProfitEnabled: true,
+    takeProfitPct: 3,
+    trailingEnabled: false,
+    trailActivationUsd: 0.05,
+    trailInitialStopOffsetUsd: 0.02,
+    trailTriggerStepUsd: 0.05,
+    trailStopMoveUsd: 0.01,
     blockIfPosition: true,
     sessionOpenOnly: true,
     sessionTz: 'America/New_York',
@@ -73,6 +87,10 @@ function sanitizeSessions(value: unknown, fallback: TradingWindow[]): TradingWin
   )];
 }
 
+function clamp(value: unknown, fallback: number, minimum: number, maximum: number): number {
+  return Math.max(minimum, Math.min(maximum, asFiniteNumber(value, fallback)));
+}
+
 export function sanitizeTradingSettings(
   mode: TradingMode,
   input: Partial<TradingSettings>,
@@ -90,6 +108,31 @@ export function sanitizeTradingSettings(
   const timeInForce: TradingTimeInForce = allowedSessions.includes('NIGHT')
     ? 'DAY'
     : requestedTimeInForce;
+
+  const trailActivationUsd = clamp(
+    input.trailActivationUsd,
+    current.trailActivationUsd,
+    0.01,
+    100,
+  );
+  const trailInitialStopOffsetUsd = clamp(
+    input.trailInitialStopOffsetUsd,
+    current.trailInitialStopOffsetUsd,
+    0,
+    100,
+  );
+  const trailTriggerStepUsd = clamp(
+    input.trailTriggerStepUsd,
+    current.trailTriggerStepUsd,
+    0.01,
+    100,
+  );
+  const trailStopMoveUsd = clamp(
+    input.trailStopMoveUsd,
+    current.trailStopMoveUsd,
+    0.01,
+    100,
+  );
 
   return {
     mode,
@@ -115,10 +158,14 @@ export function sanitizeTradingSettings(
     ),
     maxPositionUsd: maxTradeAmountUsd,
     stopLossEnabled: input.stopLossEnabled !== false,
-    stopLossPct: Math.max(
-      0.1,
-      Math.min(50, asFiniteNumber(input.stopLossPct, current.stopLossPct)),
-    ),
+    stopLossPct: clamp(input.stopLossPct, current.stopLossPct, 0.01, 50),
+    takeProfitEnabled: input.takeProfitEnabled !== false,
+    takeProfitPct: clamp(input.takeProfitPct, current.takeProfitPct, 0.01, 100),
+    trailingEnabled: input.trailingEnabled === true,
+    trailActivationUsd,
+    trailInitialStopOffsetUsd,
+    trailTriggerStepUsd,
+    trailStopMoveUsd,
     blockIfPosition: input.blockIfPosition !== false,
     sessionOpenOnly: true,
     sessionTz: 'America/New_York',
@@ -128,9 +175,22 @@ export function sanitizeTradingSettings(
 }
 
 export function isTradingSettingsConfigured(settings: TradingSettings): boolean {
-  return settings.allowedSessions.length > 0
+  const baseConfigured = settings.allowedSessions.length > 0
     && settings.shareQuantity >= 1
-    && settings.maxTradeAmountUsd > 0;
+    && settings.maxTradeAmountUsd > 0
+    && settings.stopLossEnabled
+    && settings.stopLossPct > 0
+    && settings.takeProfitEnabled
+    && settings.takeProfitPct > 0;
+  if (!baseConfigured) return false;
+  if (!settings.trailingEnabled) return true;
+
+  return settings.trailActivationUsd > 0
+    && settings.trailInitialStopOffsetUsd >= 0
+    && settings.trailInitialStopOffsetUsd < settings.trailActivationUsd
+    && settings.trailTriggerStepUsd > 0
+    && settings.trailStopMoveUsd > 0
+    && settings.trailStopMoveUsd <= settings.trailTriggerStepUsd;
 }
 
 export async function getTradingSettings(
