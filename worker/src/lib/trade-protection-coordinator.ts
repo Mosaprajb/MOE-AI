@@ -8,7 +8,7 @@ import {
 } from '../routes/trading-settings';
 
 const STORAGE_KEY = 'active-trades';
-const POLL_INTERVAL_MS = 1_000;
+const POLL_INTERVAL_MS = 2_000;
 const RETRY_INTERVAL_MS = 2_000;
 const ENTRY_WAIT_TIMEOUT_MS = 2 * 60 * 1_000;
 
@@ -158,7 +158,7 @@ export class TradeProtectionCoordinator extends DurableObject<Env> {
     if (request.method === 'POST' && url.pathname === '/start') {
       let payload: StartProtectionPayload;
       try {
-        payload = await request.json<StartProtectionPayload>();
+        payload = await request.json() as StartProtectionPayload;
       } catch {
         return Response.json({ ok: false, error: 'Valid JSON is required' }, { status: 400 });
       }
@@ -168,7 +168,7 @@ export class TradeProtectionCoordinator extends DurableObject<Env> {
     if (request.method === 'POST' && url.pathname === '/stop') {
       let payload: { symbol?: string };
       try {
-        payload = await request.json<{ symbol?: string }>();
+        payload = await request.json() as { symbol?: string };
       } catch {
         return Response.json({ ok: false, error: 'Valid JSON is required' }, { status: 400 });
       }
@@ -198,7 +198,8 @@ export class TradeProtectionCoordinator extends DurableObject<Env> {
     let positions: Position[];
     try {
       // One coordinator exists per account mode, so all active symbols share a
-      // single positions request and stay within Webull's 2 requests / 2 seconds limit.
+      // single positions request. A 2-second cycle also leaves room for the one
+      // safety re-read used while transitioning from OCO to the trailing stop.
       positions = await client.getPositions();
     } catch (error) {
       for (const trade of activeTrades) {
