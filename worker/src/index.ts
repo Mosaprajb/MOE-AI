@@ -27,6 +27,7 @@ export {
   SimulationDriver,
   TradingViewPositionCoordinator,
 } from './lib/legacy-durable-objects';
+export { TradeProtectionCoordinator } from './lib/trade-protection-coordinator';
 
 const app = new Hono<{ Bindings: WorkerEnv }>();
 
