@@ -245,6 +245,14 @@ struct AccountTradingSettings: Codable, Equatable {
   var maxPositionUsd: Double
   var stopLossEnabled: Bool
   var stopLossPct: Double
+  // Optional for wire compatibility while Sandbox and TestFlight are rolled out.
+  var takeProfitEnabled: Bool?
+  var takeProfitPct: Double?
+  var trailingEnabled: Bool?
+  var trailingActivationCents: Double?
+  var trailingInitialLockCents: Double?
+  var trailingStepTriggerCents: Double?
+  var trailingStepMoveCents: Double?
   var blockIfPosition: Bool
   var sessionOpenOnly: Bool
   var sessionTz: String
@@ -264,6 +272,13 @@ struct AccountTradingSettings: Codable, Equatable {
       maxPositionUsd: 0,
       stopLossEnabled: true,
       stopLossPct: 2,
+      takeProfitEnabled: false,
+      takeProfitPct: 2,
+      trailingEnabled: false,
+      trailingActivationCents: 5,
+      trailingInitialLockCents: 2,
+      trailingStepTriggerCents: 5,
+      trailingStepMoveCents: 1,
       blockIfPosition: true,
       sessionOpenOnly: true,
       sessionTz: "America/New_York",
@@ -344,6 +359,8 @@ struct TradingControlPreview: Codable, Equatable {
   var orderType: String?
   var tradingSession: String?
   var timeInForce: String?
+  var stopLossPrice: Double?
+  var takeProfitPrice: Double?
   var intradayBuyingPower: Double?
   var overnightBuyingPower: Double?
   var nightTradingBuyingPower: Double?
@@ -367,6 +384,15 @@ struct TradingControlSettingsPayload: Codable, Equatable {
   var timeInForce: TradingTimeInForceOption
   var shareQuantity: Int
   var maxTradeAmountUsd: Double
+  var stopLossEnabled: Bool
+  var stopLossPct: Double
+  var takeProfitEnabled: Bool
+  var takeProfitPct: Double
+  var trailingEnabled: Bool
+  var trailingActivationCents: Double
+  var trailingInitialLockCents: Double
+  var trailingStepTriggerCents: Double
+  var trailingStepMoveCents: Double
 }
 
 struct TradingControlPreviewPayload: Codable, Equatable {
