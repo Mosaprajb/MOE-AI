@@ -206,7 +206,7 @@ export function serializeToml(config) {
     '# Regenerate with: node scripts/generate-wrangler-config.mjs <environment>',
   ];
 
-  const reserved = new Set(['exports', 'kv_namespaces', 'd1_databases', 'vars']);
+  const reserved = new Set(['exports', 'durable_objects', 'kv_namespaces', 'd1_databases', 'vars']);
   for (const [key, value] of Object.entries(config)) {
     if (reserved.has(key) || value === undefined || value === null) continue;
     if (isObject(value)) throw new Error(`Unsupported top-level object ${key} in generated Wrangler TOML`);
@@ -220,6 +220,7 @@ export function serializeToml(config) {
     }
   }
 
+  appendArrayTables(lines, 'durable_objects.bindings', config.durable_objects?.bindings);
   appendArrayTables(lines, 'kv_namespaces', config.kv_namespaces);
   appendArrayTables(lines, 'd1_databases', config.d1_databases);
 
