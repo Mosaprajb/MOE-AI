@@ -118,6 +118,15 @@ mobileTradingControl.get('/:mode', async c => {
         overnightBuyingPower: account.overnightBuyingPower,
         nightTradingBuyingPower: effectiveNightBuyingPower(account),
         currentSessionBuyingPower: buyingPowerForCurrentWindow(account),
+        marginDataAvailable: account.marginDataAvailable,
+        maintenanceMargin: account.maintenanceMargin,
+        openMarginCalls: account.openMarginCalls,
+        usedMargin: account.usedMargin,
+        usedMarginForOpenOrder: account.usedMarginForOpenOrder,
+        initialMargin: account.initialMargin,
+        intradayMargin: account.intradayMargin,
+        marginExcess: account.marginExcess,
+        marginRatio: account.marginRatio,
         updatedAt: account.updatedAt,
       };
     } catch (error) {
