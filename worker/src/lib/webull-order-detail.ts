@@ -104,14 +104,18 @@ async function signGetRequest(params: {
 }
 
 function extractOrderRows(raw: unknown): Array<Record<string, unknown>> {
+  if (!raw || typeof raw !== 'object') return [];
   const object = raw as Record<string, unknown>;
-  const root = Array.isArray(raw)
+  const data = object.data;
+  const root: unknown[] = Array.isArray(raw)
     ? raw
-    : Array.isArray(object?.data)
-      ? object.data as unknown[]
-      : Array.isArray(object?.orders)
-        ? object.orders as unknown[]
-        : [object];
+    : Array.isArray(data)
+      ? data
+      : data && typeof data === 'object'
+        ? [data]
+        : Array.isArray(object.orders)
+          ? object.orders as unknown[]
+          : [object];
 
   return root.flatMap(item => {
     const row = item as Record<string, unknown>;
@@ -119,6 +123,15 @@ function extractOrderRows(raw: unknown): Array<Record<string, unknown>> {
       ? row.orders as Array<Record<string, unknown>>
       : [row];
   });
+}
+
+export function isWebullOrderTerminal(statusValue: string): boolean {
+  const status = statusValue.trim().toUpperCase();
+  return status === 'CANCELLED' || status === 'FILLED' || status === 'FAILED';
+}
+
+export function isWebullOrderFullyFilled(detail: WebullOrderDetail): boolean {
+  return detail.status === 'FILLED';
 }
 
 export async function getWebullOrderDetail(
