@@ -2,6 +2,7 @@ import { Hono } from 'hono';
 import type { LiveControlEnv } from '../lib/live-policy';
 import { getLiveExecutionPolicy } from '../lib/live-control';
 import { WebullClient } from '../lib/webull';
+import { checkLiveWebullToken, type WebullTokenCheckResult } from '../lib/webull-token-status';
 
 const liveObservation = new Hono<{ Bindings: LiveControlEnv }>();
 
@@ -45,15 +46,18 @@ liveObservation.get('/', async c => {
   const client = WebullClient.fromEnv(c.env, 'LIVE');
   const observation = {
     brokerConfigured: Boolean(client),
+    tokenStatus: 'UNKNOWN' as WebullTokenCheckResult['status'],
     accountReadable: false,
     positionsReadable: false,
     openOrdersReadable: false,
   };
   const diagnostics: {
+    token: WebullTokenCheckResult | null;
     account: SafeBrokerFailure | null;
     positions: SafeBrokerFailure | null;
     openOrders: SafeBrokerFailure | null;
   } = {
+    token: null,
     account: null,
     positions: null,
     openOrders: null,
@@ -88,6 +92,22 @@ liveObservation.get('/', async c => {
       diagnostics,
       checkedAt: new Date().toISOString(),
     }, 423);
+  }
+
+  const tokenCheck = await checkLiveWebullToken(c.env);
+  observation.tokenStatus = tokenCheck.status;
+  diagnostics.token = tokenCheck;
+
+  // Do not fan out account requests with a token that Webull itself does not
+  // report as NORMAL. This keeps the probe read-only and avoids repeated 401s.
+  if (!tokenCheck.ok || tokenCheck.status !== 'NORMAL') {
+    return c.json({
+      ok: false,
+      ...basePayload,
+      observation,
+      diagnostics,
+      checkedAt: new Date().toISOString(),
+    }, 502);
   }
 
   const [account, positions, openOrders] = await Promise.allSettled([
