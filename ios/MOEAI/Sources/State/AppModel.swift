@@ -156,6 +156,32 @@ final class AppModel: ObservableObject {
     }
   }
 
+  // Compatibility entry point used by the main dashboard. Updating quantity,
+  // sessions, or max trade amount must preserve the account's existing exit
+  // protection values instead of silently resetting them.
+  func saveTradingControl(
+    sessions: [TradingSessionOption],
+    timeInForce: TradingTimeInForceOption,
+    shareQuantity: Int,
+    maxTradeAmountUsd: Double
+  ) async {
+    let existing = selectedTradingControl?.settings
+      ?? AccountTradingSettings.empty(mode: isLiveSelected ? "LIVE" : "SANDBOX")
+    await saveTradingControl(
+      sessions: sessions,
+      timeInForce: timeInForce,
+      shareQuantity: shareQuantity,
+      maxTradeAmountUsd: maxTradeAmountUsd,
+      stopLossPct: existing.stopLossPct,
+      takeProfitPct: existing.takeProfitPct,
+      trailingEnabled: existing.trailingEnabled,
+      trailActivationUsd: existing.trailActivationUsd,
+      trailInitialStopOffsetUsd: existing.trailInitialStopOffsetUsd,
+      trailTriggerStepUsd: existing.trailTriggerStepUsd,
+      trailStopMoveUsd: existing.trailStopMoveUsd
+    )
+  }
+
   func saveTradingControl(
     sessions: [TradingSessionOption],
     timeInForce: TradingTimeInForceOption,
