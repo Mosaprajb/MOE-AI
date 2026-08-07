@@ -36,6 +36,18 @@ export interface WebullOrderPreview {
   timeInForce: WebullTimeInForce;
 }
 
+export interface WebullMarginSnapshot {
+  marginDataAvailable: boolean;
+  maintenanceMargin: number;
+  openMarginCalls: string[];
+  usedMargin: number;
+  usedMarginForOpenOrder: number;
+  initialMargin: number;
+  intradayMargin: number;
+  marginExcess: number;
+  marginRatio: number;
+}
+
 function currentWebullSession(date = new Date()): WebullTradingSession | null {
   const parts = new Intl.DateTimeFormat('en-US', {
     timeZone: 'America/New_York',
@@ -65,6 +77,22 @@ function limitPriceWithSlippage(entry: number, side: OrderSide): number {
   const adjusted = side === 'BUY' ? entry * 1.001 : entry * 0.999;
   const decimals = adjusted >= 1 ? 2 : 4;
   return Number(adjusted.toFixed(decimals));
+}
+
+function parseMarginCalls(value: unknown): string[] {
+  const allowed = new Set(['EM', 'RM', 'RT', 'DT']);
+  if (Array.isArray(value)) {
+    return [...new Set(
+      value
+        .map(item => String(item).trim().toUpperCase())
+        .filter(item => allowed.has(item)),
+    )];
+  }
+  const text = String(value ?? '').trim().toUpperCase();
+  if (!text || text === '[]') return [];
+  return [...new Set(
+    (text.match(/[A-Z]{2}/gu) ?? []).filter(item => allowed.has(item)),
+  )];
 }
 
 function toBase64(buffer: ArrayBuffer): string {
@@ -345,7 +373,7 @@ export class WebullClient {
     return parsedBody as T;
   }
 
-  async getAccount(): Promise<AccountData> {
+  async getAccount(): Promise<AccountData & WebullMarginSnapshot> {
     const raw = await this.req<Record<string, unknown>>(
       'GET',
       '/openapi/assets/balance',
@@ -363,6 +391,18 @@ export class WebullClient {
       }
       return 0;
     };
+    const hasMarginField = [
+      'maintenance_margin',
+      'open_margin_calls',
+      'used_margin',
+      'init_margin',
+      'intraday_margin',
+      'margin_excess',
+      'margin_ratio',
+    ].some(key => usd[key] != null || balance[key] != null);
+    const openMarginCalls = parseMarginCalls(
+      usd.open_margin_calls ?? balance.open_margin_calls,
+    );
 
     return {
       accountValue: first(
@@ -389,6 +429,15 @@ export class WebullClient {
       ),
       realizedPnl: first('realized_profit_loss', 'realized_pl', 'realized_pnl'),
       dayPnl: first('day_profit_loss', 'total_day_profit_loss', 'day_pl', 'day_pnl'),
+      marginDataAvailable: hasMarginField,
+      maintenanceMargin: first('maintenance_margin'),
+      openMarginCalls,
+      usedMargin: first('used_margin'),
+      usedMarginForOpenOrder: first('used_margin_for_open_order'),
+      initialMargin: first('init_margin'),
+      intradayMargin: first('intraday_margin'),
+      marginExcess: first('margin_excess'),
+      marginRatio: first('margin_ratio'),
       mode: this.mode,
       updatedAt: new Date().toISOString(),
     };
