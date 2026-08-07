@@ -36,6 +36,16 @@ export interface WebullOrderPreview {
   timeInForce: WebullTimeInForce;
 }
 
+export interface WebullBracketResult {
+  orderId: string;
+  status: string;
+  comboOrderId: string;
+  comboClientOrderId: string;
+  entryClientOrderId: string;
+  takeProfitClientOrderId: string;
+  stopLossClientOrderId: string;
+}
+
 export interface WebullMarginSnapshot {
   marginDataAvailable: boolean;
   maintenanceMargin: number;
@@ -73,10 +83,21 @@ function currentWebullSession(date = new Date()): WebullTradingSession | null {
   return null;
 }
 
+function normalizeOrderPrice(price: number): number {
+  const decimals = Math.abs(price) >= 1 ? 2 : 4;
+  return Number(price.toFixed(decimals));
+}
+
 function limitPriceWithSlippage(entry: number, side: OrderSide): number {
   const adjusted = side === 'BUY' ? entry * 1.001 : entry * 0.999;
-  const decimals = adjusted >= 1 ? 2 : 4;
-  return Number(adjusted.toFixed(decimals));
+  return normalizeOrderPrice(adjusted);
+}
+
+function clientOrderId(seed: string, suffix: string): string {
+  const cleanSeed = seed.replace(/[^A-Za-z0-9]/gu, '');
+  const cleanSuffix = suffix.replace(/[^A-Za-z0-9]/gu, '');
+  const available = Math.max(1, 32 - cleanSuffix.length - 1);
+  return `${cleanSeed.slice(0, available)}-${cleanSuffix}`.slice(0, 32);
 }
 
 function parseMarginCalls(value: unknown): string[] {
@@ -127,7 +148,7 @@ function md5(input: string): string {
   const shifts = [
     7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22,
     5, 9, 14, 20, 5, 9, 14, 20, 5, 9, 14, 20, 5, 9, 14, 20,
-    4, 11, 16, 23, 4, 11, 16, 23, 4, 11, 16, 23, 4, 11, 16, 23,
+    4, 11, 16, 23, 4, 11, 16, 23, 4, 11, 16, 23,
     6, 10, 15, 21, 6, 10, 15, 21, 6, 10, 15, 21, 6, 10, 15, 21,
   ];
   const constants = Array.from(
@@ -577,7 +598,7 @@ export class WebullClient {
     if (orderType === 'LIMIT') {
       order.limit_price = String(limitPriceWithSlippage(params.price as number, params.side));
     }
-    if (params.stop != null) order.stop_price = String(params.stop);
+    if (params.stop != null) order.stop_price = String(normalizeOrderPrice(params.stop));
     return { order, orderType, tradingSession, timeInForce };
   }
 
@@ -630,15 +651,105 @@ export class WebullClient {
     return this.submitOrder(built.order);
   }
 
+  async placeBracketEntry(params: {
+    symbol: string;
+    qty: number;
+    entryPrice: number;
+    stopPrice: number;
+    takeProfitPrice: number;
+    idempotencyKey: string;
+    tradingSession: WebullTradingSession;
+    timeInForce: WebullTimeInForce;
+  }): Promise<WebullBracketResult> {
+    const built = this.buildOrder({
+      symbol: params.symbol,
+      side: 'BUY',
+      type: params.tradingSession === 'CORE' ? 'MARKET' : 'LIMIT',
+      qty: params.qty,
+      price: params.entryPrice,
+      idempotencyKey: params.idempotencyKey,
+      tradingSession: params.tradingSession,
+      timeInForce: params.timeInForce,
+    });
+
+    const comboClientOrderId = clientOrderId(params.idempotencyKey, 'combo');
+    const entryClientOrderId = clientOrderId(params.idempotencyKey, 'entry');
+    const takeProfitClientOrderId = clientOrderId(params.idempotencyKey, 'tp');
+    const stopLossClientOrderId = clientOrderId(params.idempotencyKey, 'sl');
+    const baseOrder = {
+      symbol: params.symbol,
+      quantity: String(params.qty),
+      instrument_type: 'EQUITY',
+      entrust_type: 'QTY',
+      time_in_force: built.timeInForce,
+      market: 'US',
+      support_trading_session: built.tradingSession,
+    };
+    const masterOrder: Record<string, unknown> = {
+      ...built.order,
+      client_order_id: entryClientOrderId,
+      combo_type: 'MASTER',
+    };
+    const takeProfitOrder: Record<string, unknown> = {
+      ...baseOrder,
+      client_order_id: takeProfitClientOrderId,
+      combo_type: 'STOP_PROFIT',
+      side: 'SELL',
+      order_type: 'LIMIT',
+      limit_price: String(normalizeOrderPrice(params.takeProfitPrice)),
+    };
+    const stopLossOrder: Record<string, unknown> = {
+      ...baseOrder,
+      client_order_id: stopLossClientOrderId,
+      combo_type: 'STOP_LOSS',
+      side: 'SELL',
+      order_type: 'STOP_LOSS',
+      stop_price: String(normalizeOrderPrice(params.stopPrice)),
+    };
+
+    const raw = await this.req<Record<string, unknown>>(
+      'POST',
+      '/openapi/trade/order/place',
+      {},
+      {
+        account_id: this.accountId,
+        client_combo_order_id: comboClientOrderId,
+        new_orders: [masterOrder, takeProfitOrder, stopLossOrder],
+      },
+    );
+    const rows = extractOrderRows(raw);
+    const entryResult = rows.find(row => (
+      String(row.client_order_id ?? '') === entryClientOrderId
+      || String(row.combo_type ?? '').toUpperCase() === 'MASTER'
+    )) ?? rows[0] ?? raw;
+
+    return {
+      orderId: String(
+        entryResult.order_id
+        ?? raw.order_id
+        ?? raw.combo_order_id
+        ?? entryClientOrderId
+      ),
+      status: String(entryResult.status ?? raw.status ?? 'PENDING'),
+      comboOrderId: String(raw.combo_order_id ?? raw.client_combo_order_id ?? comboClientOrderId),
+      comboClientOrderId,
+      entryClientOrderId,
+      takeProfitClientOrderId,
+      stopLossClientOrderId,
+    };
+  }
+
   async placeProtectiveStop(params: {
     symbol: string;
     qty: number;
     stop: number;
     idempotencyKey: string;
     timeInForce?: WebullTimeInForce;
-  }): Promise<{ orderId: string; status: string }> {
-    return this.submitOrder({
-      client_order_id: params.idempotencyKey.slice(0, 32),
+    tradingSession?: WebullTradingSession;
+  }): Promise<{ orderId: string; status: string; clientOrderId: string }> {
+    const clientId = clientOrderId(params.idempotencyKey, 'trail');
+    const result = await this.submitOrder({
+      client_order_id: clientId,
       combo_type: 'NORMAL',
       symbol: params.symbol,
       side: 'SELL',
@@ -648,8 +759,45 @@ export class WebullClient {
       entrust_type: 'QTY',
       time_in_force: params.timeInForce === 'GTC' ? 'GTC' : 'DAY',
       market: 'US',
-      support_trading_session: 'CORE',
-      stop_price: String(params.stop),
+      support_trading_session: params.tradingSession ?? 'CORE',
+      stop_price: String(normalizeOrderPrice(params.stop)),
+    });
+    return { ...result, clientOrderId: clientId };
+  }
+
+  async replaceProtectiveStop(params: {
+    clientOrderId: string;
+    qty: number;
+    stop: number;
+    timeInForce?: WebullTimeInForce;
+  }): Promise<void> {
+    await this.req('POST', '/openapi/trade/order/replace', {}, {
+      account_id: this.accountId,
+      modify_orders: [{
+        client_order_id: params.clientOrderId,
+        order_type: 'STOP_LOSS',
+        quantity: String(params.qty),
+        time_in_force: params.timeInForce === 'GTC' ? 'GTC' : 'DAY',
+        stop_price: String(normalizeOrderPrice(params.stop)),
+      }],
+    });
+  }
+
+  async replaceTakeProfit(params: {
+    clientOrderId: string;
+    qty: number;
+    limitPrice: number;
+    timeInForce?: WebullTimeInForce;
+  }): Promise<void> {
+    await this.req('POST', '/openapi/trade/order/replace', {}, {
+      account_id: this.accountId,
+      modify_orders: [{
+        client_order_id: params.clientOrderId,
+        order_type: 'LIMIT',
+        quantity: String(params.qty),
+        time_in_force: params.timeInForce === 'GTC' ? 'GTC' : 'DAY',
+        limit_price: String(normalizeOrderPrice(params.limitPrice)),
+      }],
     });
   }
 
