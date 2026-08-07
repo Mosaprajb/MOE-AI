@@ -9,6 +9,7 @@ import { health } from './routes/health';
 import { webhook } from './routes/webhook';
 import { trading } from './routes/trading';
 import { liveControl } from './routes/live-control';
+import { liveObservation } from './routes/live-observation';
 import { scanner } from './routes/scanner';
 import { getTradingMode, setTradingMode } from './lib/risk';
 import {
@@ -32,6 +33,28 @@ export { TradeProtectionCoordinator } from './lib/trade-protection-coordinator';
 const app = new Hono<{ Bindings: WorkerEnv }>();
 
 app.use('*', corsMiddleware);
+
+const publicLiveReadPaths = new Set([
+  '/api/trading/live/status',
+  '/api/trading/live/readiness',
+  '/api/trading/live/observation',
+]);
+
+// Detailed Live account reads contain balances, positions, and order data.
+// Keep those behind the authenticated native session while allowing only
+// sanitized status/readiness/observation probes to remain public for deploy CI.
+app.use('/api/trading/live/*', async (c, next) => {
+  if (c.req.method === 'GET' && !publicLiveReadPaths.has(c.req.path)) {
+    const session = await readValidMobileSession(c.req.raw, c.env);
+    if (!session) return c.json({ ok: false, error: 'Authentication required' }, 401);
+  }
+  await next();
+  if (c.req.method === 'GET') {
+    c.res.headers.set('cache-control', 'no-store');
+    c.res.headers.set('pragma', 'no-cache');
+  }
+  return undefined;
+});
 
 app.use('/api/scanner/*', async (c, next) => {
   if (c.req.method === 'POST' && c.req.path === '/api/scanner/run') {
@@ -207,6 +230,7 @@ app.route('/api/tradingview', webhook);
 app.route('/api/tradingview', mobileTradingView);
 app.route('/api/mobile', mobileApi);
 app.route('/api/mobile/trading-control', mobileTradingControl);
+app.route('/api/trading/live/observation', liveObservation);
 app.route('/api/trading/live', liveControl);
 app.route('/api/trading', trading);
 app.route('/api/scanner', scanner);
@@ -248,6 +272,7 @@ app.get('/', c => c.json({
     'GET  /api/trading/sandbox/dashboard',
     'GET  /api/trading/live/dashboard',
     'GET  /api/trading/live/status',
+    'GET  /api/trading/live/observation',
     'POST /api/trading/live/unlock',
     'POST /api/trading/live/lock',
     'GET  /api/trading/mode',
