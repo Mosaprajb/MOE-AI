@@ -71,6 +71,7 @@ struct AuthenticationView: View {
 
             if session.faceIDAvailable && session.hasSavedPIN {
               Button {
+                pinFocused = false
                 Task { await session.unlockWithFaceID() }
               } label: {
                 Label("فتح باستخدام Face ID", systemImage: "faceid")
@@ -138,6 +139,7 @@ struct AuthenticationView: View {
   }
 
   private func authenticate() {
+    pinFocused = false
     let currentPIN = pin
     Task {
       await session.login(pin: currentPIN, remember: rememberPIN)
