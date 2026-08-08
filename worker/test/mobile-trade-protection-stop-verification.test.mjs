@@ -62,3 +62,68 @@ test('coordinator no longer closes broker-protected trades directly from stop()'
   assert.match(stopMethod, /stopOrderClientIds/);
   assert.match(stopMethod, /status: 202/);
 });
+
+test('position disappearance verifies protection cancellation before CLOSED', () => {
+  const source = fs.readFileSync(
+    new URL('../src/lib/trade-protection-coordinator.ts', import.meta.url),
+    'utf8',
+  );
+
+  const reconcileStart =
+    source.indexOf('private async reconcileTrade(');
+
+  const start =
+    source.indexOf('    if (!position) {', reconcileStart);
+
+  const end =
+    source.indexOf('    const actualEntryPrice', start);
+
+  assert.ok(start >= 0);
+  assert.ok(end > start);
+
+  const noPosition = source.slice(start, end);
+
+  assert.match(
+    noPosition,
+    /stopProtectionOrderIdsForPhase/,
+  );
+
+  assert.match(
+    noPosition,
+    /trade\.phase = 'CANCELLING_ALL_PROTECTION'/,
+  );
+
+  assert.match(
+    noPosition,
+    /await this\.persistTradeSnapshot\(trade\)/,
+  );
+
+  assert.match(
+    noPosition,
+    /await safeCancel\(client, targetIds\)/,
+  );
+
+  const transitionIndex =
+    noPosition.indexOf(
+      "trade.phase = 'CANCELLING_ALL_PROTECTION'",
+    );
+
+  const persistIndex =
+    noPosition.indexOf(
+      'await this.persistTradeSnapshot(trade)',
+    );
+
+  const cancelIndex =
+    noPosition.indexOf(
+      'await safeCancel(client, targetIds)',
+    );
+
+  assert.ok(transitionIndex >= 0);
+  assert.ok(persistIndex > transitionIndex);
+  assert.ok(cancelIndex > persistIndex);
+
+  assert.doesNotMatch(
+    noPosition,
+    /await safeCancel\(client, \[\s*trade\.takeProfitClientOrderId/,
+  );
+});
