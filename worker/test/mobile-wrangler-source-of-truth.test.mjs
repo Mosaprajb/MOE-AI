@@ -59,6 +59,10 @@ test('all environments generate standalone Wrangler 4 configs locally', async ()
       assert.match(generated, new RegExp(`name = "moerand-alerts${environment === 'production' ? '' : `-${environment}`}"`));
       assert.doesNotMatch(generated, /\[env\./);
       assert.doesNotMatch(generated, /\[\[migrations\]\]/);
+      assert.match(
+        generated,
+        /\[triggers\]\ncrons = \[\]/,
+      );
       for (const className of requiredDurableObjects) {
         assert.match(generated, new RegExp(`\\[exports\\.${className}\\]`));
       }
@@ -69,6 +73,25 @@ test('all environments generate standalone Wrangler 4 configs locally', async ()
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
+});
+
+test('scheduled automation remains explicitly disabled in every environment', async () => {
+  const config = await loadConfig();
+
+  for (const environment of supportedEnvironments) {
+    assert.deepEqual(
+      config.env[environment].triggers,
+      { crons: [] },
+    );
+  }
+
+  const unsafe = structuredClone(config);
+  unsafe.env.production.triggers.crons = ['* * * * *'];
+
+  assert.throws(
+    () => validateCanonicalConfig(unsafe),
+    /must remain empty until scheduled automation is explicitly safety-reviewed/,
+  );
 });
 
 test('future Durable Object removals require explicit storage-free tombstones', async () => {

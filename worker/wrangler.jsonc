@@ -34,6 +34,9 @@
   "env": {
     "production": {
       "name": "moerand-alerts",
+      "triggers": {
+        "crons": []
+      },
       "kv_namespaces": [
         {
           "binding": "CONFIG",
@@ -80,6 +83,9 @@
     },
     "staging": {
       "name": "moerand-alerts-staging",
+      "triggers": {
+        "crons": []
+      },
       "kv_namespaces": [
         {
           "binding": "CONFIG"
@@ -123,6 +129,9 @@
     },
     "sandbox": {
       "name": "moerand-alerts-sandbox",
+      "triggers": {
+        "crons": []
+      },
       "kv_namespaces": [
         {
           "binding": "CONFIG"

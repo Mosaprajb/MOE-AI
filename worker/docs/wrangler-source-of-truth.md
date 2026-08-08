@@ -16,3 +16,14 @@ When a Durable Object is intentionally removed, replace its live declaration wit
 ```
 
 Do not add `migrations` or restore remote metadata discovery. The generator rejects both legacy migrations and malformed tombstones before deployment.
+
+## Scheduled automation
+
+Cron Triggers are intentionally explicit and disabled in every committed
+environment with `triggers.crons = []`. This ensures deployment removes any
+stale previously configured Cron Trigger instead of silently preserving it.
+
+Do not enable a Cron Trigger by configuration alone. Scheduled automation
+requires an explicit Worker `scheduled()` handler, environment-specific
+safety gating, regression coverage, and a separate review of any broker-order
+side effects.

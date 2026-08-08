@@ -142,6 +142,18 @@ export function validateExports(exportsMap, moduleExports = null) {
   }
 }
 
+function validateCronTriggerPolicy(triggers, path) {
+  if (!isObject(triggers) || !Array.isArray(triggers.crons)) {
+    throw new Error(`${path}.crons must be an array`);
+  }
+
+  if (triggers.crons.length !== 0) {
+    throw new Error(
+      `${path}.crons must remain empty until scheduled automation is explicitly safety-reviewed`,
+    );
+  }
+}
+
 function validateDurableObjectBindings(durableObjects, exportsMap) {
   if (durableObjects == null) return;
   if (!isObject(durableObjects) || !Array.isArray(durableObjects.bindings)) {
@@ -179,6 +191,11 @@ export function validateCanonicalConfig(config, moduleExports = null) {
     if (!isObject(config.env[environment])) {
       throw new Error(`wrangler.jsonc is missing env.${environment}`);
     }
+
+    validateCronTriggerPolicy(
+      config.env[environment].triggers,
+      `env.${environment}.triggers`,
+    );
   }
   return config;
 }
@@ -234,11 +251,21 @@ export function serializeToml(config) {
     'kv_namespaces',
     'd1_databases',
     'vars',
+    'triggers',
   ]);
   for (const [key, value] of Object.entries(config)) {
     if (reserved.has(key) || value === undefined || value === null) continue;
     if (isObject(value)) throw new Error(`Unsupported top-level object ${key} in generated Wrangler TOML`);
     lines.push(scalarLine(key, value));
+  }
+
+  if (isObject(config.triggers)) {
+    lines.push('', '[triggers]');
+    for (const [key, value] of Object.entries(config.triggers)) {
+      if (value !== undefined && value !== null) {
+        lines.push(scalarLine(key, value));
+      }
+    }
   }
 
   for (const [className, declaration] of Object.entries(config.exports ?? {})) {
