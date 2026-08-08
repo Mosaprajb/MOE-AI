@@ -96,3 +96,51 @@ test('new liquidation submission is never immediately marked CLOSED', () => {
   assert.match(emergencyExit, /submitLiquidationOrder/);
   assert.doesNotMatch(emergencyExit, /trade\.phase = 'CLOSED'/);
 });
+
+test('uncertain liquidation checks Order Detail before resubmission', () => {
+  const source = fs.readFileSync(
+    new URL('../src/lib/trade-protection-coordinator.ts', import.meta.url),
+    'utf8',
+  );
+
+  const start =
+    source.indexOf('private async reconcileLiquidation(');
+
+  const end =
+    source.indexOf('private async reconcileTrade(', start);
+
+  assert.ok(start >= 0);
+  assert.ok(end > start);
+
+  const reconcile = source.slice(start, end);
+
+  const detailLookup =
+    reconcile.indexOf(
+      'const rows = await getWebullOrderDetail',
+    );
+
+  const uncertainBranch =
+    reconcile.indexOf(
+      'if (!trade.liquidationSubmissionConfirmed && !detail)',
+    );
+
+  const retrySubmission =
+    reconcile.indexOf(
+      'await this.submitLiquidationOrder(',
+      uncertainBranch,
+    );
+
+  assert.ok(detailLookup >= 0);
+  assert.ok(uncertainBranch > detailLookup);
+  assert.ok(retrySubmission > uncertainBranch);
+
+  assert.match(
+    reconcile,
+    /SUBMISSION_NOT_OBSERVED/,
+  );
+
+  assert.doesNotMatch(
+    reconcile,
+    /if \(!trade\.liquidationSubmissionConfirmed\) \{\s*await this\.submitLiquidationOrder/,
+  );
+});

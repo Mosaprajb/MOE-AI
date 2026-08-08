@@ -518,15 +518,6 @@ export class TradeProtectionCoordinator {
       return;
     }
 
-    if (!trade.liquidationSubmissionConfirmed) {
-      await this.submitLiquidationOrder(
-        trade,
-        client,
-        position,
-      );
-      return;
-    }
-
     if (orderDetailBudget.remaining < 1) return;
     orderDetailBudget.remaining -= 1;
 
@@ -541,16 +532,44 @@ export class TradeProtectionCoordinator {
       trade.closeClientOrderId,
     );
 
+    if (!trade.liquidationSubmissionConfirmed && !detail) {
+      trade.liquidationStatus = 'SUBMISSION_NOT_OBSERVED';
+      trade.lastError =
+        'Webull did not expose the liquidation order before retry; '
+        + 'the same client order ID will be resubmitted.';
+      trade.updatedAt = nowIso();
+
+      // Persist the observed uncertainty before retrying the same
+      // idempotency key. Never generate a second liquidation ID here.
+      await this.persistTradeSnapshot(trade);
+
+      await this.submitLiquidationOrder(
+        trade,
+        client,
+        position,
+      );
+      return;
+    }
+
     if (!detail) {
       trade.liquidationSubmissionConfirmed = false;
       trade.liquidationStatus = 'DETAIL_NOT_FOUND';
       trade.lastError =
         'Webull did not return the liquidation order detail; '
-        + 'the same client order ID will be retried.';
+        + 'the same client order ID will be checked before retry.';
       trade.updatedAt = nowIso();
 
       await this.persistTradeSnapshot(trade);
       return;
+    }
+
+    if (!trade.liquidationSubmissionConfirmed) {
+      trade.liquidationSubmissionConfirmed = true;
+      trade.liquidationStatus = detail.status;
+      trade.lastError = undefined;
+      trade.updatedAt = nowIso();
+
+      await this.persistTradeSnapshot(trade);
     }
 
     trade.liquidationStatus = detail.status;
