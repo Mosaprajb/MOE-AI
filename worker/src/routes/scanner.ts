@@ -5,7 +5,7 @@ import type { ScanCandidate } from '../lib/strategy';
 import { scoreStock, confidenceMultiplier } from '../lib/strategy';
 import { fetchCandles, fetchBatchQuotes, fetchLivePrices } from '../lib/market-data';
 import { loadWatchlist, ensureWatchlistTable, addToWatchlist, removeFromWatchlist, DEFAULT_WATCHLIST } from '../lib/watchlist';
-import { ensureScannerTables, savePosition, managePositions, loadOpenPositions } from '../lib/position-manager';
+import { ensureScannerTables, savePosition, managePositions, loadOpenPositions, requestScannerPositionExit } from '../lib/position-manager';
 import { getKillSwitch, getTradingMode } from '../lib/risk';
 import { WebullClient } from '../lib/webull';
 import { getTradingSettings } from './trading-settings';
@@ -235,69 +235,47 @@ function clamp(v: number, min: number, max: number) {
 
 scanner.post('/positions/:id/close', async (c) => {
   const posId = c.req.param('id');
-  const mode  = (await getTradingMode(c.env)) as TradingMode;
+  const mode = (await getTradingMode(c.env)) as TradingMode;
   await ensureScannerTables(c.env);
 
-  const row = await c.env.DB?.prepare(
-    `SELECT * FROM scanner_positions WHERE id = ? AND status = 'OPEN'`
-  ).bind(posId).first<Record<string, unknown>>();
+  const row = await c.env.DB?.prepare(`
+    SELECT id, symbol, status
+    FROM scanner_positions
+    WHERE id = ? AND mode = ?
+      AND status IN ('OPEN', 'EXIT_PENDING')
+  `).bind(posId, mode).first<Record<string, unknown>>();
 
-  if (!row) return c.json({ error: 'Position not found or already closed' }, 404);
-
-  const sym = String(row.symbol);
-  const qty = Number(row.quantity);
-  const entryPrice = Number(row.entry_price);
-
-  let exitPrice = Number(row.current_price ?? row.entry_price);
-  try {
-    const { fetchQuote } = await import('../lib/market-data');
-    const q = await fetchQuote(sym);
-    exitPrice = q.price;
-  } catch { /* use stored price */ }
-
-  const client = WebullClient.fromEnv(c.env, mode);
-  let webullOrderId: string | undefined;
-  if (client) {
-    try {
-      const r = await client.placeOrder({
-        symbol: sym,
-        side: 'SELL',
-        type: 'MARKET',
-        qty,
-        price: exitPrice,
-        idempotencyKey: `manual-close-${posId}-${Date.now()}`,
-      });
-      webullOrderId = r.orderId;
-    } catch (e) {
-      return c.json({ error: `Webull order failed: ${String(e)}` }, 502);
-    }
+  if (!row) {
+    return c.json(
+      { error: 'Position not found or already closed' },
+      404,
+    );
   }
 
-  const pnl    = (exitPrice - entryPrice) * qty;
-  const pnlPct = ((exitPrice - entryPrice) / entryPrice) * 100;
-  const now    = new Date().toISOString();
+  try {
+    const result = await requestScannerPositionExit(
+      c.env,
+      mode,
+      posId,
+      'MANUAL',
+    );
 
-  await c.env.DB?.prepare(`
-    UPDATE scanner_positions SET
-      status = 'CLOSED', exit_price = ?, pnl = ?, close_reason = 'MANUAL',
-      current_price = ?, closed_at = ?, updated_at = ?
-    WHERE id = ?
-  `).bind(exitPrice, pnl, exitPrice, now, now, posId).run();
-
-  await c.env.DB?.prepare(`
-    INSERT OR IGNORE INTO trades
-      (id, symbol, side, quantity, entry_price, exit_price, pnl, pnl_pct,
-       stop_loss, take_profit, signal, status, mode, opened_at, closed_at)
-    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-  `).bind(
-    `trade-${posId}`, sym, 'BUY', qty,
-    entryPrice, exitPrice, pnl, pnlPct,
-    row.stop_loss, row.take_profit,
-    `Manual close`,
-    'CLOSED', mode, row.opened_at, now,
-  ).run();
-
-  return c.json({ ok: true, symbol: sym, exitPrice, pnl, webullOrderId });
+    return c.json({
+      ok: true,
+      pending: true,
+      symbol: String(row.symbol),
+      exitPrice: result.exitPrice,
+      clientOrderId: result.clientOrderId,
+      orderId: result.orderId,
+      orderStatus: result.orderStatus,
+      idempotent: result.idempotent,
+    }, 202);
+  } catch (e) {
+    return c.json(
+      { error: `Webull order failed: ${String(e)}` },
+      502,
+    );
+  }
 });
 
 scanner.get('/search', async (c) => {

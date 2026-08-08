@@ -4,6 +4,11 @@
 import type { Env, TradingMode } from './types';
 import type { ScannerPosition } from './types';
 import { WebullClient } from './webull';
+import {
+  getWebullOrderDetail,
+  isWebullOrderFullyFilled,
+  isWebullOrderTerminal,
+} from './webull-order-detail';
 import { fetchQuote } from './market-data';
 
 /** Ensure scanner_positions, scanner_runs, and trades tables exist */
@@ -98,7 +103,7 @@ export async function syncScannerOrders(env: Env, mode: TradingMode): Promise<vo
       client.getOrders(),
       env.DB.prepare(`
         SELECT * FROM scanner_positions
-        WHERE mode = ? AND status IN ('PENDING', 'OPEN')
+        WHERE mode = ? AND status IN ('PENDING', 'OPEN', 'EXIT_PENDING')
       `).bind(mode).all<Record<string, unknown>>(),
     ]);
 
@@ -116,6 +121,134 @@ export async function syncScannerOrders(env: Env, mode: TradingMode): Promise<vo
       const status = String(row.status).toUpperCase();
       const brokerPosition = positionBySymbol.get(symbol);
 
+      if (status === 'EXIT_PENDING') {
+        const clientOrderId = String(row.webull_order_id ?? '').trim();
+        const currentPrice = brokerPosition && brokerPosition.currentPrice > 0
+          ? brokerPosition.currentPrice
+          : Number(row.current_price ?? row.exit_price ?? row.entry_price);
+
+        if (!clientOrderId) {
+          console.error('SCANNER_EXIT_CLIENT_ID_MISSING', JSON.stringify({
+            id,
+            symbol,
+            mode,
+          }));
+          continue;
+        }
+
+        try {
+          const details = await getWebullOrderDetail(
+            env,
+            mode,
+            clientOrderId,
+          );
+
+          const detail = details.find(
+            candidate => candidate.clientOrderId === clientOrderId,
+          );
+
+          if (!detail) {
+            if (brokerPosition && brokerPosition.quantity > 0) {
+              await client.placeOrder({
+                symbol,
+                side: 'SELL',
+                type: 'MARKET',
+                qty: brokerPosition.quantity,
+                price: currentPrice,
+                idempotencyKey: clientOrderId,
+              });
+            } else {
+              try {
+                await client.cancelOrder(clientOrderId);
+              } catch {
+                // Reconciliation will retry without declaring CLOSED.
+              }
+            }
+
+            await env.DB.prepare(`
+              UPDATE scanner_positions
+              SET current_price = ?, updated_at = ?
+              WHERE id = ?
+            `).bind(currentPrice, now, id).run();
+            continue;
+          }
+
+          const fullyFilled = isWebullOrderFullyFilled(detail)
+            || (
+              detail.totalQuantity > 0
+              && detail.filledQuantity >= detail.totalQuantity
+            );
+
+          const terminal = fullyFilled
+            || isWebullOrderTerminal(detail.status);
+
+          if (!brokerPosition || brokerPosition.quantity <= 0) {
+            if (terminal) {
+              await finalizeScannerExit(env, row, now);
+              continue;
+            }
+
+            try {
+              await client.cancelOrder(clientOrderId);
+            } catch {
+              // Keep EXIT_PENDING until Webull reports a terminal order.
+            }
+
+            await env.DB.prepare(`
+              UPDATE scanner_positions
+              SET current_price = ?, updated_at = ?
+              WHERE id = ?
+            `).bind(currentPrice, now, id).run();
+            continue;
+          }
+
+          if (fullyFilled) {
+            await env.DB.prepare(`
+              UPDATE scanner_positions
+              SET current_price = ?, updated_at = ?
+              WHERE id = ?
+            `).bind(currentPrice, now, id).run();
+            continue;
+          }
+
+          if (isWebullOrderTerminal(detail.status)) {
+            await env.DB.prepare(`
+              UPDATE scanner_positions SET
+                status = 'OPEN',
+                quantity = ?,
+                current_price = ?,
+                highest_price = MAX(highest_price, ?),
+                webull_order_id = NULL,
+                exit_price = NULL,
+                close_reason = NULL,
+                updated_at = ?
+              WHERE id = ?
+            `).bind(
+              brokerPosition.quantity,
+              currentPrice,
+              currentPrice,
+              now,
+              id,
+            ).run();
+            continue;
+          }
+
+          await env.DB.prepare(`
+            UPDATE scanner_positions
+            SET current_price = ?, updated_at = ?
+            WHERE id = ?
+          `).bind(currentPrice, now, id).run();
+        } catch (error) {
+          console.error('SCANNER_EXIT_RECONCILE_ERROR', JSON.stringify({
+            id,
+            symbol,
+            mode,
+            error: error instanceof Error ? error.message : String(error),
+          }));
+        }
+
+        continue;
+      }
       if (brokerPosition && brokerPosition.quantity > 0) {
         const avgPrice = brokerPosition.averagePrice > 0
           ? brokerPosition.averagePrice
@@ -141,7 +274,7 @@ export async function syncScannerOrders(env: Env, mode: TradingMode): Promise<vo
         continue;
       }
 
-      if (openOrderSymbols.has(symbol)) {
+      if (status === 'PENDING' && openOrderSymbols.has(symbol)) {
         if (status !== 'PENDING') {
           await env.DB.prepare(`
             UPDATE scanner_positions
@@ -179,7 +312,7 @@ export async function loadOpenPositions(env: Env, mode: TradingMode): Promise<Sc
   await syncScannerOrders(env, mode);
   try {
     const rows = await env.DB
-      .prepare(`SELECT * FROM scanner_positions WHERE status IN ('OPEN', 'PENDING') AND mode = ?`)
+      .prepare(`SELECT * FROM scanner_positions WHERE status IN ('OPEN', 'PENDING', 'EXIT_PENDING') AND mode = ?`)
       .bind(mode)
       .all<Record<string, unknown>>();
     return (rows.results ?? []).map(mapRow);
@@ -203,6 +336,199 @@ export async function savePosition(env: Env, pos: ScannerPosition): Promise<void
   ).run();
 }
 
+function scannerExitClientOrderId(): string {
+  return `scx${crypto.randomUUID().replaceAll('-', '').slice(0, 24)}`;
+}
+
+async function finalizeScannerExit(
+  env: Env,
+  row: Record<string, unknown>,
+  now: string,
+): Promise<void> {
+  if (!env.DB) return;
+
+  const id = String(row.id);
+  const symbol = String(row.symbol);
+  const mode = String(row.mode);
+  const quantity = Number(row.quantity ?? 0);
+  const entryPrice = Number(row.entry_price ?? 0);
+  const requestedExitPrice = Number(
+    row.exit_price ?? row.current_price ?? row.entry_price,
+  );
+  const exitPrice = requestedExitPrice > 0
+    ? requestedExitPrice
+    : entryPrice;
+  const pnl = (exitPrice - entryPrice) * quantity;
+  const pnlPct = entryPrice > 0
+    ? ((exitPrice - entryPrice) / entryPrice) * 100
+    : 0;
+  const closeReason = String(
+    row.close_reason ?? 'BROKER_POSITION_NOT_FOUND',
+  );
+  const signal = closeReason === 'MANUAL'
+    ? 'Manual close'
+    : `Scanner(${String(row.confidence)},score=${Number(row.score)})`;
+
+  await env.DB.prepare(`
+    UPDATE scanner_positions SET
+      status = 'CLOSED',
+      exit_price = ?,
+      pnl = ?,
+      current_price = ?,
+      closed_at = ?,
+      updated_at = ?
+    WHERE id = ?
+  `).bind(
+    exitPrice,
+    pnl,
+    exitPrice,
+    now,
+    now,
+    id,
+  ).run();
+
+  await env.DB.prepare(`
+    INSERT OR IGNORE INTO trades
+      (id, symbol, side, quantity, entry_price, exit_price, pnl, pnl_pct,
+       stop_loss, take_profit, signal, status, mode, opened_at, closed_at)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+  `).bind(
+    `trade-${id}`,
+    symbol,
+    'BUY',
+    quantity,
+    entryPrice,
+    exitPrice,
+    pnl,
+    pnlPct,
+    row.stop_loss,
+    row.take_profit,
+    signal,
+    'CLOSED',
+    mode,
+    row.opened_at,
+    now,
+  ).run();
+}
+
+export async function requestScannerPositionExit(
+  env: Env,
+  mode: TradingMode,
+  positionId: string,
+  closeReason: string,
+  priceValue?: number,
+): Promise<{
+  pending: true;
+  idempotent: boolean;
+  clientOrderId: string;
+  orderId?: string;
+  orderStatus: string;
+  exitPrice: number;
+}> {
+  if (!env.DB) {
+    throw new Error('Scanner database is unavailable.');
+  }
+
+  await ensureScannerTables(env);
+
+  const row = await env.DB.prepare(`
+    SELECT * FROM scanner_positions
+    WHERE id = ? AND mode = ?
+      AND status IN ('OPEN', 'EXIT_PENDING')
+  `).bind(positionId, mode).first<Record<string, unknown>>();
+
+  if (!row) {
+    throw new Error('Scanner position is not open.');
+  }
+
+  if (String(row.status).toUpperCase() === 'EXIT_PENDING') {
+    return {
+      pending: true,
+      idempotent: true,
+      clientOrderId: String(row.webull_order_id ?? ''),
+      orderStatus: 'EXIT_PENDING',
+      exitPrice: Number(
+        row.exit_price ?? row.current_price ?? row.entry_price,
+      ),
+    };
+  }
+
+  const client = WebullClient.fromEnv(env, mode);
+  if (!client) {
+    throw new Error(`${mode} Webull credentials are unavailable.`);
+  }
+
+  let exitPrice = Number(
+    priceValue ?? row.current_price ?? row.entry_price,
+  );
+
+  if (priceValue == null) {
+    try {
+      const quote = await fetchQuote(String(row.symbol));
+      if (quote.price > 0) exitPrice = quote.price;
+    } catch {
+      // Fall back to the last stored broker/scanner price.
+    }
+  }
+
+  if (!(exitPrice > 0)) {
+    throw new Error('A valid exit price is required.');
+  }
+
+  const quantity = Number(row.quantity ?? 0);
+  if (!(quantity > 0)) {
+    throw new Error('A positive scanner position quantity is required.');
+  }
+
+  const clientOrderId = scannerExitClientOrderId();
+  const now = new Date().toISOString();
+
+  // Atomically claim this OPEN row before contacting Webull.
+  // Concurrent close requests must never submit a second SELL.
+  const claim = await env.DB.prepare(`
+    UPDATE scanner_positions SET
+      status = 'EXIT_PENDING',
+      webull_order_id = ?,
+      exit_price = ?,
+      current_price = ?,
+      close_reason = ?,
+      updated_at = ?
+    WHERE id = ? AND mode = ? AND status = 'OPEN'
+  `).bind(
+    clientOrderId,
+    exitPrice,
+    exitPrice,
+    closeReason,
+    now,
+    positionId,
+    mode,
+  ).run();
+
+  if (Number(claim.meta.changes ?? 0) !== 1) {
+    throw new Error(
+      'Scanner position exit was already claimed or is no longer open.',
+    );
+  }
+
+  const result = await client.placeOrder({
+    symbol: String(row.symbol),
+    side: 'SELL',
+    type: 'MARKET',
+    qty: quantity,
+    price: exitPrice,
+    idempotencyKey: clientOrderId,
+  });
+
+  return {
+    pending: true,
+    idempotent: false,
+    clientOrderId,
+    orderId: result.orderId,
+    orderStatus: String(result.status ?? 'PENDING').toUpperCase(),
+    exitPrice,
+  };
+}
+
 /** Manage only FILLED/OPEN positions: update trailing SL and execute exits. */
 export async function managePositions(env: Env, mode: TradingMode): Promise<{
   managed: number; closed: number; errors: string[];
@@ -211,7 +537,6 @@ export async function managePositions(env: Env, mode: TradingMode): Promise<{
   const positions = tracked.filter(position => String(position.status).toUpperCase() === 'OPEN');
   if (positions.length === 0) return { managed: 0, closed: 0, errors: [] };
 
-  const client = WebullClient.fromEnv(env, mode);
   let closed = 0;
   const errors: string[] = [];
 
@@ -227,39 +552,18 @@ export async function managePositions(env: Env, mode: TradingMode): Promise<{
       if (price >= pos.takeProfit) closeReason = 'TP_HIT';
       else if (price <= newSL) closeReason = 'SL_HIT';
 
-      if (closeReason && client) {
+      if (closeReason) {
         try {
-          await client.placeOrder({
-            symbol: pos.symbol,
-            side: 'SELL',
-            type: 'MARKET',
-            qty: pos.quantity,
+          await requestScannerPositionExit(
+            env,
+            mode,
+            pos.id,
+            closeReason,
             price,
-            idempotencyKey: `scanner-close-${pos.id}`,
-          });
-          const pnl = (price - pos.entryPrice) * pos.quantity;
-          const pnlPct = ((price - pos.entryPrice) / pos.entryPrice) * 100;
-          const now = new Date().toISOString();
-          await env.DB?.prepare(`
-            UPDATE scanner_positions SET
-              status = 'CLOSED', exit_price = ?, pnl = ?, close_reason = ?,
-              current_price = ?, closed_at = ?, updated_at = ?
-            WHERE id = ?
-          `).bind(price, pnl, closeReason, price, now, now, pos.id).run();
-          await env.DB?.prepare(`
-            INSERT OR IGNORE INTO trades
-              (id, symbol, side, quantity, entry_price, exit_price, pnl, pnl_pct,
-               stop_loss, take_profit, signal, status, mode, opened_at, closed_at)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-          `).bind(
-            `trade-${pos.id}`, pos.symbol, 'BUY', pos.quantity,
-            pos.entryPrice, price, pnl, pnlPct,
-            pos.stopLoss, pos.takeProfit,
-            `Scanner(${pos.confidence},score=${pos.score})`,
-            'CLOSED', pos.mode, pos.openedAt, now,
-          ).run();
-          closed++;
-        } catch (e) { errors.push(`Close ${pos.symbol}: ${String(e)}`); }
+          );
+        } catch (e) {
+          errors.push(`Close ${pos.symbol}: ${String(e)}`);
+        }
       } else {
         await env.DB?.prepare(`
           UPDATE scanner_positions SET

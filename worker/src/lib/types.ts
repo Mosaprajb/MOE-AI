@@ -81,7 +81,7 @@ export interface ScannerPosition {
   confidence:    'HIGH' | 'MEDIUM';
   score:         number;
   webullOrderId?: string;
-  status:        'OPEN' | 'CLOSED';
+  status:        'PENDING' | 'OPEN' | 'EXIT_PENDING' | 'CLOSED' | 'CANCELLED';
   mode:          TradingMode;
   openedAt:      string;
   updatedAt:     string;
