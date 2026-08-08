@@ -648,16 +648,36 @@ export class TradeProtectionCoordinator {
       if (trade.phase === 'WAITING_POSITION') {
         trade.phase = 'ERROR';
         trade.lastError = 'The entry order did not create a broker position before the protection timeout.';
-      } else {
-        await safeCancel(client, [
-          trade.takeProfitClientOrderId,
-          trade.stopLossClientOrderId,
-          trade.trailingStopClientOrderId,
-        ]);
+        trade.updatedAt = nowIso();
+        return;
+      }
+
+      const sourcePhase = trade.phase as StopProtectionSourcePhase;
+      const targetIds = stopProtectionOrderIdsForPhase(
+        sourcePhase,
+        trade,
+      );
+
+      if (targetIds.length === 0) {
         trade.phase = 'CLOSED';
         trade.lastError = undefined;
+        trade.updatedAt = nowIso();
+        return;
       }
+
+      trade.stopSourcePhase = sourcePhase;
+      trade.stopRequestedAt ??= nowIso();
+      trade.stopOrderClientIds = targetIds;
+      trade.stopOrderStatuses = {};
+      trade.phase = 'CANCELLING_ALL_PROTECTION';
+      trade.lastError = undefined;
       trade.updatedAt = nowIso();
+
+      // Persist the verification phase before contacting Webull.
+      // CLOSED is allowed only after every protection order is terminal.
+      await this.persistTradeSnapshot(trade);
+
+      await safeCancel(client, targetIds);
       return;
     }
 
