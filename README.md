@@ -43,19 +43,23 @@ The production PWA is exported for GitHub Pages. Browser notifications require H
 
 The on-device engine ports the supplied `Moe Day Trading Indicator v6.3.1 Master Alert` rules. It calculates EMA, ATR, RSI, MACD, VWAP, relative volume, breakout/reclaim triggers, preferred-timeframe context, position sizing, repeated entries, the smart rising stop, and weakness exits.
 
-Foreground scanning runs inside the PWA. The Cloudflare Worker below provides the always-on scanner required for notifications while the app is closed.
+Foreground scanning runs inside the PWA. The Cloudflare Worker exposes server-side scanner and trading APIs, while automatic scheduled scanning remains intentionally disabled until a dedicated scheduler is safety-reviewed and explicitly activated.
 
-## Background alert worker
+## Cloudflare Worker
 
-`worker/src/index.js` contains the Cloudflare Worker used for closed-app scanning and Web Push. It uses a SQLite-backed Durable Object to persist device subscriptions, per-symbol MOE state, and signal deduplication. The included Cron Trigger runs once per minute and evaluates only the timeframes whose candles have just closed.
+The current Cloudflare Worker entry point is `worker/src/index.ts`. It exposes
+the TradingView bridge, native mobile APIs, Sandbox scanner routes, broker
+reconciliation, and production safety/read-only controls.
 
-Cloudflare must configure these encrypted secrets before background scanning is activated:
+The scanner can be invoked explicitly through `POST /api/scanner/run`.
+Automatic Cron execution is intentionally disabled in every committed
+environment. `worker/wrangler.jsonc` declares `triggers.crons = []` so a
+deployment also removes any stale Cron Trigger that may have existed from an
+older Worker configuration.
 
-- `ALPACA_KEY_ID`
-- `ALPACA_SECRET_KEY`
-- `VAPID_PRIVATE_JWK`
-
-The public VAPID key, application origin, application URL, Durable Object binding, and one-minute Cron Trigger are declared in `wrangler.jsonc`.
+A future scheduled scanner requires a dedicated `scheduled()` handler and a
+separate safety-reviewed activation. It must remain fail-closed for Live
+execution.
 
 ## Important
 
