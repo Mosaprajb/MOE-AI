@@ -19,6 +19,10 @@ import {
   type StopProtectionSourcePhase,
 } from './trade-protection-stop-verification';
 import {
+  liquidationOrderOutcome,
+  prioritizeLiquidationTransitions,
+} from './trade-protection-liquidation-verification';
+import {
   protectionPreview,
   trailingStopForPrice,
   type TradingSettings,
@@ -29,12 +33,14 @@ const POLL_INTERVAL_MS = 2_000;
 const RETRY_INTERVAL_MS = 2_000;
 const ENTRY_WAIT_TIMEOUT_MS = 2 * 60 * 1_000;
 const ORDER_DETAIL_REQUESTS_PER_CYCLE = 2;
+const MAX_LIQUIDATION_ATTEMPTS = 3;
 
 type ProtectionPhase =
   | 'WAITING_POSITION'
   | 'INITIAL_PROTECTION'
   | 'CANCELLING_INITIAL_PROTECTION'
   | 'CANCELLING_ALL_PROTECTION'
+  | 'LIQUIDATING_POSITION'
   | 'TRAILING'
   | 'CLOSED'
   | 'ERROR';
@@ -75,6 +81,10 @@ type ProtectedTrade = {
   protectionComboClientOrderId: string;
   trailingStopClientOrderId: string;
   closeClientOrderId: string;
+  liquidationAttempt?: number;
+  liquidationSubmissionConfirmed?: boolean;
+  liquidationSubmittedAt?: string;
+  liquidationStatus?: string;
   ocoCancellationRequestedAt?: string;
   takeProfitCancellationStatus?: string;
   stopLossCancellationStatus?: string;
@@ -165,6 +175,7 @@ function activePhase(phase: ProtectionPhase): boolean {
     || phase === 'INITIAL_PROTECTION'
     || phase === 'CANCELLING_INITIAL_PROTECTION'
     || phase === 'CANCELLING_ALL_PROTECTION'
+    || phase === 'LIQUIDATING_POSITION'
     || phase === 'TRAILING';
 }
 
@@ -233,9 +244,11 @@ export class TradeProtectionCoordinator {
 
   async alarm(): Promise<void> {
     const trades = await this.loadTrades();
-    const activeTrades = prioritizeStopCancellationTransitions(
-      prioritizeOcoCancellationTransitions(
-        Object.values(trades).filter(trade => activePhase(trade.phase)),
+    const activeTrades = prioritizeLiquidationTransitions(
+      prioritizeStopCancellationTransitions(
+        prioritizeOcoCancellationTransitions(
+          Object.values(trades).filter(trade => activePhase(trade.phase)),
+        ),
       ),
     );
     if (activeTrades.length === 0) return;
@@ -371,6 +384,11 @@ export class TradeProtectionCoordinator {
       return Response.json({ ok: true, stopped: false, pending: true, idempotent: true, trade }, { status: 202 });
     }
 
+    if (trade.phase === 'LIQUIDATING_POSITION') {
+      await this.ensureAlarm(250);
+      return Response.json({ ok: true, stopped: false, pending: true, idempotent: true, trade }, { status: 202 });
+    }
+
     const sourcePhase = trade.phase as StopProtectionSourcePhase;
     const targetIds = stopProtectionOrderIdsForPhase(sourcePhase, trade);
     if (targetIds.length === 0) {
@@ -439,6 +457,167 @@ export class TradeProtectionCoordinator {
     }
   }
 
+  private async persistTradeSnapshot(trade: ProtectedTrade): Promise<void> {
+    const trades = await this.loadTrades();
+    trades[trade.symbol] = trade;
+    await this.saveTrades(trades);
+  }
+
+  private async submitLiquidationOrder(
+    trade: ProtectedTrade,
+    client: WebullClient,
+    position: Position,
+  ): Promise<void> {
+    const price = Number(
+      position.currentPrice
+      || position.averagePrice
+      || trade.entryPrice
+      || 0,
+    );
+
+    if (!(position.quantity > 0) || !(price > 0)) {
+      throw new Error(`A valid position is required to liquidate ${trade.symbol}.`);
+    }
+
+    const result = await client.placeOrder({
+      symbol: trade.symbol,
+      side: 'SELL',
+      type: 'MARKET',
+      qty: position.quantity,
+      price,
+      idempotencyKey: trade.closeClientOrderId,
+      tradingSession: 'CORE',
+      timeInForce: 'DAY',
+    });
+
+    trade.closeClientOrderId =
+      result.clientOrderId || trade.closeClientOrderId;
+    trade.liquidationSubmissionConfirmed = true;
+    trade.liquidationSubmittedAt = nowIso();
+    trade.liquidationStatus =
+      String(result.status || 'PENDING').toUpperCase();
+    trade.lastError = undefined;
+    trade.updatedAt = nowIso();
+
+    await this.persistTradeSnapshot(trade);
+  }
+
+  private async reconcileLiquidation(
+    trade: ProtectedTrade,
+    positions: Position[],
+    client: WebullClient,
+    orderDetailBudget: OrderDetailBudget,
+  ): Promise<void> {
+    let position = positionFor(trade, positions);
+
+    if (!position) {
+      trade.phase = 'CLOSED';
+      trade.liquidationStatus = 'POSITION_CLOSED';
+      trade.lastError = undefined;
+      trade.updatedAt = nowIso();
+      return;
+    }
+
+    if (!trade.liquidationSubmissionConfirmed) {
+      await this.submitLiquidationOrder(
+        trade,
+        client,
+        position,
+      );
+      return;
+    }
+
+    if (orderDetailBudget.remaining < 1) return;
+    orderDetailBudget.remaining -= 1;
+
+    const rows = await getWebullOrderDetail(
+      this.env,
+      trade.mode,
+      trade.closeClientOrderId,
+    );
+
+    const detail = orderDetailFor(
+      rows,
+      trade.closeClientOrderId,
+    );
+
+    if (!detail) {
+      trade.liquidationSubmissionConfirmed = false;
+      trade.liquidationStatus = 'DETAIL_NOT_FOUND';
+      trade.lastError =
+        'Webull did not return the liquidation order detail; '
+        + 'the same client order ID will be retried.';
+      trade.updatedAt = nowIso();
+
+      await this.persistTradeSnapshot(trade);
+      return;
+    }
+
+    trade.liquidationStatus = detail.status;
+    trade.updatedAt = nowIso();
+
+    const outcome = liquidationOrderOutcome(
+      true,
+      detail,
+    );
+
+    if (outcome === 'PENDING') {
+      trade.lastError = undefined;
+      return;
+    }
+
+    const refreshedPositions = await client.getPositions();
+    position = positionFor(trade, refreshedPositions);
+
+    if (!position) {
+      trade.phase = 'CLOSED';
+      trade.liquidationStatus = 'POSITION_CLOSED';
+      trade.lastError = undefined;
+      trade.updatedAt = nowIso();
+      return;
+    }
+
+    if (outcome === 'FILLED_WAITING_POSITION') {
+      trade.liquidationStatus = 'FILLED_WAITING_POSITION_SYNC';
+      trade.lastError = undefined;
+      trade.updatedAt = nowIso();
+      return;
+    }
+
+    const attempt = Math.max(
+      1,
+      trade.liquidationAttempt ?? 1,
+    );
+
+    if (attempt >= MAX_LIQUIDATION_ATTEMPTS) {
+      trade.lastError =
+        `Liquidation order ${trade.closeClientOrderId} reached `
+        + `terminal status ${detail.status} while the position remains `
+        + `open after ${attempt} attempts. Manual intervention is required.`;
+      trade.updatedAt = nowIso();
+      return;
+    }
+
+    trade.liquidationAttempt = attempt + 1;
+    trade.closeClientOrderId =
+      clientId('moecl', orderToken());
+    trade.liquidationSubmissionConfirmed = false;
+    trade.liquidationSubmittedAt = undefined;
+    trade.liquidationStatus = 'RETRY_PENDING';
+    trade.lastError = undefined;
+    trade.updatedAt = nowIso();
+
+    // Persist the new idempotency key before contacting Webull.
+    // A lost response then retries the same client order ID.
+    await this.persistTradeSnapshot(trade);
+
+    await this.submitLiquidationOrder(
+      trade,
+      client,
+      position,
+    );
+  }
+
   private async reconcileTrade(
     trade: ProtectedTrade,
     positions: Position[],
@@ -448,6 +627,16 @@ export class TradeProtectionCoordinator {
   ): Promise<void> {
     if (trade.phase === 'CANCELLING_ALL_PROTECTION') {
       await this.reconcileStopCancellation(trade, client, orderDetailBudget);
+      return;
+    }
+
+    if (trade.phase === 'LIQUIDATING_POSITION') {
+      await this.reconcileLiquidation(
+        trade,
+        positions,
+        client,
+        orderDetailBudget,
+      );
       return;
     }
 
@@ -562,19 +751,24 @@ export class TradeProtectionCoordinator {
       }
 
       if (refreshedPrice <= refreshedDesired.price) {
-        await client.placeOrder({
-          symbol: trade.symbol,
-          side: 'SELL',
-          type: 'MARKET',
-          qty: position.quantity,
-          price: refreshedPrice,
-          idempotencyKey: trade.closeClientOrderId,
-          tradingSession: 'CORE',
-          timeInForce: 'DAY',
-        });
-        trade.phase = 'CLOSED';
+        trade.phase = 'LIQUIDATING_POSITION';
         trade.currentStopPrice = refreshedDesired.price;
+        trade.liquidationAttempt = 1;
+        trade.liquidationSubmissionConfirmed = false;
+        trade.liquidationSubmittedAt = undefined;
+        trade.liquidationStatus = 'SUBMISSION_PENDING';
+        trade.lastError = undefined;
         trade.updatedAt = nowIso();
+
+        // Persist LIQUIDATING_POSITION before sending MARKET SELL.
+        // If the response is lost, the same client ID is retried.
+        await this.persistTradeSnapshot(trade);
+
+        await this.submitLiquidationOrder(
+          trade,
+          client,
+          position,
+        );
         return;
       }
 
